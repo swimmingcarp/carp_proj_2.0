@@ -1,0 +1,35 @@
+# 股票交易策略配置文件
+
+# 数据源配置
+data_source:
+  provider: 'akshare'  # 数据源: akshare, tushare, yfinance
+  cache_enabled: true   # 是否启用缓存
+
+# 策略参数配置
+strategy:
+  init_k: 50.0           # KDJ 初始 K 值
+  init_d: 50.0           # KDJ 初始 D 值
+  init_date: '2018-01-02'  # 回测起始日期
+  short_ma: 16           # 短期均线周期
+  mid_ma: 45             # 中期均线周期
+  k_threshold: 45        # K 值买入阈值
+  stop_loss: -15.0       # 跌停保护阈值
+  lookback_days: 100     # 背离检测回溯天数
+
+# 回测配置
+backtest:
+  initial_capital: 10000  # 初始资金（元）
+  start_date: '2020-01-01'  # 回测开始日期
+  end_date: null          # 回测结束日期（null 表示当前日期）
+
+# 日志配置
+logging:
+  level: 'INFO'          # 日志级别: DEBUG, INFO, WARNING, ERROR
+  file: 'logs/trading.log'  # 日志文件路径
+  console: true          # 是否输出到控制台
+
+# 分析配置
+analysis:
+  show_backtest: true    # 是否显示回测结果
+  save_charts: false     # 是否保存图表
+  chart_dir: 'data/charts'  # 图表保存目录

@@ -132,7 +132,7 @@ def get_bottom_divergence_index(df: pd.DataFrame, lookback_days: int = 100) -> l
             if c1 and c2 and c3 and c4 and c5 and c6 and c7:
                 date_i = df.loc[min_list[i], 'date']
                 date_j = df.loc[min_list[j], 'date']
-                print(f"底部背离: {date_i} -> {date_j}")
+                print(f"底部背离: {date_i} -> {date_j}")  # 注释掉以加快速度
                 bottom_divergence_index.append(min_list[j])
 
     return list(set(bottom_divergence_index) & set(close_index))

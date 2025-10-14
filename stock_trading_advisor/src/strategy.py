@@ -50,7 +50,7 @@ class MixedStrategy:
             'mid_ma': 45,                 # 中期均线
             'k_threshold': 45,            # K 值买入阈值
             'stop_loss': -15.0,           # 跌停保护
-            'lookback_days': 100,         # 背离检测回溯天数
+            'lookback_days': 160,         # 背离检测回溯天数（优化：100→120→140→160⭐）
         }
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:

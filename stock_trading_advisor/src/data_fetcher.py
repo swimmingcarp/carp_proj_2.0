@@ -39,14 +39,16 @@ class DataFetcher:
         """
         self.source = source
         self.cache_enabled = cache_enabled
-        self.cache_dir = 'data/cache'
+        # 使用绝对路径，确保缓存目录固定
+        script_dir = Path(__file__).parent.parent  # src的父目录，即stock_trading_advisor
+        self.cache_dir = script_dir / 'data' / 'cache'
         self.validate_data = validate_data
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
         # 确保缓存目录存在
         if self.cache_enabled:
-            Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # 初始化数据验证器
         if self.validate_data:

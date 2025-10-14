@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 from src.data_fetcher import DataFetcher
 from src.strategy import MixedStrategy
 from src.analyzer import SignalAnalyzer
+import config as app_config  # 导入应用配置
 
 
 def setup_logging(config: dict):
@@ -70,8 +71,10 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True):
     backtest_config = config.get('backtest', {})
 
     fetcher = DataFetcher(
-        source=data_config.get('provider', 'akshare'),
-        cache_enabled=data_config.get('cache_enabled', True)
+        source=data_config.get('provider', app_config.DATA_SOURCE),
+        cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
+        max_retries=app_config.MAX_RETRIES,
+        retry_delay=app_config.RETRY_DELAY
     )
     strategy = MixedStrategy(config=strategy_config)
     analyzer = SignalAnalyzer()
@@ -209,7 +212,12 @@ def batch_analyze(stock_codes: list, config: dict):
             data_config = config.get('data_source', {})
             strategy_config = config.get('strategy', {})
 
-            fetcher = DataFetcher(source=data_config.get('provider', 'akshare'))
+            fetcher = DataFetcher(
+                source=data_config.get('provider', app_config.DATA_SOURCE),
+                cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
+                max_retries=app_config.MAX_RETRIES,
+                retry_delay=app_config.RETRY_DELAY
+            )
             strategy = MixedStrategy(config=strategy_config)
 
             # 获取数据

@@ -9,8 +9,12 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 import logging
+import time
+import os
+import hashlib
+from pathlib import Path
 
 from .data_validator import DataValidator
 
@@ -21,7 +25,8 @@ class DataFetcher:
     """统一的数据获取接口"""
 
     def __init__(self, source: str = 'akshare', cache_enabled: bool = True,
-                 validate_data: bool = True):
+                 validate_data: bool = True,
+                 max_retries: int = 3, retry_delay: float = 2.0):
         """
         初始化数据获取器
 
@@ -29,11 +34,19 @@ class DataFetcher:
             source: 数据源 ('akshare', 'tushare', 'yfinance')
             cache_enabled: 是否启用本地缓存
             validate_data: 是否启用数据验证
+            max_retries: 最大重试次数
+            retry_delay: 重试基础延迟（秒），实际延迟会指数增长
         """
         self.source = source
         self.cache_enabled = cache_enabled
         self.cache_dir = 'data/cache'
         self.validate_data = validate_data
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+        # 确保缓存目录存在
+        if self.cache_enabled:
+            Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
 
         # 初始化数据验证器
         if self.validate_data:
@@ -69,10 +82,45 @@ class DataFetcher:
         else:
             raise ValueError(f"不支持的数据源: {source}")
 
+    def _get_cache_path(self, code: str, start_date: str, end_date: str, adjust: str) -> Path:
+        """生成缓存文件路径"""
+        # 使用参数生成唯一的缓存文件名
+        cache_key = f"{code}_{start_date}_{end_date}_{adjust}"
+        cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
+        filename = f"{code}_{cache_hash}.csv"
+        return Path(self.cache_dir) / filename
+
+    def _load_from_cache(self, cache_path: Path, max_age_days: int = 1) -> Optional[pd.DataFrame]:
+        """从缓存加载数据"""
+        if not cache_path.exists():
+            return None
+
+        # 检查缓存是否过期
+        file_mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
+        if datetime.now() - file_mtime > timedelta(days=max_age_days):
+            logger.debug(f"缓存已过期: {cache_path}")
+            return None
+
+        try:
+            df = pd.read_csv(cache_path)
+            logger.info(f"从缓存加载数据: {cache_path}")
+            return df
+        except Exception as e:
+            logger.warning(f"读取缓存失败 {cache_path}: {e}")
+            return None
+
+    def _save_to_cache(self, df: pd.DataFrame, cache_path: Path):
+        """保存数据到缓存"""
+        try:
+            df.to_csv(cache_path, index=False)
+            logger.debug(f"数据已缓存: {cache_path}")
+        except Exception as e:
+            logger.warning(f"保存缓存失败 {cache_path}: {e}")
+
     def get_k_data(self, code: str, start_date: str = None, end_date: str = None,
                    adjust: str = 'qfq') -> Optional[Tuple[pd.DataFrame, Dict]]:
         """
-        获取 K 线数据（带数据验证）
+        获取 K 线数据（带数据验证、缓存、重试机制）
 
         Args:
             code: 股票代码（如 '000001' 或 'sh000001'）
@@ -91,26 +139,69 @@ class DataFetcher:
             # 默认获取 2 年数据
             start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
 
-        try:
-            if self.source == 'akshare':
-                df = self._fetch_akshare(code, start_date, end_date, adjust)
-            elif self.source == 'tushare':
-                df = self._fetch_tushare(code, start_date, end_date, adjust)
-            elif self.source == 'yfinance':
-                df = self._fetch_yfinance(code, start_date, end_date)
-            else:
-                return None, None
+        # 尝试从缓存加载
+        df = None
+        if self.cache_enabled:
+            cache_path = self._get_cache_path(code, start_date, end_date, adjust)
+            df = self._load_from_cache(cache_path)
 
-            # 数据验证
-            if self.validate_data and self.validator and df is not None:
-                df, report = self.validator.validate(df, code)
-                return df, report
-            else:
-                return df, None
+        # 如果缓存未命中，进行网络请求（带重试）
+        if df is None:
+            df = self._fetch_with_retry(code, start_date, end_date, adjust)
 
-        except Exception as e:
-            logger.error(f"获取股票 {code} 数据失败: {e}")
+            # 保存到缓存
+            if df is not None and self.cache_enabled:
+                cache_path = self._get_cache_path(code, start_date, end_date, adjust)
+                self._save_to_cache(df, cache_path)
+
+        if df is None:
             return None, None
+
+        # 数据验证
+        if self.validate_data and self.validator:
+            df, report = self.validator.validate(df, code)
+            return df, report
+        else:
+            return df, None
+
+    def _fetch_with_retry(self, code: str, start_date: str, end_date: str,
+                          adjust: str) -> Optional[pd.DataFrame]:
+        """带指数退避的重试机制"""
+        last_exception = None
+
+        for attempt in range(self.max_retries):
+            try:
+                # 根据数据源获取数据
+                if self.source == 'akshare':
+                    df = self._fetch_akshare(code, start_date, end_date, adjust)
+                elif self.source == 'tushare':
+                    df = self._fetch_tushare(code, start_date, end_date, adjust)
+                elif self.source == 'yfinance':
+                    df = self._fetch_yfinance(code, start_date, end_date)
+                else:
+                    return None
+
+                if df is not None and len(df) > 0:
+                    logger.info(f"成功获取股票 {code} 数据")
+                    return df
+                else:
+                    logger.warning(f"股票 {code} 数据为空")
+                    return None
+
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"获取股票 {code} 数据失败 (尝试 {attempt + 1}/{self.max_retries}): {e}")
+
+                # 如果不是最后一次尝试，进行指数退避
+                if attempt < self.max_retries - 1:
+                    # 指数退避: delay * (2 ^ attempt)
+                    backoff_time = self.retry_delay * (2 ** attempt)
+                    logger.info(f"等待 {backoff_time:.1f} 秒后重试...")
+                    time.sleep(backoff_time)
+
+        # 所有重试都失败
+        logger.error(f"获取股票 {code} 数据失败，已重试 {self.max_retries} 次: {last_exception}")
+        return None
 
     def _fetch_akshare(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
@@ -151,6 +242,7 @@ class DataFetcher:
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
 
         return df.reset_index(drop=True)
+
 
     def _fetch_tushare(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
@@ -200,6 +292,7 @@ class DataFetcher:
 
         return df.sort_values('date').reset_index(drop=True)
 
+
     def _fetch_yfinance(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """使用 yfinance 获取数据（主要用于港股、美股）"""
         ticker = self.yf.Ticker(code)
@@ -222,6 +315,7 @@ class DataFetcher:
         df['code'] = code
 
         return df.reset_index(drop=True)
+
 
     def get_realtime_data(self, code: str) -> Optional[dict]:
         """

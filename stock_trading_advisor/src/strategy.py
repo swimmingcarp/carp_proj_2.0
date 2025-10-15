@@ -441,9 +441,12 @@ class MixedStrategy:
         sell_points = []
 
         # 从trades中提取买卖点信息
-        for trade in trades:
+        for i, trade in enumerate(trades):
             buy_date = trade['buy_date']
             sell_date = trade['sell_date']
+
+            # 判断是否是最后一笔未平仓交易
+            is_last_open = (i == len(trades) - 1 and sell_date == df.iloc[-1]['date'])
 
             # 获取买入日期的行信息（用于显示技术指标）
             buy_row = df[df['date'] == buy_date].iloc[0] if len(df[df['date'] == buy_date]) > 0 else None
@@ -472,23 +475,47 @@ class MixedStrategy:
                 })
 
             if sell_row is not None:
-                # 构建卖出理由
-                reason = []
+                # 构建卖出理由（无论是否平仓都要检测）
+                sell_conditions = []  # 满足的卖出条件
+                hold_conditions = []  # 持有的理由（未满足卖出条件）
+
+                # 检测所有可能的卖出条件
                 if sell_row.get('top', 0) == 1:
-                    reason.append("顶部背离")
+                    sell_conditions.append("顶部背离")
+                else:
+                    hold_conditions.append("无顶部背离")
+
                 if sell_row['close'] < sell_row[f"{self.config['short_ma']}_ma"]:
-                    reason.append(f"跌破{self.config['short_ma']}日均线")
+                    sell_conditions.append(f"跌破{self.config['short_ma']}日均线")
+                else:
+                    hold_conditions.append(f"站稳{self.config['short_ma']}日均线")
+
                 if sell_row.get('macd', 0) < 0:
-                    reason.append("MACD空头")
+                    sell_conditions.append("MACD空头")
+                else:
+                    hold_conditions.append("MACD多头")
+
+                # 如果是最后一笔未平仓交易，添加标注
+                if is_last_open:
+                    if sell_conditions:
+                        # 有卖出条件
+                        reason = ', '.join(sell_conditions) + "(未平仓)"
+                    else:
+                        # 无卖出条件，显示持有理由
+                        reason = ', '.join(hold_conditions) + "(未平仓)"
+                else:
+                    # 已平仓的正常交易
+                    reason = ', '.join(sell_conditions) if sell_conditions else '满足卖出条件'
 
                 sell_points.append({
                     'date': sell_date,
-                    'price': trade['sell_price'],  # 使用实际卖出价（次日开盘价）
-                    'reason': ', '.join(reason) if reason else '满足卖出条件',
+                    'price': trade['sell_price'],  # 使用实际卖出价（次日开盘价或收盘价）
+                    'reason': reason,
                     'k': sell_row.get('k', 0),
                     'd': sell_row.get('d', 0),
                     'macd': sell_row.get('macd', 0),
                     'ma_16': sell_row.get(f"{self.config['short_ma']}_ma", 0),
+                    'is_open': is_last_open,  # 标记是否为未平仓
                 })
 
         return {

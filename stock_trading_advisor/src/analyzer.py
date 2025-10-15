@@ -337,9 +337,13 @@ class SignalAnalyzer:
         sell_points = signals_data.get('sell_points', [])
         total_trades = signals_data.get('total_trades', 0)
 
+        # 分离未平仓和已平仓的卖出点
+        open_positions = [sp for sp in sell_points if sp.get('is_open', False)]
+        closed_sells = [sp for sp in sell_points if not sp.get('is_open', False)]
+
         output.append(f"\n总交易次数: {total_trades}")
-        output.append(f"买入次数: {len(buy_points)}")
-        output.append(f"卖出次数: {len(sell_points)}")
+        output.append(f"已完成交易: {len(closed_sells)}")
+        output.append(f"当前持仓: {len(open_positions)}")
 
         # 买入点详情
         if buy_points:
@@ -369,14 +373,14 @@ class SignalAnalyzer:
                     f"{reason}"
                 )
 
-        # 卖出点详情
-        if sell_points:
-            output.append(f"\n{Fore.RED}━━━ 卖出点 (最近 {min(show_limit, len(sell_points))} 次) ━━━{Style.RESET_ALL}")
+        # 卖出点详情（只显示已完成的交易）
+        if closed_sells:
+            output.append(f"\n{Fore.RED}━━━ 卖出点 (最近 {min(show_limit, len(closed_sells))} 次) ━━━{Style.RESET_ALL}")
             output.append(f"{'序号':<6} {'日期':<12} {'价格':<10} {'K值':<8} {'MACD':<10} {'原因'}")
             output.append("-" * 80)
 
             # 显示最近的卖出点
-            for i, point in enumerate(sell_points[-show_limit:], 1):
+            for i, point in enumerate(closed_sells[-show_limit:], 1):
                 k_color = Fore.YELLOW if point['k'] > 80 else ''
                 macd_color = Fore.GREEN if point['macd'] > 0 else Fore.RED
 
@@ -397,11 +401,37 @@ class SignalAnalyzer:
                     f"{reason}"
                 )
 
+        # 当前持仓详情（单独显示）
+        if open_positions:
+            output.append(f"\n{Fore.YELLOW}━━━ 当前持仓状态 ━━━{Style.RESET_ALL}")
+            output.append(f"{'序号':<6} {'日期':<12} {'价格':<10} {'K值':<8} {'MACD':<10} {'状态说明'}")
+            output.append("-" * 80)
+
+            for i, point in enumerate(open_positions, 1):
+                k_color = Fore.CYAN if point['k'] < 45 else ''
+                macd_color = Fore.GREEN if point['macd'] > 0 else Fore.RED
+
+                seq = f"{i:<6}"
+                date_str = f"{point['date']:<12}"
+                price_str = f"{point['price']:<10.2f}"
+                k_str = f"{point['k']:<8.1f}"
+                macd_str = f"{point['macd']:<10.4f}"
+                reason = point['reason']
+
+                output.append(
+                    f"{seq}"
+                    f"{date_str}"
+                    f"{price_str}"
+                    f"{k_color}{k_str}{Style.RESET_ALL}"
+                    f"{macd_color}{macd_str}{Style.RESET_ALL}"
+                    f"{reason}"
+                )
+
         # 计算交易对收益
         if buy_points and sell_points:
             output.append(f"\n{Fore.CYAN}━━━ 交易对收益分析 ━━━{Style.RESET_ALL}")
             output.append(f"{Fore.YELLOW}说明: 买入价和卖出价均为次日开盘价{Style.RESET_ALL}")
-            output.append(f"{Fore.YELLOW}      收益率 = (卖出价 - 买入价) / 买入价{Style.RESET_ALL}")
+            output.append(f"{Fore.YELLOW}      未平仓持仓显示当前浮盈状态{Style.RESET_ALL}")
 
             # 获取初始资金（从 signals_data 中，如果有的话）
             initial_capital = signals_data.get('initial_capital', 10000.0)
@@ -415,26 +445,45 @@ class SignalAnalyzer:
             winning_trades = 0
 
             for i, (buy, sell) in enumerate(zip(buy_points, sell_points), 1):
-                profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
-                profit_rates.append(profit_rate)
-
-                # 计算交易后的资金变化
-                current_capital = current_capital * (1 + profit_rate / 100)
-
-                if profit_rate > 0:
-                    winning_trades += 1
-
-                profit_color = Fore.GREEN if profit_rate > 0 else Fore.RED
-                capital_color = Fore.GREEN if current_capital > initial_capital else Fore.RED
+                is_open = sell.get('is_open', False)
 
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
                 buy_date = f"{buy['date']:<12}"
                 buy_price = f"{buy['price']:<12.2f}"
-                sell_date = f"{sell['date']:<12}"
-                sell_price = f"{sell['price']:<12.2f}"
-                profit_str = f"{profit_rate:>11.2f}%"
-                capital_str = f"¥{current_capital:>13,.2f}"
+
+                if is_open:
+                    # 未平仓：显示"持仓中"，用黄色标记
+                    sell_date = f"{Fore.YELLOW}{'持仓中':<12}{Style.RESET_ALL}"
+                    sell_price = f"{Fore.YELLOW}{'--':<12}{Style.RESET_ALL}"
+
+                    # 计算浮盈
+                    profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
+                    float_profit_capital = current_capital * (1 + profit_rate / 100)
+
+                    profit_str = f"{Fore.YELLOW}(浮盈){profit_rate:>7.2f}%{Style.RESET_ALL}"
+                    capital_str = f"{Fore.YELLOW}¥{float_profit_capital:>13,.2f}{Style.RESET_ALL}"
+                else:
+                    # 已平仓：正常显示
+                    sell_date = f"{sell['date']:<12}"
+                    sell_price = f"{sell['price']:<12.2f}"
+
+                    profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
+                    profit_rates.append(profit_rate)
+
+                    # 计算交易后的资金变化
+                    current_capital = current_capital * (1 + profit_rate / 100)
+
+                    if profit_rate > 0:
+                        winning_trades += 1
+
+                    profit_color = Fore.GREEN if profit_rate > 0 else Fore.RED
+                    capital_color = Fore.GREEN if current_capital > initial_capital else Fore.RED
+
+                    profit_str = f"{profit_rate:>11.2f}%"
+                    capital_str = f"¥{current_capital:>13,.2f}"
+                    profit_str = f"{profit_color}{profit_str}{Style.RESET_ALL} "
+                    capital_str = f"{capital_color}{capital_str}{Style.RESET_ALL}"
 
                 output.append(
                     f"{seq}"
@@ -442,15 +491,19 @@ class SignalAnalyzer:
                     f"{buy_price}"
                     f"{sell_date}"
                     f"{sell_price}"
-                    f"{profit_color}{profit_str}{Style.RESET_ALL} "
-                    f"{capital_color}{capital_str}{Style.RESET_ALL}"
+                    f"{profit_str}"
+                    f"{capital_str}"
                 )
 
             final_capital = current_capital
 
-            # 计算统计数据
-            avg_profit = sum(profit_rates) / len(profit_rates) if profit_rates else 0
-            win_rate = (winning_trades / len(profit_rates) * 100) if profit_rates else 0
+            # 计算统计数据（只计算已完成的交易）
+            if profit_rates:
+                avg_profit = sum(profit_rates) / len(profit_rates)
+                win_rate = (winning_trades / len(profit_rates) * 100)
+            else:
+                avg_profit = 0
+                win_rate = 0
 
             avg_color = Fore.GREEN if avg_profit > 0 else Fore.RED
             final_return = (final_capital - initial_capital) / initial_capital * 100
@@ -458,7 +511,9 @@ class SignalAnalyzer:
 
             output.append("-" * 90)
             output.append(f"初始资金: ¥{initial_capital:,.2f}")
-            output.append(f"最终资金: {final_color}¥{final_capital:,.2f}{Style.RESET_ALL}")
+            output.append(f"最终资金: {final_color}¥{final_capital:,.2f}{Style.RESET_ALL} (已完成交易)")
+            if len(open_positions) > 0:
+                output.append(f"{Fore.YELLOW}当前持仓浮盈未计入最终资金{Style.RESET_ALL}")
             output.append(f"累计收益率: {final_color}{final_return:+.2f}%{Style.RESET_ALL}")
             output.append(f"平均单次收益: {avg_color}{avg_profit:.2f}%{Style.RESET_ALL}")
             output.append(f"盈利交易占比: {win_rate:.1f}%")

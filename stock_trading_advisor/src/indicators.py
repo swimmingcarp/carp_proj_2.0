@@ -213,7 +213,7 @@ def rsi_indicator(data: pd.Series, period: int = 14) -> pd.Series:
 
 def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
                              init_d: float = None, init_date: str = '2018-01-02',
-                             rsi_fast_period: int = 6, rsi_slow_period: int = 14):
+                             rsi_fast_period: int = 5, rsi_slow_period: int = 10):
     """
     一次性计算所有技术指标
 
@@ -222,8 +222,8 @@ def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
         init_k: KDJ 初始 K 值
         init_d: KDJ 初始 D 值
         init_date: 起始日期
-        rsi_fast_period: RSI 快线周期（默认6）
-        rsi_slow_period: RSI 慢线周期（默认14）
+        rsi_fast_period: RSI 快线周期（默认5，优化：6→5⭐）
+        rsi_slow_period: RSI 慢线周期（默认10，优化：14→10⭐）
 
     Returns:
         添加了所有指标的 DataFrame
@@ -256,8 +256,8 @@ def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
         df[f'{period}ma_vol'] = ma_indicator(df['volume'], period)
 
     # 6. RSI 指标（可配置快慢线周期）
-    df['rsi'] = rsi_indicator(df['close'], period=rsi_slow_period)  # 慢线（默认14）
-    df['rsi_6'] = rsi_indicator(df['close'], period=rsi_fast_period)  # 快线（默认6）
+    df['rsi'] = rsi_indicator(df['close'], period=rsi_slow_period)  # 慢线（默认10，优化：14→10⭐）
+    df['rsi_6'] = rsi_indicator(df['close'], period=rsi_fast_period)  # 快线（默认5，优化：6→5⭐）
 
     # 7. 从起始日期截断
     df = df.loc[df['date'] >= init_date].copy()

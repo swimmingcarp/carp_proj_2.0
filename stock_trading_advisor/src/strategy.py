@@ -102,8 +102,8 @@ class MixedStrategy:
                 self.config['init_k'],
                 self.config['init_d'],
                 self.config['init_date'],
-                rsi_fast_period=self.config.get('rsi_fast_period', 6),
-                rsi_slow_period=self.config.get('rsi_slow_period', 14)
+                rsi_fast_period=self.config.get('rsi_fast_period', 5),
+                rsi_slow_period=self.config.get('rsi_slow_period', 10)
             )
         except Exception as e:
             logger.error(f"计算技术指标失败: {e}")
@@ -237,6 +237,9 @@ class MixedStrategy:
         rsi_min_strength = self.config.get('rsi_min_strength', True)
         rsi_min_gap = self.config.get('rsi_min_gap', 5)  # 最小间隔天数
 
+        # 初始化RSI买入类型标记列
+        df['rsi_buy_type'] = ''
+
         last_rsi_buy_idx = -999  # 上次RSI买入的位置
 
         for i in range(1, len(df)):
@@ -259,6 +262,7 @@ class MixedStrategy:
             # 规则1：RSI极度超卖（< 18），接近均线，且不在跌停
             if rsi < rsi_oversold and close >= ma_16 * rsi_ma_ratio and p_change > -8:
                 df.loc[idx, 'buy_signal'] = 1
+                df.loc[idx, 'rsi_buy_type'] = 'RSI超卖'
                 last_rsi_buy_idx = i
                 logger.debug(f"RSI超卖买入: {df.loc[idx, 'date']}, RSI={rsi:.1f}")
 
@@ -287,6 +291,7 @@ class MixedStrategy:
 
                 if confirmed:
                     df.loc[idx, 'buy_signal'] = 1
+                    df.loc[idx, 'rsi_buy_type'] = 'RSI金叉'
                     last_rsi_buy_idx = i
                     logger.debug(f"RSI金叉买入: {df.loc[idx, 'date']}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
 
@@ -544,6 +549,12 @@ class MixedStrategy:
             if buy_row is not None:
                 # 构建买入理由
                 reason = []
+
+                # 检查是否是RSI买入
+                rsi_buy_type = buy_row.get('rsi_buy_type', '')
+                if rsi_buy_type:
+                    reason.append(rsi_buy_type)
+
                 if buy_row.get('bottom', 0) == 1:
                     reason.append("底部背离")
                 if buy_row['close'] >= buy_row[f"{self.config['short_ma']}_ma"]:

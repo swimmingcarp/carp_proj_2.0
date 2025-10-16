@@ -436,8 +436,8 @@ class SignalAnalyzer:
             # 获取初始资金（从 signals_data 中，如果有的话）
             initial_capital = signals_data.get('initial_capital', 10000.0)
 
-            output.append(f"{'序号':<6} {'买入信号':<12} {'次日买入':<12} {'卖出信号':<12} {'次日卖出':<12} {'收益率':<14} {'剩余本金':<15}")
-            output.append("-" * 90)
+            output.append(f"{'序号':<6} {'买入信号':<12} {'次日买入':<12} {'卖出信号':<20} {'次日卖出':<12} {'收益率':<14} {'剩余本金':<15}")
+            output.append("-" * 100)
 
             # 直接使用买卖价差计算
             profit_rates = []
@@ -453,8 +453,24 @@ class SignalAnalyzer:
                 buy_price = f"{buy['price']:<12.2f}"
 
                 if is_open:
-                    # 未平仓：显示"持仓中"，用黄色标记
-                    sell_date = f"{Fore.YELLOW}{'持仓中':<12}{Style.RESET_ALL}"
+                    # 未平仓：根据是否有卖出信号显示不同状态
+                    reason = sell.get('reason', '')
+                    # 检测是否包含卖出条件（排除"无顶部背离"）
+                    # 只有真正的卖出条件才算，持有条件不算
+                    has_sell_signal = False
+                    if "顶部背离" in reason and "无顶部背离" not in reason:
+                        has_sell_signal = True
+                    elif "跌破" in reason:
+                        has_sell_signal = True
+                    elif "MACD空头" in reason:
+                        has_sell_signal = True
+
+                    if has_sell_signal:
+                        status_text = "持仓中（卖出信号）"
+                    else:
+                        status_text = "持仓中"
+
+                    sell_date = f"{Fore.YELLOW}{status_text:<20}{Style.RESET_ALL}"
                     sell_price = f"{Fore.YELLOW}{'--':<12}{Style.RESET_ALL}"
 
                     # 计算浮盈
@@ -465,7 +481,7 @@ class SignalAnalyzer:
                     capital_str = f"{Fore.YELLOW}¥{float_profit_capital:>13,.2f}{Style.RESET_ALL}"
                 else:
                     # 已平仓：正常显示
-                    sell_date = f"{sell['date']:<12}"
+                    sell_date = f"{sell['date']:<20}"
                     sell_price = f"{sell['price']:<12.2f}"
 
                     profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
@@ -509,7 +525,7 @@ class SignalAnalyzer:
             final_return = (final_capital - initial_capital) / initial_capital * 100
             final_color = Fore.GREEN if final_return > 0 else Fore.RED
 
-            output.append("-" * 90)
+            output.append("-" * 100)
             output.append(f"初始资金: ¥{initial_capital:,.2f}")
             output.append(f"最终资金: {final_color}¥{final_capital:,.2f}{Style.RESET_ALL} (已完成交易)")
             if len(open_positions) > 0:

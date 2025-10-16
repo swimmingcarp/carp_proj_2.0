@@ -176,8 +176,44 @@ def kdj_indicator(df: pd.DataFrame, start_k: float, start_d: float,
     return pd.Series(k, index=df.index), pd.Series(d, index=df.index)
 
 
+def rsi_indicator(data: pd.Series, period: int = 14) -> pd.Series:
+    """
+    RSI (相对强弱指标) - 向量化版本
+
+    RSI = 100 - 100 / (1 + RS)
+    RS = 平均涨幅 / 平均跌幅
+
+    Args:
+        data: 价格序列
+        period: 周期（默认14）
+
+    Returns:
+        RSI 序列 (0-100)
+    """
+    # 计算价格变动
+    delta = data.diff()
+
+    # 分离涨跌
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    # 计算平均涨跌幅（使用EMA）
+    avg_gain = gain.ewm(span=period, adjust=False).mean()
+    avg_loss = loss.ewm(span=period, adjust=False).mean()
+
+    # 计算 RS 和 RSI
+    rs = avg_gain / avg_loss.replace(0, 1e-10)  # 避免除零
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    # 第一个值设为50（中性）
+    rsi.iloc[0] = 50.0
+
+    return rsi
+
+
 def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
-                             init_d: float = None, init_date: str = '2018-01-02'):
+                             init_d: float = None, init_date: str = '2018-01-02',
+                             rsi_fast_period: int = 6, rsi_slow_period: int = 14):
     """
     一次性计算所有技术指标
 
@@ -186,6 +222,8 @@ def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
         init_k: KDJ 初始 K 值
         init_d: KDJ 初始 D 值
         init_date: 起始日期
+        rsi_fast_period: RSI 快线周期（默认6）
+        rsi_slow_period: RSI 慢线周期（默认14）
 
     Returns:
         添加了所有指标的 DataFrame
@@ -217,7 +255,11 @@ def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
     for period in vol_periods:
         df[f'{period}ma_vol'] = ma_indicator(df['volume'], period)
 
-    # 6. 从起始日期截断
+    # 6. RSI 指标（可配置快慢线周期）
+    df['rsi'] = rsi_indicator(df['close'], period=rsi_slow_period)  # 慢线（默认14）
+    df['rsi_6'] = rsi_indicator(df['close'], period=rsi_fast_period)  # 快线（默认6）
+
+    # 7. 从起始日期截断
     df = df.loc[df['date'] >= init_date].copy()
 
     return df

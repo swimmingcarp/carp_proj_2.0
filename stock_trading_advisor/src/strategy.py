@@ -50,7 +50,15 @@ class MixedStrategy:
             'mid_ma': 45,                 # 中期均线
             'k_threshold': 45,            # K 值买入阈值
             'stop_loss': -15.0,           # 跌停保护
-            'lookback_days': 160,         # 背离检测回溯天数（优化：100→120→140→160⭐）
+            'lookback_days': 160,         # 背离检测回溯天数（优化：100→160⭐）
+            'rsi_enabled': True,          # 是否启用RSI增强买入
+            'rsi_fast_period': 5,         # RSI快线周期（优化：6→5⭐）
+            'rsi_slow_period': 10,        # RSI慢线周期（优化：14→10⭐）
+            'rsi_oversold': 18,           # RSI极度超卖阈值（改进v3：20→18）
+            'rsi_threshold': 40,          # RSI金叉阈值（改进v3：45→40）
+            'rsi_ma_ratio': 0.95,         # RSI超卖时接近均线比例
+            'rsi_min_strength': True,     # RSI最小强度要求
+            'rsi_min_gap': 5,             # RSI买入最小距离（5天冷静期）
         }
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
@@ -93,7 +101,9 @@ class MixedStrategy:
                 df,
                 self.config['init_k'],
                 self.config['init_d'],
-                self.config['init_date']
+                self.config['init_date'],
+                rsi_fast_period=self.config.get('rsi_fast_period', 6),
+                rsi_slow_period=self.config.get('rsi_slow_period', 14)
             )
         except Exception as e:
             logger.error(f"计算技术指标失败: {e}")
@@ -163,7 +173,11 @@ class MixedStrategy:
         block_index = self._calculate_block_index(df, top_index)
         df.loc[block_index, 'buy_signal'] = 0
 
-        # 8. 计算持仓状态
+        # 8. RSI增强买入（可选）
+        if self.config.get('rsi_enabled', False):
+            self._apply_rsi_enhancements(df)
+
+        # 9. 计算持仓状态
         df['position'] = df['buy_signal'].shift(1)
         df['position'] = df['position'].ffill()
         df.loc[:self.config['init_date'], 'position'] = 0
@@ -200,6 +214,81 @@ class MixedStrategy:
                     block_index.add(date)
 
         return list(block_index)
+
+    def _apply_rsi_enhancements(self, df: pd.DataFrame) -> None:
+        """
+        应用RSI增强买入逻辑（改进v3：大幅降低交易频率，避免手续费侵蚀）
+
+        改进点：
+        1. RSI超卖阈值从20降低到18（更极端，只抓最好的机会）
+        2. RSI金叉要求更低位（<40而非<45，极低位）
+        3. 增加交易间隔限制（至少间隔5天，避免频繁交易）
+        4. 更严格的确认条件（MACD、价格反弹、涨幅）
+
+        规则1: RSI极度超卖 (<18) + 接近均线 + 不在跌停 = 抄底买入
+        规则2: RSI短期金叉 (6日突破14日) + RSI < 40 + (MACD>0.1 或 涨幅>3%) = 反转买入
+
+        Args:
+            df: 数据框（会直接修改）
+        """
+        rsi_oversold = self.config.get('rsi_oversold', 18)
+        rsi_threshold = self.config.get('rsi_threshold', 40)
+        rsi_ma_ratio = self.config.get('rsi_ma_ratio', 0.95)
+        rsi_min_strength = self.config.get('rsi_min_strength', True)
+        rsi_min_gap = self.config.get('rsi_min_gap', 5)  # 最小间隔天数
+
+        last_rsi_buy_idx = -999  # 上次RSI买入的位置
+
+        for i in range(1, len(df)):
+            idx = df.index[i]
+            prev_idx = df.index[i-1]
+
+            # 检查是否距离上次RSI买入太近
+            if i - last_rsi_buy_idx < rsi_min_gap:
+                continue  # 跳过，避免频繁交易
+
+            rsi = df.loc[idx, 'rsi']
+            rsi_6 = df.loc[idx, 'rsi_6']
+            prev_rsi_6 = df.loc[prev_idx, 'rsi_6']
+            prev_rsi = df.loc[prev_idx, 'rsi']
+            close = df.loc[idx, 'close']
+            ma_16 = df.loc[idx, f"{self.config['short_ma']}_ma"]
+            p_change = df.loc[idx, 'p_change']
+            macd = df.loc[idx, 'macd']
+
+            # 规则1：RSI极度超卖（< 18），接近均线，且不在跌停
+            if rsi < rsi_oversold and close >= ma_16 * rsi_ma_ratio and p_change > -8:
+                df.loc[idx, 'buy_signal'] = 1
+                last_rsi_buy_idx = i
+                logger.debug(f"RSI超卖买入: {df.loc[idx, 'date']}, RSI={rsi:.1f}")
+
+            # 规则2：RSI短期金叉，且在极低位，并满足更严格的确认条件
+            elif rsi_6 > rsi and prev_rsi_6 <= prev_rsi and rsi < rsi_threshold:
+                confirmed = False
+
+                if rsi_min_strength:
+                    # 条件A：MACD > 0.1（趋势明显向上，不是弱势多头）
+                    if macd > 0.1:
+                        confirmed = True
+                        logger.debug(f"RSI金叉+强MACD: {df.loc[idx, 'date']}")
+
+                    # 条件B：价格强势反弹 > 3%（改进：从2%提高到3%）
+                    elif p_change > 3:
+                        confirmed = True
+                        logger.debug(f"RSI金叉+强反弹: {df.loc[idx, 'date']}, 涨幅={p_change:.1f}%")
+
+                    # 条件C：接近均线且RSI < 35（极低位金叉，从40降到35）
+                    elif close >= ma_16 * 0.98 and rsi < 35:
+                        confirmed = True
+                        logger.debug(f"RSI极低位金叉: {df.loc[idx, 'date']}, RSI={rsi:.1f}")
+                else:
+                    if close >= ma_16 * 0.98:
+                        confirmed = True
+
+                if confirmed:
+                    df.loc[idx, 'buy_signal'] = 1
+                    last_rsi_buy_idx = i
+                    logger.debug(f"RSI金叉买入: {df.loc[idx, 'date']}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
 
     def get_latest_signal(self, df: pd.DataFrame) -> Dict:
         """

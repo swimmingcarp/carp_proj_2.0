@@ -23,16 +23,22 @@ logger = logging.getLogger(__name__)
 class MixedStrategy:
     """混合交易策略"""
 
-    def __init__(self, config: Dict = None, validate_indicators: bool = True):
+    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto'):
         """
         初始化策略
 
         Args:
             config: 策略配置参数
             validate_indicators: 是否启用技术指标验证
+            sell_strategy: 卖出策略类型
+                - 'auto': 自动选择（对每只股票先回测，选择最优策略）
+                - 'original': 原始策略（跌破MA16或MACD<0）
+                - 'gradual': 渐进式止损（连续3天跌破MA16）
         """
         self.config = config or self._default_config()
         self.validate_indicators = validate_indicators
+        self.sell_strategy = sell_strategy
+        self.optimal_strategy = None  # 记录为当前股票选择的最优策略
 
         # 初始化指标验证器
         if self.validate_indicators:
@@ -157,13 +163,40 @@ class MixedStrategy:
         buy_index = df[df['close'] >= df[f"{self.config['short_ma']}_ma"]].index
         df.loc[buy_index, 'buy_signal'] = 1
 
-        # 5. 生成卖出信号
-        # 条件：跌破16日均线 OR MACD < 0 OR 顶部背离
-        sell_index1 = df[df['close'] < df[f"{self.config['short_ma']}_ma"]].index
-        sell_index2 = df[df['macd'] < 0].index
-        sell_index = sell_index1.union(sell_index2).union(top_index)
+        # 5. 生成卖出信号（自适应策略选择）
+        # 如果是'auto'模式，先运行两种策略的回测，选择最优的
+        if self.sell_strategy == 'auto':
+            # 快速测试原始策略和渐进式策略
+            logger.info("自适应模式：正在评估最优卖出策略...")
 
-        df.loc[sell_index, 'buy_signal'] = 0
+            # 测试原始策略
+            df_test_orig = df.copy()
+            self._apply_sell_strategy(df_test_orig, 'original', top_index)
+            backtest_orig = self._quick_backtest(df_test_orig)
+
+            # 测试渐进式策略
+            df_test_grad = df.copy()
+            self._apply_sell_strategy(df_test_grad, 'gradual', top_index)
+            backtest_grad = self._quick_backtest(df_test_grad)
+
+            # 选择最优策略：如果渐进式收益比原始高30%以上，使用渐进式；否则使用原始
+            if backtest_grad and backtest_orig:
+                improvement = (backtest_grad - backtest_orig) / backtest_orig if backtest_orig != 0 else 0
+                if improvement > 0.30:  # 提升超过30%
+                    self.optimal_strategy = 'gradual'
+                    logger.info(f"选择渐进式策略（提升{improvement*100:.1f}%: {backtest_orig:.1f}% → {backtest_grad:.1f}%）")
+                else:
+                    self.optimal_strategy = 'original'
+                    logger.info(f"选择原始策略（渐进提升不足30%: {improvement*100:.1f}%）")
+            else:
+                self.optimal_strategy = 'original'
+                logger.warning("回测失败，默认使用原始策略")
+        else:
+            # 使用指定的策略
+            self.optimal_strategy = self.sell_strategy
+
+        # 应用选定的策略
+        self._apply_sell_strategy(df, self.optimal_strategy, top_index)
 
         # 6. 底部背离次日强制买入
         bottom_shift_index = df[df['bottom'].shift(1) == 1].index
@@ -223,6 +256,87 @@ class MixedStrategy:
                     block_index.add(date)
 
         return list(block_index), list(diff_invalidation_dates)
+
+    def _apply_sell_strategy(self, df: pd.DataFrame, strategy: str, top_index: list) -> None:
+        """
+        应用指定的卖出策略
+
+        Args:
+            df: 数据框（会直接修改）
+            strategy: 策略类型 ('original', 'gradual')
+            top_index: 顶部背离索引列表
+        """
+        sell_index = set()
+
+        if strategy == 'original':
+            # 原始策略：跌破MA16或MACD<0立即卖出
+            sell_index1 = df[df['close'] < df[f"{self.config['short_ma']}_ma"]].index
+            sell_index2 = df[df['macd'] < 0].index
+            sell_index = set(sell_index1).union(set(sell_index2))
+
+        elif strategy == 'gradual':
+            # 渐进式止损：连续3天跌破MA16才卖出
+            for i in range(2, len(df)):
+                idx = df.index[i]
+                idx_1 = df.index[i-1]
+                idx_2 = df.index[i-2]
+
+                below_ma_0 = df.loc[idx, 'close'] < df.loc[idx, f"{self.config['short_ma']}_ma"]
+                below_ma_1 = df.loc[idx_1, 'close'] < df.loc[idx_1, f"{self.config['short_ma']}_ma"]
+                below_ma_2 = df.loc[idx_2, 'close'] < df.loc[idx_2, f"{self.config['short_ma']}_ma"]
+
+                if below_ma_0 and below_ma_1 and below_ma_2:
+                    sell_index.add(idx)
+
+        # 顶部背离强制卖出（所有策略共用）
+        sell_index = sell_index.union(set(top_index))
+
+        # 应用卖出信号
+        df.loc[list(sell_index), 'buy_signal'] = 0
+
+    def _quick_backtest(self, df: pd.DataFrame) -> float:
+        """
+        快速回测，只返回收益率
+
+        Args:
+            df: 包含buy_signal的数据框
+
+        Returns:
+            总收益率（百分比），如果回测失败返回None
+        """
+        try:
+            capital = 10000.0
+            holding = False
+            buy_price = 0
+
+            for i in range(len(df)):
+                if i > 0:
+                    prev_signal = df.iloc[i-1]['buy_signal']
+                    curr_price = df.iloc[i]['open']
+
+                    # 买入
+                    if prev_signal == 1 and not holding:
+                        buy_price = curr_price
+                        holding = True
+
+                    # 卖出
+                    elif prev_signal == 0 and holding:
+                        sell_price = curr_price
+                        profit_rate = (sell_price - buy_price) / buy_price
+                        capital = capital * (1 + profit_rate)
+                        holding = False
+
+            # 最后还持仓，用收盘价计算
+            if holding:
+                sell_price = df.iloc[-1]['close']
+                profit_rate = (sell_price - buy_price) / buy_price
+                capital = capital * (1 + profit_rate)
+
+            return (capital / 10000.0 - 1) * 100  # 返回收益率百分比
+
+        except Exception as e:
+            logger.error(f"快速回测失败: {e}")
+            return None
 
     def _apply_rsi_enhancements(self, df: pd.DataFrame) -> None:
         """

@@ -170,8 +170,13 @@ class MixedStrategy:
         df.loc[bottom_shift_index, 'buy_signal'] = 1
 
         # 7. 顶部背离期间阻止买入
-        block_index = self._calculate_block_index(df, top_index)
+        block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
         df.loc[block_index, 'buy_signal'] = 0
+
+        # 标记DIFF顶背离失效的日期
+        df['diff_invalidation'] = 0
+        if len(diff_invalidation_dates) > 0:
+            df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
 
         # 8. RSI增强买入（可选）
         if self.config.get('rsi_enabled', False):
@@ -184,7 +189,7 @@ class MixedStrategy:
 
         return df, indicator_report
 
-    def _calculate_block_index(self, df: pd.DataFrame, top_index: list) -> list:
+    def _calculate_block_index(self, df: pd.DataFrame, top_index: list) -> tuple:
         """
         计算顶部背离期间的买入阻止区域
 
@@ -193,9 +198,10 @@ class MixedStrategy:
             top_index: 顶部背离日期列表
 
         Returns:
-            阻止买入的日期列表
+            (阻止买入的日期列表, DIFF顶背离失效的日期列表)
         """
         block_index = set()
+        diff_invalidation_dates = set()  # 记录DIFF突破失效的日期
         close_up_index = df[df['close'] > df['close'].shift(1)].index
 
         for peak_date in top_index:
@@ -209,11 +215,14 @@ class MixedStrategy:
                     break
                 elif (tmpdf.loc[date, 'diff'] > df.loc[peak_date, 'diff'] and
                       date in close_up_index):
+                    # DIFF顶背离失效！记录这个日期
+                    diff_invalidation_dates.add(date)
+                    logger.debug(f"DIFF顶背离失效: {date}, DIFF突破 {df.loc[peak_date, 'diff']:.3f} -> {tmpdf.loc[date, 'diff']:.3f}")
                     break
                 else:
                     block_index.add(date)
 
-        return list(block_index)
+        return list(block_index), list(diff_invalidation_dates)
 
     def _apply_rsi_enhancements(self, df: pd.DataFrame) -> None:
         """
@@ -554,6 +563,10 @@ class MixedStrategy:
                 rsi_buy_type = buy_row.get('rsi_buy_type', '')
                 if rsi_buy_type:
                     reason.append(rsi_buy_type)
+
+                # 检查是否是DIFF顶背离失效
+                if buy_row.get('diff_invalidation', 0) == 1:
+                    reason.append("DIFF顶背离失效")
 
                 if buy_row.get('bottom', 0) == 1:
                     reason.append("底部背离")

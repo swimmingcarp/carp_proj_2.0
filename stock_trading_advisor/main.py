@@ -77,7 +77,11 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True):
         retry_delay=app_config.RETRY_DELAY,
         is_backtest_mode=show_backtest  # 传递回测模式标志
     )
-    strategy = MixedStrategy(config=strategy_config)
+
+    # 检测市场类型（用于设置正确的手续费率）
+    market = fetcher._detect_market(stock_code)
+
+    strategy = MixedStrategy(config=strategy_config, market=market)
     analyzer = SignalAnalyzer()
 
     # 2. 获取数据

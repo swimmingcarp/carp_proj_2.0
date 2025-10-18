@@ -144,6 +144,23 @@ class SignalAnalyzer:
             Style.RESET_ALL
         )
 
+        # 显示手续费信息（如果有）
+        total_commission = result.get('total_commission', 0)
+        gross_return = result.get('gross_return', 0)
+        commission_rate = result.get('commission_rate', 0)
+
+        if total_commission > 0:
+            output.append(f"\n💸 交易成本:")
+            output.append(f"  累计手续费: ¥{total_commission:,.2f}")
+            output.append(f"  手续费率: {commission_rate:.2f}%")
+            if gross_return > 0:
+                output.append(
+                    Fore.YELLOW +
+                    f"  毛收益率: {gross_return:.2f}% (扣费前)" +
+                    Style.RESET_ALL
+                )
+
+
         # 风险指标
         output.append(f"\n📉 风险指标:")
         max_dd = result.get('max_drawdown', 0)
@@ -348,8 +365,8 @@ class SignalAnalyzer:
         # 买入点详情
         if buy_points:
             output.append(f"\n{Fore.GREEN}━━━ 买入点 (最近 {min(show_limit, len(buy_points))} 次) ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<12} {'价格':<10} {'K值':<8} {'MACD':<10} {'原因'}")
-            output.append("-" * 80)
+            output.append(f"{'序号':<6} {'日期':<12} {'价格':<12} {'手续费':<12} {'K值':<8} {'MACD':<10} {'原因'}")
+            output.append("-" * 100)
 
             # 显示最近的买入点
             for i, point in enumerate(buy_points[-show_limit:], 1):
@@ -359,7 +376,8 @@ class SignalAnalyzer:
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
                 date_str = f"{point['date']:<12}"
-                price_str = f"{point['price']:<10.2f}"
+                price_str = f"{point['price']:<12.2f}"
+                commission_str = f"{point.get('commission', 0):<12.2f}"
                 k_str = f"{point['k']:<8.1f}"
                 macd_str = f"{point['macd']:<10.4f}"
                 reason = point['reason']
@@ -368,6 +386,7 @@ class SignalAnalyzer:
                     f"{seq}"
                     f"{date_str}"
                     f"{price_str}"
+                    f"{Fore.YELLOW}{commission_str}{Style.RESET_ALL}"
                     f"{k_color}{k_str}{Style.RESET_ALL}"
                     f"{macd_color}{macd_str}{Style.RESET_ALL}"
                     f"{reason}"
@@ -376,8 +395,8 @@ class SignalAnalyzer:
         # 卖出点详情（只显示已完成的交易）
         if closed_sells:
             output.append(f"\n{Fore.RED}━━━ 卖出点 (最近 {min(show_limit, len(closed_sells))} 次) ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<12} {'价格':<10} {'K值':<8} {'MACD':<10} {'原因'}")
-            output.append("-" * 80)
+            output.append(f"{'序号':<6} {'日期':<12} {'价格':<12} {'手续费':<12} {'K值':<8} {'MACD':<10} {'原因'}")
+            output.append("-" * 100)
 
             # 显示最近的卖出点
             for i, point in enumerate(closed_sells[-show_limit:], 1):
@@ -387,7 +406,8 @@ class SignalAnalyzer:
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
                 date_str = f"{point['date']:<12}"
-                price_str = f"{point['price']:<10.2f}"
+                price_str = f"{point['price']:<12.2f}"
+                commission_str = f"{point.get('commission', 0):<12.2f}"
                 k_str = f"{point['k']:<8.1f}"
                 macd_str = f"{point['macd']:<10.4f}"
                 reason = point['reason']
@@ -396,6 +416,7 @@ class SignalAnalyzer:
                     f"{seq}"
                     f"{date_str}"
                     f"{price_str}"
+                    f"{Fore.YELLOW}{commission_str}{Style.RESET_ALL}"
                     f"{k_color}{k_str}{Style.RESET_ALL}"
                     f"{macd_color}{macd_str}{Style.RESET_ALL}"
                     f"{reason}"
@@ -431,17 +452,17 @@ class SignalAnalyzer:
         if buy_points and sell_points:
             output.append(f"\n{Fore.CYAN}━━━ 交易对收益分析 ━━━{Style.RESET_ALL}")
             output.append(f"{Fore.YELLOW}说明: 买入价和卖出价均为次日开盘价{Style.RESET_ALL}")
-            output.append(f"{Fore.YELLOW}      未平仓持仓显示当前浮盈状态{Style.RESET_ALL}")
+            output.append(f"{Fore.YELLOW}      剩余本金已扣除交易手续费和印花税{Style.RESET_ALL}")
 
-            # 获取初始资金（从 signals_data 中，如果有的话）
+            # 获取初始资金和trades数据
             initial_capital = signals_data.get('initial_capital', 10000.0)
+            trades = signals_data.get('trades', [])  # 获取trades数据
 
             output.append(f"{'序号':<6} {'买入信号':<12} {'次日买入':<12} {'卖出信号':<20} {'次日卖出':<12} {'收益率':<14} {'剩余本金':<15}")
             output.append("-" * 100)
 
-            # 直接使用买卖价差计算
+            # 使用trades中的实际资金
             profit_rates = []
-            current_capital = initial_capital
             winning_trades = 0
 
             for i, (buy, sell) in enumerate(zip(buy_points, sell_points), 1):
@@ -473,9 +494,17 @@ class SignalAnalyzer:
                     sell_date = f"{Fore.YELLOW}{status_text:<20}{Style.RESET_ALL}"
                     sell_price = f"{Fore.YELLOW}{'--':<12}{Style.RESET_ALL}"
 
-                    # 计算浮盈
+                    # 计算浮盈（价格收益率）
                     profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
-                    float_profit_capital = current_capital * (1 + profit_rate / 100)
+
+                    # 获取实际资金（如果有trades数据）
+                    if i <= len(trades):
+                        # 使用上一笔交易后的实际资金
+                        prev_capital = trades[i-2]['capital'] if i > 1 else initial_capital
+                        float_profit_capital = prev_capital * (1 + profit_rate / 100)
+                    else:
+                        # 回退到简单计算
+                        float_profit_capital = initial_capital * (1 + profit_rate / 100)
 
                     profit_str = f"{Fore.YELLOW}(浮盈){profit_rate:>7.2f}%{Style.RESET_ALL}"
                     capital_str = f"{Fore.YELLOW}¥{float_profit_capital:>13,.2f}{Style.RESET_ALL}"
@@ -487,8 +516,12 @@ class SignalAnalyzer:
                     profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
                     profit_rates.append(profit_rate)
 
-                    # 计算交易后的资金变化
-                    current_capital = current_capital * (1 + profit_rate / 100)
+                    # 使用trades中的实际资金（已扣除手续费）
+                    if i <= len(trades):
+                        current_capital = trades[i-1]['capital']
+                    else:
+                        # 回退到简单计算（不应该发生）
+                        current_capital = initial_capital * (1 + profit_rate / 100)
 
                     if profit_rate > 0:
                         winning_trades += 1

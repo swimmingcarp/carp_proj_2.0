@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class MixedStrategy:
     """混合交易策略"""
 
-    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto'):
+    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', market: str = 'CN-A'):
         """
         初始化策略
 
@@ -34,11 +34,16 @@ class MixedStrategy:
                 - 'auto': 自动选择（对每只股票先回测，选择最优策略）
                 - 'original': 原始策略（跌破MA16或MACD<0）
                 - 'gradual': 渐进式止损（连续3天跌破MA16）
+            market: 市场类型 ('CN-A'-A股, 'HK'-港股, 'US'-美股)，用于选择正确的手续费率
         """
-        self.config = config or self._default_config()
+        self.config = self._default_config()
+        if config:
+            # 合并用户配置，保留默认配置中用户未指定的参数
+            self.config.update(config)
         self.validate_indicators = validate_indicators
         self.sell_strategy = sell_strategy
         self.optimal_strategy = None  # 记录为当前股票选择的最优策略
+        self.market = market
 
         # 初始化指标验证器
         if self.validate_indicators:
@@ -65,7 +70,59 @@ class MixedStrategy:
             'rsi_ma_ratio': 0.95,         # RSI超卖时接近均线比例
             'rsi_min_strength': True,     # RSI最小强度要求
             'rsi_min_gap': 5,             # RSI买入最小距离（5天冷静期）
+            # 交易手续费配置
+            'commission_enabled': True,   # 是否启用手续费
+            'commission_cn_a': 0.00015,   # A股佣金率（0.015%，买卖双向）
+            'commission_hk': 0.0025,      # 港股佣金率（0.25%）
+            'commission_us': 0.0002,      # 美股佣金率（0.02%）
+            'commission_min_cn': 5.0,     # A股最低佣金（元）
+            'stamp_duty_cn': 0.0005,      # A股印花税（卖出时0.05%）
+            'stamp_duty_hk': 0.0013,      # 港股印花税（双向各0.13%）
         }
+
+    def _calculate_commission(self, transaction_amount: float, is_buy: bool = True) -> float:
+        """
+        计算交易手续费
+
+        Args:
+            transaction_amount: 交易金额（价格 * 股数）
+            is_buy: 是否为买入交易（卖出时需要额外收取印花税）
+
+        Returns:
+            手续费总额
+        """
+        if not self.config.get('commission_enabled', True):
+            return 0.0
+
+        commission = 0.0
+
+        # 根据市场选择佣金率
+        if self.market == 'HK':
+            # 港股：佣金 + 印花税（买卖双向）
+            commission_rate = self.config.get('commission_hk', 0.0025)
+            stamp_duty_rate = self.config.get('stamp_duty_hk', 0.0013)
+            commission = transaction_amount * (commission_rate + stamp_duty_rate)
+
+        elif self.market == 'US':
+            # 美股：只有佣金，无印花税
+            commission_rate = self.config.get('commission_us', 0.0002)
+            commission = transaction_amount * commission_rate
+
+        else:  # CN-A 或其他默认为A股
+            # A股：佣金（买卖双向，最低5元）+ 印花税（仅卖出）
+            commission_rate = self.config.get('commission_cn_a', 0.0003)
+            commission_min = self.config.get('commission_min_cn', 5.0)
+
+            # 佣金
+            commission = max(transaction_amount * commission_rate, commission_min)
+
+            # 印花税（仅卖出时收取）
+            if not is_buy:
+                stamp_duty_rate = self.config.get('stamp_duty_cn', 0.001)
+                commission += transaction_amount * stamp_duty_rate
+
+        return commission
+
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
         """
@@ -296,7 +353,7 @@ class MixedStrategy:
 
     def _quick_backtest(self, df: pd.DataFrame) -> float:
         """
-        快速回测，只返回收益率
+        快速回测，只返回收益率（用于自适应策略选择）
 
         Args:
             df: 包含buy_signal的数据框
@@ -308,6 +365,7 @@ class MixedStrategy:
             capital = 10000.0
             holding = False
             buy_price = 0
+            shares = 0
 
             for i in range(len(df)):
                 if i > 0:
@@ -317,20 +375,34 @@ class MixedStrategy:
                     # 买入
                     if prev_signal == 1 and not holding:
                         buy_price = curr_price
+                        shares = capital / buy_price  # 计算可买股数
+                        transaction_amount = shares * buy_price
+
+                        # 扣除买入手续费
+                        buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
+                        capital -= buy_commission
+
                         holding = True
 
                     # 卖出
                     elif prev_signal == 0 and holding:
                         sell_price = curr_price
-                        profit_rate = (sell_price - buy_price) / buy_price
-                        capital = capital * (1 + profit_rate)
+                        transaction_amount = shares * sell_price
+
+                        # 扣除卖出手续费
+                        sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+
+                        # 更新资金：卖出所得 - 手续费
+                        capital = transaction_amount - sell_commission
                         holding = False
+                        shares = 0
 
             # 最后还持仓，用收盘价计算
             if holding:
                 sell_price = df.iloc[-1]['close']
-                profit_rate = (sell_price - buy_price) / buy_price
-                capital = capital * (1 + profit_rate)
+                transaction_amount = shares * sell_price
+                sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+                capital = transaction_amount - sell_commission
 
             return (capital / 10000.0 - 1) * 100  # 返回收益率百分比
 
@@ -497,12 +569,16 @@ class MixedStrategy:
 
     def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Dict:
         """
-        回测策略
+        回测策略（含手续费）
 
         正确的交易逻辑：
         - 看到买入信号(buy_signal=1)后，次日开盘买入
         - 看到卖出信号(buy_signal=0)后，次日开盘卖出
         - 收益 = (卖出开盘价 - 买入开盘价) / 买入开盘价
+        - 扣除手续费：
+          * A股：买入佣金(0.015%,最低5元) + 卖出佣金(0.015%,最低5元) + 卖出印花税(0.05%)
+          * 港股：买卖双向佣金(0.25%) + 买卖双向印花税(0.13%)
+          * 美股：买卖双向佣金(0.02%)
 
         Args:
             df: 分析后的数据框
@@ -524,6 +600,8 @@ class MixedStrategy:
         holding = False
         buy_price = 0
         buy_date = None
+        shares = 0  # 持有股数
+        total_commission = 0.0  # 累计手续费
 
         for i in range(len(df)):
             row = df.iloc[i]
@@ -536,14 +614,35 @@ class MixedStrategy:
                 if prev_row['buy_signal'] == 1 and not holding:
                     buy_price = row['open']
                     buy_date = prev_row['date']
+
+                    # 计算可买股数
+                    shares = capital / buy_price
+                    transaction_amount = shares * buy_price
+
+                    # 计算并扣除买入手续费
+                    buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
+                    capital -= buy_commission
+                    total_commission += buy_commission
+
                     holding = True
-                    logger.debug(f"买入: {row['date']}, 价格: {buy_price:.2f}")
+                    logger.debug(f"买入: {row['date']}, 价格: {buy_price:.2f}, 股数: {shares:.2f}, 手续费: {buy_commission:.2f}")
 
                 # 前一天有卖出信号（buy_signal=0），今天开盘卖出
                 elif prev_row['buy_signal'] == 0 and holding:
                     sell_price = row['open']
-                    profit_rate = (sell_price - buy_price) / buy_price
-                    capital = capital * (1 + profit_rate)
+                    transaction_amount = shares * sell_price
+
+                    # 计算并扣除卖出手续费
+                    sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+                    total_commission += sell_commission
+
+                    # 更新资金：卖出所得 - 手续费
+                    capital = transaction_amount - sell_commission
+
+                    # 计算收益率（基于初始买入资金）
+                    initial_investment = shares * buy_price
+                    profit = capital - (initial_capital - initial_investment + buy_commission)
+                    profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
                     trades.append({
                         'buy_date': buy_date,
@@ -551,11 +650,15 @@ class MixedStrategy:
                         'sell_date': prev_row['date'],
                         'sell_price': sell_price,
                         'profit_rate': profit_rate,
-                        'capital': capital
+                        'capital': capital,
+                        'commission': buy_commission + sell_commission,  # 本次交易总手续费
+                        'buy_commission': buy_commission,  # 买入手续费
+                        'sell_commission': sell_commission,  # 卖出手续费
                     })
 
                     holding = False
-                    logger.debug(f"卖出: {row['date']}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%")
+                    shares = 0
+                    logger.debug(f"卖出: {row['date']}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%, 手续费: {sell_commission:.2f}")
 
             capital_list.append(capital)
 
@@ -563,8 +666,19 @@ class MixedStrategy:
         if holding:
             last_row = df.iloc[-1]
             sell_price = last_row['close']
-            profit_rate = (sell_price - buy_price) / buy_price
-            capital = capital * (1 + profit_rate)
+            transaction_amount = shares * sell_price
+
+            # 计算卖出手续费（用于净值计算）
+            sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+            total_commission += sell_commission
+
+            # 最终资金 = 卖出所得 - 手续费
+            capital = transaction_amount - sell_commission
+
+            # 计算收益率
+            initial_investment = shares * buy_price
+            profit = capital - (initial_capital - initial_investment)
+            profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
             trades.append({
                 'buy_date': buy_date,
@@ -572,10 +686,28 @@ class MixedStrategy:
                 'sell_date': last_row['date'],
                 'sell_price': sell_price,
                 'profit_rate': profit_rate,
-                'capital': capital
+                'capital': capital,
+                'commission': sell_commission,  # 未平仓只计算卖出手续费
+                'buy_commission': 0,  # 未平仓暂无买入手续费记录
+                'sell_commission': sell_commission,  # 卖出手续费
             })
 
+            # 更新最后一天的资金
+            capital_list[-1] = capital
+
         df['capital'] = capital_list
+
+        # 计算毛收益率（不扣手续费的理论收益）
+        # 需要重新运行一次回测，但关闭手续费
+        commission_enabled_backup = self.config.get('commission_enabled', True)
+        self.config['commission_enabled'] = False  # 临时关闭手续费
+
+        # 运行不含手续费的回测
+        backtest_no_fee = self._quick_backtest(df)
+        gross_return = backtest_no_fee if backtest_no_fee is not None else total_return
+
+        # 恢复手续费设置
+        self.config['commission_enabled'] = commission_enabled_backup
 
         # 计算指标
         final_capital = capital
@@ -624,6 +756,9 @@ class MixedStrategy:
             'initial_capital': initial_capital,
             'final_capital': final_capital,
             'total_return': total_return,
+            'gross_return': gross_return,  # 新增：毛收益率（不含手续费）
+            'total_commission': total_commission,  # 新增：累计手续费
+            'commission_rate': (total_commission / initial_capital * 100),  # 新增：手续费率
             'max_drawdown': max_drawdown,
             'sharpe_ratio': sharpe,
             'total_trades': len(trades),
@@ -691,6 +826,9 @@ class MixedStrategy:
                 if buy_row.get('macd', 0) > 0:
                     reason.append("MACD多头")
 
+                # 直接使用trade中保存的买入手续费
+                buy_commission = trade.get('buy_commission', 0)
+
                 buy_points.append({
                     'date': buy_date,
                     'price': trade['buy_price'],  # 使用实际买入价（次日开盘价）
@@ -699,6 +837,7 @@ class MixedStrategy:
                     'd': buy_row.get('d', 0),
                     'macd': buy_row.get('macd', 0),
                     'ma_16': buy_row.get(f"{self.config['short_ma']}_ma", 0),
+                    'commission': buy_commission,  # 买入手续费
                 })
 
             if sell_row is not None:
@@ -734,6 +873,9 @@ class MixedStrategy:
                     # 已平仓的正常交易
                     reason = ', '.join(sell_conditions) if sell_conditions else '满足卖出条件'
 
+                # 直接使用trade中保存的卖出手续费
+                sell_commission = trade.get('sell_commission', 0)
+
                 sell_points.append({
                     'date': sell_date,
                     'price': trade['sell_price'],  # 使用实际卖出价（次日开盘价或收盘价）
@@ -743,11 +885,13 @@ class MixedStrategy:
                     'macd': sell_row.get('macd', 0),
                     'ma_16': sell_row.get(f"{self.config['short_ma']}_ma", 0),
                     'is_open': is_last_open,  # 标记是否为未平仓
+                    'commission': sell_commission,  # 卖出手续费
                 })
 
         return {
             'buy_points': buy_points,
             'sell_points': sell_points,
             'total_trades': len(trades),
-            'initial_capital': initial_capital
+            'initial_capital': initial_capital,
+            'trades': trades,  # 添加完整的trades数据，包含实际的交易后资金
         }

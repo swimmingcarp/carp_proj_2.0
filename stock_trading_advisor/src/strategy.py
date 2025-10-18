@@ -894,4 +894,5 @@ class MixedStrategy:
             'total_trades': len(trades),
             'initial_capital': initial_capital,
             'trades': trades,  # 添加完整的trades数据，包含实际的交易后资金
+            'gross_return': backtest_result.get('gross_return', 0),  # 添加毛收益率
         }

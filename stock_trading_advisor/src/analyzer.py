@@ -365,61 +365,47 @@ class SignalAnalyzer:
         # 买入点详情
         if buy_points:
             output.append(f"\n{Fore.GREEN}━━━ 买入点 (最近 {min(show_limit, len(buy_points))} 次) ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<12} {'价格':<12} {'手续费':<12} {'K值':<8} {'MACD':<10} {'原因'}")
-            output.append("-" * 100)
+            output.append(f"{'序号':<6} {'日期':<14} {'价格':<10} {'手续费':<16}   {'原因'}")
+            output.append("-" * 80)
 
             # 显示最近的买入点
             for i, point in enumerate(buy_points[-show_limit:], 1):
-                k_color = Fore.CYAN if point['k'] < 45 else ''
-                macd_color = Fore.GREEN if point['macd'] > 0 else Fore.RED
-
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
-                date_str = f"{point['date']:<12}"
-                price_str = f"{point['price']:<12.2f}"
-                commission_str = f"{point.get('commission', 0):<12.2f}"
-                k_str = f"{point['k']:<8.1f}"
-                macd_str = f"{point['macd']:<10.4f}"
+                date_str = f"{point['date']:<14}"
+                price_str = f"{point['price']:>10.2f}"
+                commission_str = f"{Fore.YELLOW}{point.get('commission', 0):>16.2f}{Style.RESET_ALL}"
                 reason = point['reason']
 
                 output.append(
                     f"{seq}"
                     f"{date_str}"
                     f"{price_str}"
-                    f"{Fore.YELLOW}{commission_str}{Style.RESET_ALL}"
-                    f"{k_color}{k_str}{Style.RESET_ALL}"
-                    f"{macd_color}{macd_str}{Style.RESET_ALL}"
-                    f"{reason}"
+                    f"{commission_str}"
+                    f"      {reason}"
                 )
 
         # 卖出点详情（只显示已完成的交易）
         if closed_sells:
             output.append(f"\n{Fore.RED}━━━ 卖出点 (最近 {min(show_limit, len(closed_sells))} 次) ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<12} {'价格':<12} {'手续费':<12} {'K值':<8} {'MACD':<10} {'原因'}")
-            output.append("-" * 100)
+            output.append(f"{'序号':<6} {'日期':<14} {'价格':<10} {'手续费':<16}   {'原因'}")
+            output.append("-" * 80)
 
             # 显示最近的卖出点
             for i, point in enumerate(closed_sells[-show_limit:], 1):
-                k_color = Fore.YELLOW if point['k'] > 80 else ''
-                macd_color = Fore.GREEN if point['macd'] > 0 else Fore.RED
-
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
-                date_str = f"{point['date']:<12}"
-                price_str = f"{point['price']:<12.2f}"
-                commission_str = f"{point.get('commission', 0):<12.2f}"
-                k_str = f"{point['k']:<8.1f}"
-                macd_str = f"{point['macd']:<10.4f}"
+                date_str = f"{point['date']:<14}"
+                price_str = f"{point['price']:>10.2f}"
+                commission_str = f"{Fore.YELLOW}{point.get('commission', 0):>16.2f}{Style.RESET_ALL}"
                 reason = point['reason']
 
                 output.append(
                     f"{seq}"
                     f"{date_str}"
                     f"{price_str}"
-                    f"{Fore.YELLOW}{commission_str}{Style.RESET_ALL}"
-                    f"{k_color}{k_str}{Style.RESET_ALL}"
-                    f"{macd_color}{macd_str}{Style.RESET_ALL}"
-                    f"{reason}"
+                    f"{commission_str}"
+                    f"      {reason}"
                 )
 
         # 当前持仓详情（单独显示）
@@ -458,12 +444,13 @@ class SignalAnalyzer:
             initial_capital = signals_data.get('initial_capital', 10000.0)
             trades = signals_data.get('trades', [])  # 获取trades数据
 
-            output.append(f"{'序号':<6} {'买入信号':<12} {'次日买入':<12} {'卖出信号':<20} {'次日卖出':<12} {'收益率':<14} {'剩余本金':<15}")
+            output.append(f"{'序号':<6} {'买入信号':<12} {'次日买入价':<12} {'卖出信号':>1} {'次日卖出价':>10} {'收益率':>7} {'剩余本金':>10}")
             output.append("-" * 100)
 
             # 使用trades中的实际资金
             profit_rates = []
             winning_trades = 0
+            cumulative_commission = 0.0  # 累计手续费
 
             for i, (buy, sell) in enumerate(zip(buy_points, sell_points), 1):
                 is_open = sell.get('is_open', False)
@@ -471,7 +458,7 @@ class SignalAnalyzer:
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
                 buy_date = f"{buy['date']:<12}"
-                buy_price = f"{buy['price']:<12.2f}"
+                buy_price = f"{buy['price']:>12.2f}"
 
                 if is_open:
                     # 未平仓：根据是否有卖出信号显示不同状态
@@ -506,12 +493,17 @@ class SignalAnalyzer:
                         # 回退到简单计算
                         float_profit_capital = initial_capital * (1 + profit_rate / 100)
 
+                    # 持仓中的累计手续费和毛收益率（基于已完成的交易）
+                    gross_return_rate = (float_profit_capital + cumulative_commission - initial_capital) / initial_capital * 100
+
                     profit_str = f"{Fore.YELLOW}(浮盈){profit_rate:>7.2f}%{Style.RESET_ALL}"
+                    commission_str = f"{Fore.YELLOW}¥{cumulative_commission:>11,.2f}{Style.RESET_ALL}"
+                    gross_return_str = f"{Fore.YELLOW}{gross_return_rate:>9.2f}%{Style.RESET_ALL}"
                     capital_str = f"{Fore.YELLOW}¥{float_profit_capital:>13,.2f}{Style.RESET_ALL}"
                 else:
                     # 已平仓：正常显示
-                    sell_date = f"{sell['date']:<20}"
-                    sell_price = f"{sell['price']:<12.2f}"
+                    sell_date = f"{sell['date']:>20}"
+                    sell_price = f"{sell['price']:>12.2f}"
 
                     profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100
                     profit_rates.append(profit_rate)
@@ -519,9 +511,15 @@ class SignalAnalyzer:
                     # 使用trades中的实际资金（已扣除手续费）
                     if i <= len(trades):
                         current_capital = trades[i-1]['capital']
+                        # 累加手续费
+                        current_commission = trades[i-1].get('commission', 0)
+                        cumulative_commission += current_commission
                     else:
                         # 回退到简单计算（不应该发生）
                         current_capital = initial_capital * (1 + profit_rate / 100)
+
+                    # 计算毛收益率（不含手续费的收益率）
+                    gross_return_rate = (current_capital + cumulative_commission - initial_capital) / initial_capital * 100
 
                     if profit_rate > 0:
                         winning_trades += 1
@@ -530,17 +528,19 @@ class SignalAnalyzer:
                     capital_color = Fore.GREEN if current_capital > initial_capital else Fore.RED
 
                     profit_str = f"{profit_rate:>11.2f}%"
+                    commission_str = f"¥{cumulative_commission:>11,.2f}"
+                    gross_return_str = f"{gross_return_rate:>9.2f}%"
                     capital_str = f"¥{current_capital:>13,.2f}"
                     profit_str = f"{profit_color}{profit_str}{Style.RESET_ALL} "
                     capital_str = f"{capital_color}{capital_str}{Style.RESET_ALL}"
 
                 output.append(
                     f"{seq}"
-                    f"{buy_date}"
-                    f"{buy_price}"
-                    f"{sell_date}"
-                    f"{sell_price}"
-                    f"{profit_str}"
+                    f"{buy_date} "
+                    f"{buy_price} "
+                    f"{sell_date} "
+                    f"{sell_price} "
+                    f"{profit_str} "
                     f"{capital_str}"
                 )
 
@@ -558,12 +558,21 @@ class SignalAnalyzer:
             final_return = (final_capital - initial_capital) / initial_capital * 100
             final_color = Fore.GREEN if final_return > 0 else Fore.RED
 
+            # 从signals_data中获取准确的毛收益率（通过无手续费回测计算）
+            gross_return = signals_data.get('gross_return', 0)
+            # 如果没有获取到，使用简单计算作为fallback
+            if gross_return == 0:
+                gross_capital = final_capital + cumulative_commission
+                gross_return = (gross_capital - initial_capital) / initial_capital * 100
+
             output.append("-" * 100)
             output.append(f"初始资金: ¥{initial_capital:,.2f}")
             output.append(f"最终资金: {final_color}¥{final_capital:,.2f}{Style.RESET_ALL} (已完成交易)")
             if len(open_positions) > 0:
                 output.append(f"{Fore.YELLOW}当前持仓浮盈未计入最终资金{Style.RESET_ALL}")
             output.append(f"累计收益率: {final_color}{final_return:+.2f}%{Style.RESET_ALL}")
+            output.append(f"累计手续费: {Fore.YELLOW}¥{cumulative_commission:,.2f}{Style.RESET_ALL}")
+            output.append(f"毛收益率: {Fore.GREEN}{gross_return:.2f}%{Style.RESET_ALL} (扣费前)")
             output.append(f"平均单次收益: {avg_color}{avg_profit:.2f}%{Style.RESET_ALL}")
             output.append(f"盈利交易占比: {win_rate:.1f}%")
 

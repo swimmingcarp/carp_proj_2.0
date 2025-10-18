@@ -5,6 +5,12 @@ data_source:
   provider: 'akshare'  # 数据源: akshare, tushare, yfinance
   cache_enabled: true   # 是否启用缓存
 
+# 市场支持说明
+# 支持的市场类型:
+# - A股: 6位数字代码 (如 000001, 600519) 或带前缀 (sh600519, sz000001)
+# - 港股: 5位数字代码 (如 00700, 01810) 或带后缀 (00700.HK)
+# - 美股: 字母代码 (如 AAPL, TSLA)
+
 # 策略参数配置
 strategy:
   init_k: 50.0           # KDJ 初始 K 值

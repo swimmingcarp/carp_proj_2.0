@@ -44,10 +44,21 @@ python main.py -s 000001
 python main.py -s <股票代码>
 
 # 参数说明
--s, --stock       单只股票代码
+-s, --stock       单只股票代码 (支持A股/港股)
 -b, --batch       批量股票代码列表
 -c, --config      配置文件路径
 --no-backtest     不显示回测结果
+
+# 使用示例 - A股
+python main.py -s 000001      # 平安银行
+python main.py -s 600519      # 贵州茅台
+python main.py -s sh600519    # 带前缀的代码
+
+# 使用示例 - 港股 (新增支持!)
+python main.py -s 00700       # 腾讯控股
+python main.py -s 01810       # 小米集团
+python main.py -s 09988       # 阿里巴巴-SW
+python main.py -s 00700.HK    # 带后缀的代码
 ```
 
 ### 使用示例

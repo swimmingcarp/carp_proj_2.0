@@ -1,9 +1,9 @@
 """
 股票数据获取模块
 支持多个数据源：
-- akshare (推荐，开源免费)
-- tushare (需要积分)
-- yfinance (国际市场)
+- akshare (推荐，开源免费，支持A股、港股)
+- tushare (需要积分，支持A股)
+- yfinance (国际市场，支持港股、美股)
 """
 
 import pandas as pd
@@ -84,6 +84,45 @@ class DataFetcher:
         else:
             raise ValueError(f"不支持的数据源: {source}")
 
+    def _detect_market(self, code: str) -> str:
+        """
+        检测市场类型
+
+        Args:
+            code: 股票代码
+
+        Returns:
+            市场类型: 'CN-A' (A股), 'HK' (港股), 'US' (美股)
+        """
+        # 港股代码检测
+        if code.isdigit():
+            code_num = int(code)
+            # 港股代码范围: 00001-99999 (5位数字)
+            if 1 <= code_num <= 99999 and len(code) == 5:
+                return 'HK'
+            # A股代码: 6位数字
+            elif len(code) == 6:
+                return 'CN-A'
+
+        # 带后缀的港股代码
+        if code.endswith('.HK'):
+            return 'HK'
+
+        # 带前缀的A股代码
+        if code.startswith(('sh', 'sz', 'SH', 'SZ')):
+            return 'CN-A'
+
+        # 带后缀的A股代码
+        if code.endswith(('.SH', '.SZ')):
+            return 'CN-A'
+
+        # 美股代码（字母开头）
+        if code[0].isalpha():
+            return 'US'
+
+        # 默认返回A股
+        return 'CN-A'
+
     def _get_cache_path(self, code: str, start_date: str, end_date: str, adjust: str) -> Path:
         """生成缓存文件路径"""
         # 使用参数生成唯一的缓存文件名
@@ -125,7 +164,9 @@ class DataFetcher:
         获取 K 线数据（带数据验证、缓存、重试机制）
 
         Args:
-            code: 股票代码（如 '000001' 或 'sh000001'）
+            code: 股票代码
+                  - A股: '000001' 或 'sh000001' (6位数字)
+                  - 港股: '00700' 或 '00700.HK' (5位数字)
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             adjust: 复权类型 ('qfq'-前复权, 'hfq'-后复权, ''-不复权)
@@ -141,6 +182,10 @@ class DataFetcher:
             # 默认获取 2 年数据
             start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
 
+        # 检测市场类型
+        market = self._detect_market(code)
+        logger.info(f"检测到市场类型: {market}, 股票代码: {code}")
+
         # 尝试从缓存加载
         df = None
         if self.cache_enabled:
@@ -149,7 +194,7 @@ class DataFetcher:
 
         # 如果缓存未命中，进行网络请求（带重试）
         if df is None:
-            df = self._fetch_with_retry(code, start_date, end_date, adjust)
+            df = self._fetch_with_retry(code, start_date, end_date, adjust, market)
 
             # 保存到缓存
             if df is not None and self.cache_enabled:
@@ -159,23 +204,26 @@ class DataFetcher:
         if df is None:
             return None, None
 
-        # 数据验证
+        # 数据验证（传入市场类型）
         if self.validate_data and self.validator:
-            df, report = self.validator.validate(df, code)
+            df, report = self.validator.validate(df, code, market=market)
             return df, report
         else:
             return df, None
 
     def _fetch_with_retry(self, code: str, start_date: str, end_date: str,
-                          adjust: str) -> Optional[pd.DataFrame]:
+                          adjust: str, market: str = 'CN-A') -> Optional[pd.DataFrame]:
         """带指数退避的重试机制"""
         last_exception = None
 
         for attempt in range(self.max_retries):
             try:
-                # 根据数据源获取数据
+                # 根据数据源和市场类型获取数据
                 if self.source == 'akshare':
-                    df = self._fetch_akshare(code, start_date, end_date, adjust)
+                    if market == 'HK':
+                        df = self._fetch_akshare_hk(code, start_date, end_date, adjust)
+                    else:
+                        df = self._fetch_akshare(code, start_date, end_date, adjust)
                 elif self.source == 'tushare':
                     df = self._fetch_tushare(code, start_date, end_date, adjust)
                 elif self.source == 'yfinance':
@@ -317,6 +365,100 @@ class DataFetcher:
         df['code'] = code
 
         return df.reset_index(drop=True)
+
+    def _fetch_akshare_hk(self, code: str, start_date: str, end_date: str,
+                          adjust: str) -> pd.DataFrame:
+        """
+        使用 AKShare 获取港股数据
+
+        Args:
+            code: 港股代码 (5位数字，如 '00700' 或带后缀 '00700.HK')
+            start_date: 开始日期
+            end_date: 结束日期
+            adjust: 复权类型 ('qfq'-前复权, 'hfq'-后复权, ''-不复权)
+
+        Returns:
+            标准格式的DataFrame
+        """
+        # 格式化港股代码：确保是5位数字，去掉 .HK 后缀
+        original_code = code
+        if code.endswith('.HK'):
+            code = code[:-3]
+
+        # 确保代码是5位数字（前面补0）
+        if code.isdigit():
+            code = code.zfill(5)
+
+        logger.info(f"获取港股数据: {code} (原始代码: {original_code})")
+
+        try:
+            # 使用 AKShare 的港股历史数据接口
+            # stock_hk_hist: 获取港股历史行情数据
+            adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
+            df = self.ak.stock_hk_hist(
+                symbol=code,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust=adjust_map.get(adjust, 'qfq')
+            )
+
+            if df is None or len(df) == 0:
+                logger.warning(f"港股 {code} 数据为空")
+                return None
+
+            # 重命名列以匹配标准格式
+            df = df.rename(columns={
+                '日期': 'date',
+                '开盘': 'open',
+                '收盘': 'close',
+                '最高': 'high',
+                '最低': 'low',
+                '成交量': 'volume',
+                '成交额': 'amount',
+                '涨跌幅': 'pct_change'
+            })
+
+            # 选择需要的列
+            df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+            df['code'] = code
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+
+            logger.info(f"成功获取港股 {code} 数据，共 {len(df)} 条")
+            return df.reset_index(drop=True)
+
+        except Exception as e:
+            logger.error(f"获取港股 {code} 数据失败: {e}")
+            # 如果 AKShare 失败，尝试使用 yfinance 作为备用
+            logger.info(f"尝试使用 yfinance 获取港股 {code} 数据")
+            try:
+                # yfinance 需要 .HK 后缀
+                yf_code = f"{code}.HK"
+                import yfinance as yf
+                ticker = yf.Ticker(yf_code)
+                df = ticker.history(start=start_date, end=end_date)
+
+                if df is None or len(df) == 0:
+                    return None
+
+                # 重命名列
+                df = df.rename(columns={
+                    'Open': 'open',
+                    'Close': 'close',
+                    'High': 'high',
+                    'Low': 'low',
+                    'Volume': 'volume'
+                })
+
+                df['date'] = df.index.strftime('%Y-%m-%d')
+                df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                df['code'] = code
+
+                logger.info(f"使用 yfinance 成功获取港股 {code} 数据，共 {len(df)} 条")
+                return df.reset_index(drop=True)
+
+            except Exception as yf_error:
+                logger.error(f"yfinance 也无法获取港股 {code} 数据: {yf_error}")
+                return None
 
 
     def get_realtime_data(self, code: str) -> Optional[dict]:

@@ -31,7 +31,7 @@ class DataValidator:
     def _default_config(self) -> Dict:
         """默认验证配置"""
         return {
-            # 异常值阈值
+            # 异常值阈值（A股默认）
             'max_price_change_pct': 20.0,      # 单日最大涨跌幅 (%)
             'max_consecutive_same': 5,          # 最大连续相同值
             'min_volume': 100,                  # 最小成交量
@@ -41,15 +41,24 @@ class DataValidator:
             'min_data_points': 60,              # 最小数据点数量（约3个月）
             'max_missing_ratio': 0.1,           # 最大缺失率 (10%)
             'price_decimal_places': 2,          # 价格小数位数
+
+            # 港股特定配置
+            'HK': {
+                'max_price_change_pct': 50.0,   # 港股无涨跌停限制
+                'min_price': 0.001,             # 港股最低价格（仙股）
+                'max_price': 100000.0,          # 港股最高价格
+                'price_decimal_places': 3,      # 港股价格可能有3位小数
+            }
         }
 
-    def validate(self, df: pd.DataFrame, stock_code: str = "") -> Tuple[pd.DataFrame, Dict]:
+    def validate(self, df: pd.DataFrame, stock_code: str = "", market: str = 'CN-A') -> Tuple[pd.DataFrame, Dict]:
         """
         完整的数据验证流程
 
         Args:
             df: 原始数据框
             stock_code: 股票代码（用于日志）
+            market: 市场类型 ('CN-A'-A股, 'HK'-港股, 'US'-美股)
 
         Returns:
             (清洗后的数据框, 验证报告字典)
@@ -57,8 +66,12 @@ class DataValidator:
         if df is None or len(df) == 0:
             return None, {'status': 'FAILED', 'reason': '数据为空'}
 
+        # 根据市场类型调整配置
+        effective_config = self._get_market_config(market)
+
         report = {
             'stock_code': stock_code,
+            'market': market,
             'original_rows': len(df),
             'issues': [],
             'warnings': [],
@@ -83,12 +96,12 @@ class DataValidator:
         if duplicate_count > 0:
             report['warnings'].append(f"删除了 {duplicate_count} 条重复数据")
 
-        # 4. 异常值检测
-        df, outlier_issues = self._detect_outliers(df)
+        # 4. 异常值检测（使用市场特定配置）
+        df, outlier_issues = self._detect_outliers(df, effective_config)
         report['issues'].extend(outlier_issues)
 
-        # 5. 价格合理性检查
-        df, price_issues = self._check_price_validity(df)
+        # 5. 价格合理性检查（使用市场特定配置）
+        df, price_issues = self._check_price_validity(df, effective_config)
         report['issues'].extend(price_issues)
 
         # 6. 成交量异常检测
@@ -100,10 +113,10 @@ class DataValidator:
         report['warnings'].extend(continuity_warnings)
 
         # 8. 最终数据量检查
-        if len(df) < self.config['min_data_points']:
+        if len(df) < effective_config['min_data_points']:
             report['status'] = 'FAILED'
             report['issues'].append(
-                f"数据量不足: {len(df)} < {self.config['min_data_points']}"
+                f"数据量不足: {len(df)} < {effective_config['min_data_points']}"
             )
             return None, report
 
@@ -112,13 +125,41 @@ class DataValidator:
 
         # 判断最终状态
         if len(report['issues']) > 0:
-            critical_issues = [i for i in report['issues'] if 'CRITICAL' in i]
+            # 区分"已删除异常数据"和"未解决的严重问题"
+            critical_issues = []
+            for issue in report['issues']:
+                if 'CRITICAL' in issue:
+                    # 如果是已删除的异常数据，不算严重问题
+                    if '删除' not in issue and '已自动修正' not in issue:
+                        critical_issues.append(issue)
+
             if critical_issues:
+                # 只有存在未解决的严重问题才标记为失败
                 report['status'] = 'FAILED'
             else:
+                # 异常数据已被删除或修正，标记为警告
                 report['status'] = 'WARNING'
 
         return df, report
+
+    def _get_market_config(self, market: str) -> Dict:
+        """
+        获取市场特定的配置参数
+
+        Args:
+            market: 市场类型
+
+        Returns:
+            合并后的配置字典
+        """
+        base_config = self.config.copy()
+
+        # 如果是港股，覆盖特定参数
+        if market == 'HK' and 'HK' in self.config:
+            hk_config = self.config['HK']
+            base_config.update(hk_config)
+
+        return base_config
 
     def _check_completeness(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         """检查数据完整性"""
@@ -179,9 +220,11 @@ class DataValidator:
         removed = original_len - len(df)
         return df, removed
 
-    def _detect_outliers(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    def _detect_outliers(self, df: pd.DataFrame, config: Dict = None) -> Tuple[pd.DataFrame, List[str]]:
         """检测异常值（价格涨跌幅）"""
         issues = []
+        if config is None:
+            config = self.config
 
         if len(df) < 2:
             return df, issues
@@ -191,12 +234,12 @@ class DataValidator:
         df['daily_change_pct'] = df['close'].pct_change() * 100
 
         # 检测异常涨跌幅
-        max_change = self.config['max_price_change_pct']
+        max_change = config['max_price_change_pct']
         outliers = df[abs(df['daily_change_pct']) > max_change]
 
         if len(outliers) > 0:
             for idx, row in outliers.iterrows():
-                # ST股票和新股可能出现大幅波动，只记录警告
+                # ST股票、新股、港股仙股可能出现大幅波动，只记录警告
                 change = row['daily_change_pct']
                 issues.append(
                     f"异常涨跌幅: {row['date']} ({change:.2f}%)"
@@ -204,35 +247,74 @@ class DataValidator:
 
         return df, issues
 
-    def _check_price_validity(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    def _check_price_validity(self, df: pd.DataFrame, config: Dict = None) -> Tuple[pd.DataFrame, List[str]]:
         """检查价格合理性"""
         issues = []
+        if config is None:
+            config = self.config
 
         # 检查价格范围
         for col in ['open', 'close', 'high', 'low']:
             min_price = df[col].min()
             max_price = df[col].max()
 
-            if min_price < self.config['min_price']:
+            if min_price < config['min_price']:
                 issues.append(f"CRITICAL: {col} 存在异常低价: {min_price}")
 
-            if max_price > self.config['max_price']:
+            if max_price > config['max_price']:
                 issues.append(f"CRITICAL: {col} 存在异常高价: {max_price}")
 
-        # 检查 OHLC 逻辑关系
-        invalid_high = df[df['high'] < df[['open', 'close', 'low']].max(axis=1)]
-        if len(invalid_high) > 0:
-            issues.append(
-                f"CRITICAL: {len(invalid_high)} 条数据的最高价小于其他价格"
-            )
-            df = df.drop(invalid_high.index)
+        # 检查 OHLC 逻辑关系并自动修正小误差
+        # 1. 检查最高价
+        max_ohlc = df[['open', 'close', 'low']].max(axis=1)
+        invalid_high = df['high'] < max_ohlc
 
-        invalid_low = df[df['low'] > df[['open', 'close', 'high']].min(axis=1)]
-        if len(invalid_low) > 0:
-            issues.append(
-                f"CRITICAL: {len(invalid_low)} 条数据的最低价大于其他价格"
-            )
-            df = df.drop(invalid_low.index)
+        if invalid_high.any():
+            # 计算误差
+            error_amount = max_ohlc - df['high']
+
+            # 如果误差很小（<= 当前价格的1%），自动修正
+            auto_fix_mask = invalid_high & (error_amount <= df['high'] * 0.01)
+            if auto_fix_mask.any():
+                df.loc[auto_fix_mask, 'high'] = max_ohlc.loc[auto_fix_mask]
+                issues.append(
+                    f"已自动修正 {auto_fix_mask.sum()} 条最高价小误差（<1%）"
+                )
+
+            # 误差较大的删除
+            large_error_mask = invalid_high & ~auto_fix_mask
+            if large_error_mask.any():
+                large_errors = df[large_error_mask]
+                issues.append(
+                    f"已删除 {len(large_errors)} 条最高价异常数据（误差>1%）"
+                )
+                df = df.drop(large_errors.index)
+
+        # 2. 检查最低价（在删除异常最高价后重新计算索引）
+        df = df.reset_index(drop=True)
+        min_ohlc = df[['open', 'close', 'high']].min(axis=1)
+        invalid_low = df['low'] > min_ohlc
+
+        if invalid_low.any():
+            # 计算误差
+            error_amount = df['low'] - min_ohlc
+
+            # 如果误差很小（<= 当前价格的1%），自动修正
+            auto_fix_mask = invalid_low & (error_amount <= df['low'] * 0.01)
+            if auto_fix_mask.any():
+                df.loc[auto_fix_mask, 'low'] = min_ohlc.loc[auto_fix_mask]
+                issues.append(
+                    f"已自动修正 {auto_fix_mask.sum()} 条最低价小误差（<1%）"
+                )
+
+            # 误差较大的删除
+            large_error_mask = invalid_low & ~auto_fix_mask
+            if large_error_mask.any():
+                large_errors = df[large_error_mask]
+                issues.append(
+                    f"已删除 {len(large_errors)} 条最低价异常数据（误差>1%）"
+                )
+                df = df.drop(large_errors.index)
 
         # 检查连续相同价格（可能是停牌）
         for col in ['close']:
@@ -241,7 +323,7 @@ class DataValidator:
                 (consecutive_same != consecutive_same.shift()).cumsum()
             ).sum().max()
 
-            if max_consecutive >= self.config['max_consecutive_same']:
+            if max_consecutive >= config.get('max_consecutive_same', self.config['max_consecutive_same']):
                 issues.append(
                     f"警告: {col} 存在连续 {max_consecutive} 天相同值（可能停牌）"
                 )

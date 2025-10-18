@@ -74,7 +74,8 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True):
         source=data_config.get('provider', app_config.DATA_SOURCE),
         cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
         max_retries=app_config.MAX_RETRIES,
-        retry_delay=app_config.RETRY_DELAY
+        retry_delay=app_config.RETRY_DELAY,
+        is_backtest_mode=show_backtest  # 传递回测模式标志
     )
     strategy = MixedStrategy(config=strategy_config)
     analyzer = SignalAnalyzer()
@@ -216,7 +217,8 @@ def batch_analyze(stock_codes: list, config: dict):
                 source=data_config.get('provider', app_config.DATA_SOURCE),
                 cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
                 max_retries=app_config.MAX_RETRIES,
-                retry_delay=app_config.RETRY_DELAY
+                retry_delay=app_config.RETRY_DELAY,
+                is_backtest_mode=False  # 批量分析不做回测，使用实时模式
             )
             strategy = MixedStrategy(config=strategy_config)
 

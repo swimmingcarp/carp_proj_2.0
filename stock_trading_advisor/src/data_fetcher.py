@@ -17,6 +17,7 @@ import hashlib
 from pathlib import Path
 
 from .data_validator import DataValidator
+from .market_hours import MarketHours
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ class DataFetcher:
 
     def __init__(self, source: str = 'akshare', cache_enabled: bool = True,
                  validate_data: bool = True,
-                 max_retries: int = 3, retry_delay: float = 2.0):
+                 max_retries: int = 3, retry_delay: float = 2.0,
+                 is_backtest_mode: bool = False):
         """
         初始化数据获取器
 
@@ -36,9 +38,11 @@ class DataFetcher:
             validate_data: 是否启用数据验证
             max_retries: 最大重试次数
             retry_delay: 重试基础延迟（秒），实际延迟会指数增长
+            is_backtest_mode: 是否为回测模式
         """
         self.source = source
         self.cache_enabled = cache_enabled
+        self.is_backtest_mode = is_backtest_mode
         # 使用绝对路径，确保缓存目录固定
         script_dir = Path(__file__).parent.parent  # src的父目录，即stock_trading_advisor
         self.cache_dir = script_dir / 'data' / 'cache'
@@ -131,21 +135,49 @@ class DataFetcher:
         filename = f"{code}_{cache_hash}.csv"
         return Path(self.cache_dir) / filename
 
-    def _load_from_cache(self, cache_path: Path, max_age_days: int = 1) -> Optional[pd.DataFrame]:
-        """从缓存加载数据"""
-        if not cache_path.exists():
-            return None
+    def _load_from_cache(self, cache_path: Path, market: str = 'CN-A',
+                         check_freshness: bool = False) -> Optional[pd.DataFrame]:
+        """
+        从缓存加载数据
 
-        # 检查缓存是否过期
-        file_mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
-        if datetime.now() - file_mtime > timedelta(days=max_age_days):
-            logger.debug(f"缓存已过期: {cache_path}")
+        Args:
+            cache_path: 缓存文件路径
+            market: 市场类型
+            check_freshness: 是否检查数据新鲜度
+
+        Returns:
+            DataFrame或None
+        """
+        if not cache_path.exists():
             return None
 
         try:
             df = pd.read_csv(cache_path)
-            logger.info(f"从缓存加载数据: {cache_path}")
-            return df
+
+            # 如果不需要检查新鲜度（回测模式），直接返回
+            if not check_freshness:
+                logger.info(f"从缓存加载数据: {cache_path}")
+                return df
+
+            # 检查缓存是否包含最新交易日数据
+            if len(df) == 0:
+                logger.debug(f"缓存数据为空: {cache_path}")
+                return None
+
+            # 获取缓存中的最后日期
+            last_date_in_cache = pd.to_datetime(df['date'].iloc[-1]).strftime('%Y-%m-%d')
+
+            # 获取最近交易日
+            latest_trading_date = MarketHours.get_latest_trading_date(market)
+
+            # 如果缓存包含最新交易日数据，认为是新鲜的
+            if last_date_in_cache >= latest_trading_date:
+                logger.info(f"从缓存加载最新数据: {cache_path} (最后日期: {last_date_in_cache})")
+                return df
+            else:
+                logger.debug(f"缓存数据过期: {cache_path} (缓存: {last_date_in_cache}, 最新: {latest_trading_date})")
+                return None
+
         except Exception as e:
             logger.warning(f"读取缓存失败 {cache_path}: {e}")
             return None
@@ -161,7 +193,7 @@ class DataFetcher:
     def get_k_data(self, code: str, start_date: str = None, end_date: str = None,
                    adjust: str = 'qfq') -> Optional[Tuple[pd.DataFrame, Dict]]:
         """
-        获取 K 线数据（带数据验证、缓存、重试机制）
+        获取 K 线数据（带数据验证、智能缓存、重试机制）
 
         Args:
             code: 股票代码
@@ -186,17 +218,46 @@ class DataFetcher:
         market = self._detect_market(code)
         logger.info(f"检测到市场类型: {market}, 股票代码: {code}")
 
-        # 尝试从缓存加载
+        # 智能缓存策略
         df = None
+        should_fetch_new_data = False
+
         if self.cache_enabled:
             cache_path = self._get_cache_path(code, start_date, end_date, adjust)
-            df = self._load_from_cache(cache_path)
 
-        # 如果缓存未命中，进行网络请求（带重试）
-        if df is None:
+            if self.is_backtest_mode:
+                # 回测模式：优先使用缓存，不检查新鲜度
+                df = self._load_from_cache(cache_path, market, check_freshness=False)
+                logger.debug(f"回测模式: 缓存{'命中' if df is not None else '未命中'}")
+
+            else:
+                # 实时模式：需要判断是否在交易时间
+                is_trading = MarketHours.is_trading_time(market)
+
+                if is_trading:
+                    # 交易时间内：总是获取最新数据，并更新缓存
+                    logger.info(f"交易时间内，获取最新数据")
+                    should_fetch_new_data = True
+                else:
+                    # 非交易时间：检查缓存新鲜度
+                    df = self._load_from_cache(cache_path, market, check_freshness=True)
+
+                    if df is None:
+                        # 缓存过期或不存在，需要获取新数据
+                        logger.info(f"非交易时间，缓存不新鲜，获取最新数据")
+                        should_fetch_new_data = True
+                    else:
+                        # 缓存新鲜，直接使用
+                        logger.info(f"非交易时间，使用新鲜缓存")
+        else:
+            # 缓存未启用，总是获取新数据
+            should_fetch_new_data = True
+
+        # 如果需要获取新数据
+        if df is None or should_fetch_new_data:
             df = self._fetch_with_retry(code, start_date, end_date, adjust, market)
 
-            # 保存到缓存
+            # 保存到缓存（如果启用）
             if df is not None and self.cache_enabled:
                 cache_path = self._get_cache_path(code, start_date, end_date, adjust)
                 self._save_to_cache(df, cache_path)

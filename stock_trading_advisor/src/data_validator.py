@@ -31,8 +31,8 @@ class DataValidator:
     def _default_config(self) -> Dict:
         """默认验证配置"""
         return {
-            # 异常值阈值（A股默认）
-            'max_price_change_pct': 20.0,      # 单日最大涨跌幅 (%)
+            # 异常值阈值（A股默认 - 主板）
+            'max_price_change_pct': 10.0,      # 单日最大涨跌幅 (%) - 主板默认10%
             'max_consecutive_same': 5,          # 最大连续相同值
             'min_volume': 100,                  # 最小成交量
             'max_volume_ratio': 50.0,           # 最大成交量比率（与均值比）
@@ -41,6 +41,20 @@ class DataValidator:
             'min_data_points': 60,              # 最小数据点数量（约3个月）
             'max_missing_ratio': 0.1,           # 最大缺失率 (10%)
             'price_decimal_places': 2,          # 价格小数位数
+
+            # A股不同板块的配置
+            'CN-A-Main': {
+                'max_price_change_pct': 10.5,   # 主板（60/00开头）：10% + 容差
+            },
+            'CN-A-ChiNext': {
+                'max_price_change_pct': 20.5,   # 创业板（300开头）：20% + 容差
+            },
+            'CN-A-STAR': {
+                'max_price_change_pct': 20.5,   # 科创板（688开头）：20% + 容差
+            },
+            'CN-A-Beijing': {
+                'max_price_change_pct': 30.5,   # 北交所（8/4开头）：30% + 容差
+            },
 
             # 港股特定配置
             'HK': {
@@ -57,7 +71,7 @@ class DataValidator:
 
         Args:
             df: 原始数据框
-            stock_code: 股票代码（用于日志）
+            stock_code: 股票代码（用于日志和判断板块）
             market: 市场类型 ('CN-A'-A股, 'HK'-港股, 'US'-美股)
 
         Returns:
@@ -66,8 +80,8 @@ class DataValidator:
         if df is None or len(df) == 0:
             return None, {'status': 'FAILED', 'reason': '数据为空'}
 
-        # 根据市场类型调整配置
-        effective_config = self._get_market_config(market)
+        # 根据市场类型和股票代码调整配置
+        effective_config = self._get_market_config(market, stock_code)
 
         report = {
             'stock_code': stock_code,
@@ -142,12 +156,13 @@ class DataValidator:
 
         return df, report
 
-    def _get_market_config(self, market: str) -> Dict:
+    def _get_market_config(self, market: str, stock_code: str = "") -> Dict:
         """
         获取市场特定的配置参数
 
         Args:
             market: 市场类型
+            stock_code: 股票代码（用于判断A股板块）
 
         Returns:
             合并后的配置字典
@@ -158,6 +173,25 @@ class DataValidator:
         if market == 'HK' and 'HK' in self.config:
             hk_config = self.config['HK']
             base_config.update(hk_config)
+        # 如果是A股，根据股票代码判断板块
+        elif market == 'CN-A' and stock_code:
+            # 判断A股板块
+            if stock_code.startswith('300'):
+                # 创业板
+                if 'CN-A-ChiNext' in self.config:
+                    base_config.update(self.config['CN-A-ChiNext'])
+            elif stock_code.startswith('688'):
+                # 科创板
+                if 'CN-A-STAR' in self.config:
+                    base_config.update(self.config['CN-A-STAR'])
+            elif stock_code.startswith(('8', '4')) and len(stock_code) == 6:
+                # 北交所（6位数字，8或4开头）
+                if 'CN-A-Beijing' in self.config:
+                    base_config.update(self.config['CN-A-Beijing'])
+            else:
+                # 主板（60/00开头或其他）
+                if 'CN-A-Main' in self.config:
+                    base_config.update(self.config['CN-A-Main'])
 
         return base_config
 

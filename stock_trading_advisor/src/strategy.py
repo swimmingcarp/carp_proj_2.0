@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class MixedStrategy:
     """混合交易策略"""
 
-    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', market: str = 'CN-A'):
+    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', order: str = 'auto', market: str = 'CN-A'):
         """
         初始化策略
 
@@ -34,6 +34,10 @@ class MixedStrategy:
                 - 'auto': 自动选择（对每只股票先回测，选择最优策略）
                 - 'original': 原始策略（跌破MA16或MACD<0）
                 - 'gradual': 渐进式止损（连续3天跌破MA16）
+            order: 执行顺序类型
+                - 'auto': 自动选择（对每只股票先回测，选择最优执行顺序）
+                - 'high_frequency': 高频率模式（固定使用）
+                - 'high_quality': 高质量模式（固定使用）
             market: 市场类型 ('CN-A'-A股, 'HK'-港股, 'US'-美股)，用于选择正确的手续费率
         """
         self.config = self._default_config()
@@ -42,7 +46,9 @@ class MixedStrategy:
             self.config.update(config)
         self.validate_indicators = validate_indicators
         self.sell_strategy = sell_strategy
-        self.optimal_strategy = None  # 记录为当前股票选择的最优策略
+        self.order_mode = order  # 执行顺序模式：'auto', 'high_frequency', 'high_quality'
+        self.optimal_strategy = None  # 记录为当前股票选择的最优卖出策略
+        self.optimal_order = 'high_frequency'  # 记录为当前股票选择的最优执行顺序 ('high_frequency' or 'high_quality')
         self.market = market
 
         # 初始化指标验证器
@@ -220,31 +226,50 @@ class MixedStrategy:
         buy_index = df[df['close'] >= df[f"{self.config['short_ma']}_ma"]].index
         df.loc[buy_index, 'buy_signal'] = 1
 
-        # 5. 生成卖出信号（自适应策略选择）
-        # 如果是'auto'模式，先运行两种策略的回测，选择最优的
+        # 5. 自适应策略和执行顺序选择
+        # 步骤1: 选择卖出策略 (original vs gradual)
+        # 步骤2: 选择执行顺序 (high_frequency vs high_quality)
+
+        # === 步骤1: 选择卖出策略 ===
         if self.sell_strategy == 'auto':
-            # 快速测试原始策略和渐进式策略
             logger.info("自适应模式：正在评估最优卖出策略...")
 
-            # 测试原始策略
+            # 使用high_frequency顺序测试两种卖出策略
             df_test_orig = df.copy()
-            self._apply_sell_strategy(df_test_orig, 'original', top_index)
+            self._apply_combination(df_test_orig, 'original', 'high_frequency', bottom_index, top_index)
             backtest_orig = self._quick_backtest(df_test_orig)
 
-            # 测试渐进式策略
             df_test_grad = df.copy()
-            self._apply_sell_strategy(df_test_grad, 'gradual', top_index)
+            self._apply_combination(df_test_grad, 'gradual', 'high_frequency', bottom_index, top_index)
             backtest_grad = self._quick_backtest(df_test_grad)
 
-            # 选择最优策略：如果渐进式收益比原始高30%以上，使用渐进式；否则使用原始
-            if backtest_grad and backtest_orig:
-                improvement = (backtest_grad - backtest_orig) / backtest_orig if backtest_orig != 0 else 0
-                if improvement > 0.30:  # 提升超过30%
-                    self.optimal_strategy = 'gradual'
-                    logger.info(f"选择渐进式策略（提升{improvement*100:.1f}%: {backtest_orig:.1f}% → {backtest_grad:.1f}%）")
+            # 选择最优卖出策略（保留原逻辑：gradual需要提升30%以上）
+            if backtest_grad is not None and backtest_orig is not None:
+                initial_capital = 10000.0
+
+                # 计算收益率（用于显示）
+                return_orig = (backtest_orig['capital'] - initial_capital) / initial_capital * 100
+                return_grad = (backtest_grad['capital'] - initial_capital) / initial_capital * 100
+
+                # 判断是否选择渐进式策略
+                if backtest_grad['capital'] > initial_capital and backtest_grad['capital'] > backtest_orig['capital']:
+                    # 最终资金为正，且渐进式更优
+                    improvement = (backtest_grad['capital'] - backtest_orig['capital']) / backtest_orig['capital']
+                    if improvement > 0.30:  # 提升超过30%
+                        self.optimal_strategy = 'gradual'
+                        logger.info(f"选择渐进式策略（资金提升{improvement*100:.1f}%: "
+                                  f"¥{backtest_orig['capital']:,.2f} → ¥{backtest_grad['capital']:,.2f}, "
+                                  f"收益率{return_orig:.1f}% → {return_grad:.1f}%）")
+                    else:
+                        self.optimal_strategy = 'original'
+                        logger.info(f"选择原始策略（渐进式提升不足30%: {improvement*100:.1f}%, "
+                                  f"¥{backtest_orig['capital']:,.2f} vs ¥{backtest_grad['capital']:,.2f}）")
                 else:
+                    # 其他情况默认使用原始策略
                     self.optimal_strategy = 'original'
-                    logger.info(f"选择原始策略（渐进提升不足30%: {improvement*100:.1f}%）")
+                    logger.info(f"选择原始策略（默认选择: "
+                              f"¥{backtest_orig['capital']:,.2f}[{return_orig:.1f}%] vs "
+                              f"¥{backtest_grad['capital']:,.2f}[{return_grad:.1f}%]）")
             else:
                 self.optimal_strategy = 'original'
                 logger.warning("回测失败，默认使用原始策略")
@@ -252,27 +277,46 @@ class MixedStrategy:
             # 使用指定的策略
             self.optimal_strategy = self.sell_strategy
 
-        # 应用选定的策略
-        self._apply_sell_strategy(df, self.optimal_strategy, top_index)
+        # === 步骤2: 选择执行顺序 ===
+        if self.order_mode == 'auto':
+            # 自适应选择执行顺序：在选定的策略基础上，比较high_frequency和high_quality
+            logger.info(f"自适应模式：正在评估{self.optimal_strategy}策略的最优执行顺序...")
 
-        # 6. 底部背离次日强制买入
-        bottom_shift_index = df[df['bottom'].shift(1) == 1].index
-        df.loc[bottom_shift_index, 'buy_signal'] = 1
+            df_test_new = df.copy()
+            self._apply_combination(df_test_new, self.optimal_strategy, 'high_frequency', bottom_index, top_index)
+            backtest_new = self._quick_backtest(df_test_new)
 
-        # 7. 顶部背离期间阻止买入
-        block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
-        df.loc[block_index, 'buy_signal'] = 0
+            df_test_old = df.copy()
+            self._apply_combination(df_test_old, self.optimal_strategy, 'high_quality', bottom_index, top_index)
+            backtest_old = self._quick_backtest(df_test_old)
 
-        # 标记DIFF顶背离失效的日期
-        df['diff_invalidation'] = 0
-        if len(diff_invalidation_dates) > 0:
-            df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+            # 选择最优执行顺序
+            if backtest_new is not None and backtest_old is not None:
+                # 前置条件：只有当NEW收益比OLD高出20%以上时，才进行智能评分
+                # 否则直接使用NEW（避免不必要的评分计算）
+                capital_new = backtest_new['capital']
+                capital_old = backtest_old['capital']
 
-        # 8. RSI增强买入（可选）
-        if self.config.get('rsi_enabled', False):
-            self._apply_rsi_enhancements(df)
+                if capital_new > capital_old * 1.2:
+                    # HIGH_FREQUENCY显著更优（>20%），直接使用HIGH_FREQUENCY
+                    self.optimal_order = 'high_frequency'
+                    improvement = (capital_new - capital_old) / capital_old * 100
+                    logger.info(f"✓ 高频率模式收益显著更高（+{improvement:.1f}%），直接选择高频率模式")
+                else:
+                    # HIGH_FREQUENCY优势不显著或HIGH_QUALITY更优，进行智能评分比较
+                    self.optimal_order = self._select_better_order(backtest_new, backtest_old)
+            else:
+                self.optimal_order = 'high_frequency'
+                logger.warning("执行顺序回测失败，默认使用高频率模式")
+        else:
+            # 使用指定的执行顺序（固定模式）
+            self.optimal_order = self.order_mode
+            logger.info(f"使用固定执行顺序: {self.optimal_order}")
 
-        # 9. 计算持仓状态
+        # 6. 应用选定的策略和执行顺序组合
+        self._apply_combination(df, self.optimal_strategy, self.optimal_order, bottom_index, top_index)
+
+        # 7. 计算持仓状态
         df['position'] = df['buy_signal'].shift(1)
         df['position'] = df['position'].ffill()
         df.loc[:self.config['init_date'], 'position'] = 0
@@ -314,6 +358,146 @@ class MixedStrategy:
 
         return list(block_index), list(diff_invalidation_dates)
 
+    def _select_better_order(self, backtest_new: dict, backtest_old: dict) -> str:
+        """
+        选择更优的执行顺序
+
+        综合考虑3个比率（权重相同）：
+        1. 收益比 = capital_new / capital_old
+        2. 交易次数比 = trades_new / trades_old
+        3. 收益增长率 = (capital_new - capital_old) / capital_old
+
+        Args:
+            backtest_new: 高频率模式的回测结果
+            backtest_old: 高质量模式的回测结果
+
+        Returns:
+            'high_frequency' or 'high_quality'
+        """
+        initial_capital = 10000.0
+
+        # 提取指标
+        capital_new = backtest_new['capital']
+        capital_old = backtest_old['capital']
+        trades_new = backtest_new['trades']
+        trades_old = backtest_old['trades']
+        avg_return_new = backtest_new['avg_return']
+        avg_return_old = backtest_old['avg_return']
+        win_rate_new = backtest_new['win_rate']
+        win_rate_old = backtest_old['win_rate']
+
+        # 计算收益率
+        return_new = (capital_new - initial_capital) / initial_capital * 100
+        return_old = (capital_old - initial_capital) / initial_capital * 100
+
+        # 输出详细对比信息
+        logger.info(f"  高频率模式: ¥{capital_new:,.2f} (收益{return_new:.1f}%) "
+                   f"交易{trades_new}次 平均{avg_return_new:.2f}% 胜率{win_rate_new:.1f}%")
+        logger.info(f"  高质量模式: ¥{capital_old:,.2f} (收益{return_old:.1f}%) "
+                   f"交易{trades_old}次 平均{avg_return_old:.2f}% 胜率{win_rate_old:.1f}%")
+
+        # 计算3个关键比率
+        # 1. 收益比 (capital_new / capital_old)
+        capital_ratio = capital_new / capital_old if capital_old > 0 else 1.0
+
+        # 2. 交易次数比 (trades_new / trades_old)
+        trades_ratio = trades_new / trades_old if trades_old > 0 else 1.0
+
+        # 3. 收益增长率 (新增收益 / 原始收益)
+        # 如果 capital_new > capital_old，计算新增收益占原收益的比例
+        if capital_new > capital_old:
+            return_growth_ratio = (capital_new - capital_old) / capital_old if capital_old > 0 else 0
+        else:
+            # 如果 capital_new < capital_old，收益增长为负
+            return_growth_ratio = (capital_new - capital_old) / capital_old if capital_old > 0 else 0
+
+        # 输出三个比率
+        logger.info(f"  📊 收益比: {capital_ratio:.4f}, 交易次数比: {trades_ratio:.4f}, 收益增长率: {return_growth_ratio:.4f}")
+
+        # 综合判断逻辑：
+        # 如果交易次数增长远高于收益增长，说明新增交易质量低，选择高质量模式
+        # 判断标准：交易次数比 > 收益比，且 交易次数增长 >> 收益增长
+
+        if trades_ratio > capital_ratio:
+            # 交易次数增长比收益增长快
+            # 计算"效率损失"：交易增长了X%，但收益只增长了Y%
+            efficiency_gap = (trades_ratio - 1) - (capital_ratio - 1)
+
+            # 如果交易次数增长显著高于收益增长（效率损失>10%），选择高质量模式
+            if efficiency_gap > 0.1:  # 10%的效率损失阈值
+                logger.info(f"  ⚠️ 交易次数增长{(trades_ratio-1)*100:.1f}%，"
+                           f"但收益仅增长{(capital_ratio-1)*100:.1f}%")
+                logger.info(f"  → 效率损失: {efficiency_gap*100:.1f}%，选择高质量模式")
+                return 'high_quality'
+
+        # 否则，选择收益更高的模式
+        if capital_old > capital_new:
+            improvement = (capital_old - capital_new) / capital_new * 100
+            logger.info(f"✓ 选择高质量模式（收益更高，+{improvement:.1f}%）")
+            return 'high_quality'
+        else:
+            logger.info(f"✓ 选择高频率模式（收益更高或相同）")
+            return 'high_frequency'
+
+    def _apply_combination(self, df: pd.DataFrame, strategy: str, order: str, bottom_index: list, top_index: list) -> None:
+        """
+        应用指定的策略和执行顺序组合
+
+        Args:
+            df: 数据框（会直接修改）
+            strategy: 卖出策略类型 ('original', 'gradual')
+            order: 执行顺序类型 ('high_frequency', 'high_quality')
+            bottom_index: 底部背离索引列表
+            top_index: 顶部背离索引列表
+        """
+        if order == 'high_frequency':
+            # NEW顺序：卖出策略 → 底部背离 → 顶部背离阻止 → RSI
+            # 底部背离和RSI不会被错误阻止，产生更多买入机会
+
+            # 1. 应用卖出策略
+            self._apply_sell_strategy(df, strategy, top_index)
+
+            # 2. 底部背离次日强制买入
+            bottom_shift_index = df[df['bottom'].shift(1) == 1].index
+            df.loc[bottom_shift_index, 'buy_signal'] = 1
+
+            # 3. 顶部背离期间阻止买入
+            block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
+            df.loc[block_index, 'buy_signal'] = 0
+
+            # 标记DIFF顶背离失效的日期
+            df['diff_invalidation'] = 0
+            if len(diff_invalidation_dates) > 0:
+                df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+
+            # 4. RSI增强买入（可选）
+            if self.config.get('rsi_enabled', False):
+                self._apply_rsi_enhancements(df)
+
+        else:  # order == 'high_quality'
+            # OLD顺序：底部背离 → RSI → 卖出策略 → 顶部背离阻止
+            # 底部背离和RSI会被顶部背离阻止，过滤低质量交易，单笔收益更高
+
+            # 1. 底部背离次日强制买入（在卖出策略之前）
+            bottom_shift_index = df[df['bottom'].shift(1) == 1].index
+            df.loc[bottom_shift_index, 'buy_signal'] = 1
+
+            # 2. RSI增强买入（在卖出策略之前）
+            if self.config.get('rsi_enabled', False):
+                self._apply_rsi_enhancements(df)
+
+            # 3. 应用卖出策略
+            self._apply_sell_strategy(df, strategy, top_index)
+
+            # 4. 顶部背离期间阻止买入（会阻止上面的底部背离和RSI买入）
+            block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
+            df.loc[block_index, 'buy_signal'] = 0
+
+            # 标记DIFF顶背离失效的日期
+            df['diff_invalidation'] = 0
+            if len(diff_invalidation_dates) > 0:
+                df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+
     def _apply_sell_strategy(self, df: pd.DataFrame, strategy: str, top_index: list) -> None:
         """
         应用指定的卖出策略
@@ -351,21 +535,28 @@ class MixedStrategy:
         # 应用卖出信号
         df.loc[list(sell_index), 'buy_signal'] = 0
 
-    def _quick_backtest(self, df: pd.DataFrame) -> float:
+    def _quick_backtest(self, df: pd.DataFrame) -> dict:
         """
-        快速回测，只返回收益率（用于自适应策略选择）
+        快速回测，返回详细的交易指标（用于自适应策略选择）
 
         Args:
             df: 包含buy_signal的数据框
 
         Returns:
-            总收益率（百分比），如果回测失败返回None
+            dict: {
+                'capital': 最终资金,
+                'trades': 交易次数,
+                'avg_return': 平均单笔收益率(%),
+                'win_rate': 胜率(%)
+            }
+            如果回测失败返回None
         """
         try:
             capital = 10000.0
             holding = False
             buy_price = 0
             shares = 0
+            trades = []  # 记录每笔交易的收益率
 
             for i in range(len(df)):
                 if i > 0:
@@ -392,6 +583,10 @@ class MixedStrategy:
                         # 扣除卖出手续费
                         sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
 
+                        # 计算本次交易收益率
+                        trade_return = (sell_price - buy_price) / buy_price * 100
+                        trades.append(trade_return)
+
                         # 更新资金：卖出所得 - 手续费
                         capital = transaction_amount - sell_commission
                         holding = False
@@ -402,9 +597,27 @@ class MixedStrategy:
                 sell_price = df.iloc[-1]['close']
                 transaction_amount = shares * sell_price
                 sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+
+                # 计算本次交易收益率
+                trade_return = (sell_price - buy_price) / buy_price * 100
+                trades.append(trade_return)
+
                 capital = transaction_amount - sell_commission
 
-            return (capital / 10000.0 - 1) * 100  # 返回收益率百分比
+            # 计算交易质量指标
+            if len(trades) > 0:
+                avg_return = sum(trades) / len(trades)
+                win_rate = len([t for t in trades if t > 0]) / len(trades) * 100
+            else:
+                avg_return = 0
+                win_rate = 0
+
+            return {
+                'capital': capital,
+                'trades': len(trades),
+                'avg_return': avg_return,
+                'win_rate': win_rate
+            }
 
         except Exception as e:
             logger.error(f"快速回测失败: {e}")
@@ -489,6 +702,90 @@ class MixedStrategy:
                     df.loc[idx, 'rsi_buy_type'] = 'RSI金叉'
                     last_rsi_buy_idx = i
                     logger.debug(f"RSI金叉买入: {df.loc[idx, 'date']}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
+
+    def _apply_signals_order(self, df: pd.DataFrame, order: str, bottom_index: list, top_index: list) -> None:
+        """
+        应用指定执行顺序的信号处理逻辑
+
+        Args:
+            df: 数据框（会直接修改）
+            order: 执行顺序类型 ('high_frequency' or 'high_quality')
+            bottom_index: 底部背离索引列表
+            top_index: 顶部背离索引列表
+
+        注意: OLD顺序需要在应用卖出策略**之前**执行底部背离和RSI！
+        所以这个方法需要同时处理卖出信号的应用。
+        """
+        logger.debug(f"应用{order}执行顺序, 底部背离数: {len(bottom_index)}, 顶部背离数: {len(top_index)}")
+
+        if order == 'high_frequency':
+            # NEW顺序：卖出策略 → 底部背离 → 顶部背离阻止 → RSI
+            # 这样底部背离和RSI不会被错误阻止，产生更多买入机会
+
+            # 注意：卖出策略已在调用此方法之前应用
+
+            # 1. 底部背离次日强制买入
+            bottom_shift_index = df[df['bottom'].shift(1) == 1].index
+            if len(bottom_shift_index) > 0:
+                logger.debug(f"NEW顺序: 底部背离次日买入 {len(bottom_shift_index)} 次")
+            df.loc[bottom_shift_index, 'buy_signal'] = 1
+
+            # 2. 顶部背离期间阻止买入
+            block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
+            if len(block_index) > 0:
+                logger.debug(f"NEW顺序: 顶部背离阻止买入 {len(block_index)} 次")
+            df.loc[block_index, 'buy_signal'] = 0
+
+            # 标记DIFF顶背离失效的日期
+            df['diff_invalidation'] = 0
+            if len(diff_invalidation_dates) > 0:
+                df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+
+            # 3. RSI增强买入（可选）
+            rsi_buy_count_before = len(df[df['buy_signal'] == 1])
+            if self.config.get('rsi_enabled', False):
+                self._apply_rsi_enhancements(df)
+                rsi_buy_count_after = len(df[df['buy_signal'] == 1])
+                if rsi_buy_count_after > rsi_buy_count_before:
+                    logger.debug(f"NEW顺序: RSI增加买入 {rsi_buy_count_after - rsi_buy_count_before} 次")
+
+        else:  # order == 'high_quality'
+            # OLD顺序：底部背离 → RSI → 卖出策略 → 顶部背离阻止
+            # 部分底部背离和RSI信号会被阻止，过滤了低质量交易，单笔收益更高
+
+            # 注意：卖出策略已在调用此方法之前应用，但我们需要重新应用信号才能体现OLD顺序的效果
+            # 问题是：我们无法"撤销"已应用的卖出策略...
+
+            # 解决方案：OLD顺序需要在卖出策略应用之前插入底部背离和RSI信号
+            # 但这要求重新设计调用顺序...
+
+            # 暂时的解决方案：在已有卖出策略的基础上，用OLD顺序应用信号
+            # 1. 底部背离次日强制买入
+            bottom_shift_index = df[df['bottom'].shift(1) == 1].index
+            if len(bottom_shift_index) > 0:
+                logger.debug(f"OLD顺序: 底部背离次日买入 {len(bottom_shift_index)} 次")
+            df.loc[bottom_shift_index, 'buy_signal'] = 1
+
+            # 2. RSI增强买入（可选）
+            rsi_buy_count_before = len(df[df['buy_signal'] == 1])
+            if self.config.get('rsi_enabled', False):
+                self._apply_rsi_enhancements(df)
+                rsi_buy_count_after = len(df[df['buy_signal'] == 1])
+                if rsi_buy_count_after > rsi_buy_count_before:
+                    logger.debug(f"OLD顺序: RSI增加买入 {rsi_buy_count_after - rsi_buy_count_before} 次")
+
+            # 3. 顶部背离期间阻止买入（会阻止上面的底部背离和RSI买入）
+            block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
+            buy_count_before_block = len(df[df['buy_signal'] == 1])
+            df.loc[block_index, 'buy_signal'] = 0
+            buy_count_after_block = len(df[df['buy_signal'] == 1])
+            if buy_count_before_block > buy_count_after_block:
+                logger.debug(f"OLD顺序: 顶部背离阻止了 {buy_count_before_block - buy_count_after_block} 次买入")
+
+            # 标记DIFF顶背离失效的日期
+            df['diff_invalidation'] = 0
+            if len(diff_invalidation_dates) > 0:
+                df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
 
     def get_latest_signal(self, df: pd.DataFrame) -> Dict:
         """
@@ -704,7 +1001,11 @@ class MixedStrategy:
 
         # 运行不含手续费的回测
         backtest_no_fee = self._quick_backtest(df)
-        gross_return = backtest_no_fee if backtest_no_fee is not None else total_return
+        if backtest_no_fee is not None and isinstance(backtest_no_fee, dict):
+            gross_capital = backtest_no_fee['capital']
+            gross_return = (gross_capital - initial_capital) / initial_capital * 100
+        else:
+            gross_return = total_return
 
         # 恢复手续费设置
         self.config['commission_enabled'] = commission_enabled_backup

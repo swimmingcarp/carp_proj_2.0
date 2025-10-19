@@ -273,11 +273,7 @@ class SignalAnalyzer:
             else:
                 output.append("  ℹ️ 该策略历史表现一般")
 
-        output.append("\n⚠️ 风险提示:")
-        output.append("  - 本分析仅供参考，不构成投资建议")
-        output.append("  - 股市有风险，投资需谨慎")
-        output.append("  - 请根据自身风险承受能力做出决策")
-        output.append("-" * 60 + "\n")
+            output.append("-" * 60)
 
         return "\n".join(output)
 

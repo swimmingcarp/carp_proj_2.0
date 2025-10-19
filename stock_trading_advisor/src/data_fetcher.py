@@ -128,11 +128,13 @@ class DataFetcher:
         return 'CN-A'
 
     def _get_cache_path(self, code: str, start_date: str, end_date: str, adjust: str) -> Path:
-        """生成缓存文件路径"""
-        # 使用参数生成唯一的缓存文件名
-        cache_key = f"{code}_{start_date}_{end_date}_{adjust}"
-        cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
-        filename = f"{code}_{cache_hash}.csv"
+        """
+        生成缓存文件路径
+
+        统一使用简化格式：{code}_{adjust}.csv
+        不管是回测模式还是实时模式，都使用相同的缓存文件
+        """
+        filename = f"{code}_{adjust}.csv"
         return Path(self.cache_dir) / filename
 
     def _load_from_cache(self, cache_path: Path, market: str = 'CN-A',
@@ -235,20 +237,21 @@ class DataFetcher:
                 is_trading = MarketHours.is_trading_time(market)
 
                 if is_trading:
-                    # 交易时间内：总是获取最新数据，并更新缓存
-                    logger.info(f"交易时间内，获取最新数据")
+                    # 交易时间内：盘中数据实时变化，必须从网络获取最新数据
+                    logger.info(f"交易时间内，获取盘中最新数据")
                     should_fetch_new_data = True
                 else:
-                    # 非交易时间：检查缓存新鲜度
+                    # 非交易时间：盘已收，检查缓存新鲜度
                     df = self._load_from_cache(cache_path, market, check_freshness=True)
 
                     if df is None:
                         # 缓存过期或不存在，需要获取新数据
-                        logger.info(f"非交易时间，缓存不新鲜，获取最新数据")
+                        logger.info(f"非交易时间，缓存过期或不存在，获取最新数据")
                         should_fetch_new_data = True
                     else:
                         # 缓存新鲜，直接使用
                         logger.info(f"非交易时间，使用新鲜缓存")
+                        should_fetch_new_data = False
         else:
             # 缓存未启用，总是获取新数据
             should_fetch_new_data = True

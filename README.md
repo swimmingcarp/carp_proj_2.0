@@ -11,6 +11,7 @@
 - 💹 策略历史回测
 - 🎯 信号强度评级
 - 📱 批量股票分析
+- ⏰ **定时提醒** - 在固定时间自动运行并生成交易提醒（**新功能**）
 
 ⚡ **性能优势**
 - 向量化计算，性能提升 **300+ 倍**
@@ -151,6 +152,96 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 0000
 ================================================================================
 ```
 
+### 📅 定时提醒（新功能）
+
+**在固定时间自动运行并生成交易提醒**
+
+#### 快速开始
+
+1. **安装定时任务依赖**
+```bash
+cd stock_trading_advisor
+source ../venv/bin/activate
+pip install schedule
+```
+
+2. **配置监控列表** - 编辑 `config/watch_list.txt`
+```
+300293  # 蓝英装备
+002920  # 德赛西威
+300757  # 罗博特科
+```
+
+3. **设置运行时间** - 编辑 `config/scheduler_config.yaml`
+```yaml
+schedule:
+  run_times:
+    - "14:57"  # 下午2:57（收盘前3分钟）
+```
+
+4. **启动调度器**
+```bash
+cd stock_trading_advisor
+source ../venv/bin/activate
+
+# 立即测试一次
+python3 scheduler.py --run-now
+
+# 启动定时调度器（等待到设定时间自动运行）
+python3 scheduler.py
+
+# 后台运行（推荐）
+nohup python3 scheduler.py > /tmp/scheduler.log 2>&1 &
+```
+
+#### 输出示例
+
+```
+======================================================================
+📊 股票交易提醒 - 2025-10-21 14:57:00
+======================================================================
+
+📈 监控股票总数: 4 只
+   🟢 买入: 2 只  |  🔴 卖出: 0 只  |  ⚪ 持有: 2 只
+
+======================================================================
+🟢 买入信号 (2只)
+======================================================================
+  【300293】 蓝英装备
+     操作: 买入  |  当前价: ¥23.37
+     信号: MACD金叉
+     RSI: 35.23  |  MACD: -0.4177
+======================================================================
+```
+
+所有提醒保存在 `reports/trading_alerts.txt`
+
+#### ⚠️ 重要提示
+
+1. **调度器需要持续运行**：启动后会等待到设定时间自动执行
+2. **修改配置后必须重启**：
+```bash
+# 停止旧调度器
+ps aux | grep scheduler.py | grep -v grep
+kill <进程ID>
+
+# 启动新调度器
+python3 scheduler.py
+```
+
+3. **后台运行推荐使用 screen**：
+```bash
+screen -S stock
+python3 scheduler.py
+# 按 Ctrl+A 然后 D 离开
+```
+
+#### 详细文档
+
+- [定时提醒完整文档](stock_trading_advisor/README_定时提醒.md)
+- [快速上手指南](stock_trading_advisor/QUICKSTART.md)
+- [使用说明](stock_trading_advisor/定时提醒使用说明.txt)
+
 ## 项目结构
 
 ```
@@ -161,13 +252,21 @@ stock_trading_advisor/
 │   ├── divergence.py          # 顶底背离检测
 │   ├── strategy.py            # 核心交易策略
 │   ├── data_fetcher.py        # 数据获取（支持多数据源）
-│   └── analyzer.py            # 买卖信号分析
+│   ├── analyzer.py            # 买卖信号分析
+│   └── market_hours.py        # 交易时间检测
 ├── config/
-│   └── config.yaml            # 配置文件
+│   ├── config.yaml            # 主程序配置
+│   ├── scheduler_config.yaml  # 定时调度器配置
+│   └── watch_list.txt         # 监控股票列表
 ├── data/
 │   └── cache/                 # 数据缓存
-├── logs/                      # 日志文件
+├── logs/
+│   ├── trading.log            # 主程序日志
+│   └── scheduler.log          # 调度器日志
+├── reports/
+│   └── trading_alerts.txt     # 交易提醒报告
 ├── main.py                    # 主程序入口
+├── scheduler.py               # 定时调度器（新增）
 ├── requirements.txt           # 依赖包
 └── README.md                  # 使用文档
 ```
@@ -278,13 +377,47 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 - 自动识别：6 开头为上海，其他为深圳
 
 ### 4. 日志查看
-日志文件保存在 `logs/trading.log`
+- 主程序日志：`logs/trading.log`
+- 调度器日志：`logs/scheduler.log`
+
+### 5. 定时提醒相关
+
+#### 修改时间后没有执行？
+**原因**：修改配置后没有重启调度器。
+
+**解决方法**：
+```bash
+# 1. 停止旧调度器
+ps aux | grep scheduler.py | grep -v grep
+kill <进程ID>
+
+# 2. 启动新调度器
+python3 scheduler.py
+```
+
+#### 如何确认调度器在运行？
+```bash
+# 查看进程
+ps aux | grep scheduler.py | grep -v grep
+
+# 查看日志
+tail -f logs/scheduler.log
+```
+
+#### ModuleNotFoundError: No module named 'schedule'
+```bash
+source ../venv/bin/activate
+pip install schedule
+```
+
+详见：[定时提醒完整文档](stock_trading_advisor/README_定时提醒.md)
 
 ## 后续计划
 
+- [x] ⏰ **定时提醒功能** - 已完成！可在固定时间自动运行
 - [ ] 支持更多技术指标（RSI, BOLL 等）
 - [ ] 添加可视化图表
-- [ ] 实时监控和预警
+- [ ] 邮件/微信通知
 - [ ] Web 界面
 - [ ] 策略参数自动优化
 

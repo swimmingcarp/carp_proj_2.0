@@ -1,0 +1,66 @@
+# 股票交易定时调度器配置文件
+
+# 调度设置
+schedule:
+  enabled: true                    # 是否启用调度器
+  run_times:                       # 运行时间列表（24小时制）
+    - "00:38"                      # 下午2:57（收盘前3分钟）
+    # - "09:35"                    # 开盘后5分钟（可选）
+    # - "11:25"                    # 上午收盘前5分钟（可选）
+  check_trading_day: true          # 只在交易日运行
+
+# 股票监控列表
+stocks:
+  source: file                     # 数据源：file（从文件读取）或 inline（配置文件中直接写）
+  file_path: config/watch_list.txt # 监控列表文件路径
+  watch_list:                      # 如果 source=inline，从这里读取
+    # - "000001"
+    # - "600519"
+
+# 通知设置
+notification:
+  console: true                    # 控制台输出
+  log_file: true                   # 记录到日志文件
+  report_file: true                # 保存到报告文件
+  report_path: reports/trading_alerts.txt  # 报告文件路径
+
+# 分析设置
+analysis:
+  show_backtest: false             # 是否显示回测结果（实时提醒建议设为false）
+  signal_filter: all               # 信号过滤：all（全部）、buy（买入）、sell（卖出）、strong_buy（强烈买入）
+
+# 数据源配置
+data_source:
+  provider: akshare                # 数据提供商
+  cache_enabled: true              # 是否启用缓存
+
+# 策略配置（与主程序共享）
+strategy:
+  # RSI策略参数
+  rsi:
+    enabled: true
+    period: 6
+    oversold: 20
+    overbought: 80
+
+  # MACD策略参数
+  macd:
+    enabled: true
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+
+  # 背离检测参数
+  divergence:
+    enabled: true
+    lookback_period: 20
+
+  # 其他参数
+  stop_loss_pct: 0.08             # 止损百分比
+  take_profit_pct: 0.15           # 止盈百分比
+
+# 日志配置
+logging:
+  level: INFO                      # 日志级别：DEBUG, INFO, WARNING, ERROR
+  file: logs/scheduler.log         # 日志文件路径
+  console: true                    # 是否输出到控制台

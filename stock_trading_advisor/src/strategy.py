@@ -813,20 +813,34 @@ class MixedStrategy:
             signal = 'BUY'
 
             # 分析买入理由和强度
-            if latest['k'] < self.config['k_threshold']:
-                reason.append(f"K值处于超卖区域({latest['k']:.1f})")
+            # 1. 检查是否突破或站稳16日均线（核心买入条件）
+            if latest['close'] >= latest[f"{self.config['short_ma']}_ma"]:
+                if previous['close'] < previous[f"{self.config['short_ma']}_ma"]:
+                    # 刚突破
+                    reason.append(f"突破{self.config['short_ma']}日均线")
+                else:
+                    # 站稳均线上方
+                    reason.append(f"站稳{self.config['short_ma']}日均线")
                 strength += 1
 
+            # 2. K值超卖
+            if latest['k'] < self.config['k_threshold']:
+                reason.append(f"K值超卖({latest['k']:.1f})")
+                strength += 1
+
+            # 3. 中期趋势
             if latest[f"{self.config['mid_ma']}_ma"] > previous[f"{self.config['mid_ma']}_ma"]:
                 reason.append("中期趋势向上")
                 strength += 1
 
+            # 4. 底部背离（强信号）
             if latest['bottom'] == 1.0 or previous['bottom'] == 1.0:
                 reason.append("底部背离信号")
                 strength += 2
 
+            # 5. MACD多头
             if latest['macd'] > 0:
-                reason.append("MACD在零轴上方")
+                reason.append("MACD多头")
                 strength += 1
 
         # 卖出信号判断

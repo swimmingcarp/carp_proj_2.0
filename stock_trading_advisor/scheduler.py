@@ -22,6 +22,7 @@ from src.data_fetcher import DataFetcher
 from src.strategy import MixedStrategy
 from src.analyzer import SignalAnalyzer
 from src.market_hours import MarketHours
+from src.wechat_notifier import WeChatNotificationManager
 import config as app_config
 
 
@@ -45,6 +46,17 @@ class TradingScheduler:
         self.config = self._load_config(config_path)
         self._setup_logging()
         self.logger = logging.getLogger(__name__)
+
+        # 初始化微信通知管理器
+        try:
+            self.wechat_manager = WeChatNotificationManager(self.config)
+            if self.wechat_manager.notifiers:
+                self.logger.info(f"已初始化 {len(self.wechat_manager.notifiers)} 个微信通知器")
+            else:
+                self.wechat_manager = None
+        except Exception as e:
+            self.logger.warning(f"初始化微信通知失败: {e}")
+            self.wechat_manager = None
 
     def _load_config(self, config_path: str) -> dict:
         """加载配置文件"""
@@ -223,15 +235,15 @@ class TradingScheduler:
                 signal_data['name'] = stock_info.get('股票简称', stock_code)
 
             # 映射信号字段：将 signal 映射到 action
-            # signal 字段的值：BUY, STRONG_BUY, SELL, STRONG_SELL, HOLD
+            # signal 字段的值：BUY, SELL, HOLD(空仓观望), HOLD_BUY(持仓中)
             signal_map = {
                 'BUY': '买入',
-                'STRONG_BUY': '强烈买入',
                 'SELL': '卖出',
-                'STRONG_SELL': '强烈卖出',
-                'HOLD': '持有'
+                'HOLD': '观望',      # 空仓状态，无明确买卖信号
+                'HOLD_BUY': '持有',  # 已持仓，继续持有
+                'NO_DATA': '无数据'
             }
-            signal_data['action'] = signal_map.get(signal_data.get('signal', 'HOLD'), '持有')
+            signal_data['action'] = signal_map.get(signal_data.get('signal', 'HOLD'), '观望')
 
             return signal_data
 
@@ -255,11 +267,14 @@ class TradingScheduler:
         if signal_filter == 'all':
             return signals
         elif signal_filter == 'buy':
-            return [s for s in signals if s.get('action') in ['买入', '强烈买入']]
+            return [s for s in signals if s.get('action') == '买入']
         elif signal_filter == 'sell':
-            return [s for s in signals if s.get('action') in ['卖出', '强烈卖出']]
-        elif signal_filter == 'strong_buy':
-            return [s for s in signals if s.get('action') == '强烈买入']
+            return [s for s in signals if s.get('action') == '卖出']
+        elif signal_filter == 'hold':
+            return [s for s in signals if s.get('action') == '持有']
+        elif signal_filter == 'action_needed':
+            # 过滤出需要操作的信号（买入、卖出），排除观望和持有
+            return [s for s in signals if s.get('action') in ['买入', '卖出']]
         else:
             return signals
 
@@ -279,9 +294,10 @@ class TradingScheduler:
         analyzer = SignalAnalyzer()
 
         # 分类信号
-        buy_signals = [s for s in signals if s.get('action') in ['买入', '强烈买入']]
-        sell_signals = [s for s in signals if s.get('action') in ['卖出', '强烈卖出']]
-        hold_signals = [s for s in signals if s.get('action') == '持有']
+        buy_signals = [s for s in signals if s.get('action') == '买入']
+        sell_signals = [s for s in signals if s.get('action') == '卖出']
+        hold_signals = [s for s in signals if s.get('action') == '持有']  # 已持仓
+        watch_signals = [s for s in signals if s.get('action') == '观望']  # 空仓观望
 
         lines = []
         lines.append("=" * 70)
@@ -290,7 +306,7 @@ class TradingScheduler:
 
         # 显示统计信息
         lines.append(f"\n📈 监控股票总数: {len(signals)} 只")
-        lines.append(f"   🟢 买入: {len(buy_signals)} 只  |  🔴 卖出: {len(sell_signals)} 只  |  ⚪ 持有: {len(hold_signals)} 只")
+        lines.append(f"   🟢 买入: {len(buy_signals)} 只  |  🔴 卖出: {len(sell_signals)} 只  |  🔵 持有: {len(hold_signals)} 只  |  ⚪ 观望: {len(watch_signals)} 只")
 
         if buy_signals:
             lines.append(f"\n{'='*70}")
@@ -301,14 +317,15 @@ class TradingScheduler:
                 name = signal.get('name', '')
                 action = signal.get('action', '')
                 price = signal.get('price', 0)
-                signal_type = signal.get('signal_type', '')
-                rsi = signal.get('rsi', 0)
+                reason = signal.get('reason', '')
+                k = signal.get('k', 0)
                 macd = signal.get('macd', 0)
 
                 lines.append(f"  【{code}】 {name}")
                 lines.append(f"     操作: {action}  |  当前价: ¥{price:.2f}")
-                lines.append(f"     信号: {signal_type}")
-                lines.append(f"     RSI: {rsi:.2f}  |  MACD: {macd:.4f}")
+                if reason:
+                    lines.append(f"     理由: {reason}")
+                lines.append(f"     K值: {k:.2f}  |  MACD: {macd:.4f}")
                 lines.append("")
 
         if sell_signals:
@@ -320,45 +337,54 @@ class TradingScheduler:
                 name = signal.get('name', '')
                 action = signal.get('action', '')
                 price = signal.get('price', 0)
-                signal_type = signal.get('signal_type', '')
-                rsi = signal.get('rsi', 0)
+                reason = signal.get('reason', '')
+                k = signal.get('k', 0)
                 macd = signal.get('macd', 0)
 
                 lines.append(f"  【{code}】 {name}")
                 lines.append(f"     操作: {action}  |  当前价: ¥{price:.2f}")
-                lines.append(f"     信号: {signal_type}")
-                lines.append(f"     RSI: {rsi:.2f}  |  MACD: {macd:.4f}")
+                if reason:
+                    lines.append(f"     理由: {reason}")
+                lines.append(f"     K值: {k:.2f}  |  MACD: {macd:.4f}")
                 lines.append("")
 
-        if hold_signals and (buy_signals or sell_signals):
-            # 只有在有买卖信号时才显示持有信号（简化版）
-            lines.append(f"\n{'='*70}")
-            lines.append(f"⚪ 持有 ({len(hold_signals)}只)")
-            lines.append("=" * 70)
+        # 显示持有的股票（已持仓）
+        if hold_signals:
+            lines.append(f"\n{'='*20}")
+            lines.append(f"🔵 持有中 ({len(hold_signals)}只)")
+            lines.append("=" * 20)
             for signal in hold_signals:
                 code = signal.get('code', '')
                 name = signal.get('name', '')
                 price = signal.get('price', 0)
                 lines.append(f"  {code} {name}  |  价格: ¥{price:.2f}")
 
-        elif not buy_signals and not sell_signals:
-            # 如果全部都是持有信号，显示详细信息
-            lines.append(f"\n{'='*70}")
-            lines.append(f"⚪ 全部持有 ({len(hold_signals)}只)")
-            lines.append("=" * 70)
-            lines.append("当前所有监控股票均无明确买卖信号，建议继续观望。")
+        # 显示观望的股票（空仓，无明确信号）
+        if watch_signals and not buy_signals and not sell_signals and not hold_signals:
+            # 如果全部都是观望信号，显示简要信息
+            lines.append(f"\n{'='*20}")
+            lines.append(f"⚪ 全部观望 ({len(watch_signals)}只)")
+            lines.append("=" * 20)
+            lines.append("当前所有监控股票均无明确买卖信号，建议空仓观望。")
             lines.append("")
-            for signal in hold_signals:
+            for signal in watch_signals:
                 code = signal.get('code', '')
                 name = signal.get('name', '')
                 price = signal.get('price', 0)
-                rsi = signal.get('rsi', 0)
-                macd = signal.get('macd', 0)
 
-                lines.append(f"  【{code}】 {name}  |  价格: ¥{price:.2f}")
-                lines.append(f"     RSI: {rsi:.2f}  |  MACD: {macd:.4f}")
+                lines.append(f"  {code} {name}  |  价格: ¥{price:.2f}")
+        elif watch_signals:
+            # 有其他信号时，简化显示观望股票
+            lines.append(f"\n{'='*20}")
+            lines.append(f"⚪ 观望 ({len(watch_signals)}只)")
+            lines.append("=" * 20)
+            for signal in watch_signals:
+                code = signal.get('code', '')
+                name = signal.get('name', '')
+                price = signal.get('price', 0)
+                lines.append(f"  {code} {name}  |  价格: ¥{price:.2f}")
 
-        lines.append("\n" + "=" * 70)
+        lines.append("\n" + "=" * 20)
 
         return "\n".join(lines)
 
@@ -394,6 +420,17 @@ class TradingScheduler:
                 self.logger.info(f"报告已保存到: {report_path}")
             except Exception as e:
                 self.logger.error(f"保存报告失败: {e}")
+
+        # 发送微信通知
+        if self.wechat_manager and self.wechat_manager.notifiers:
+            try:
+                if self.wechat_manager.send_alert(alert_text):
+                    self.logger.info("✓ 微信通知发送成功")
+                    print("✓ 微信通知已发送")
+                else:
+                    self.logger.warning("⚠️  微信通知发送失败")
+            except Exception as e:
+                self.logger.error(f"发送微信通知异常: {e}")
 
     def run_analysis(self):
         """执行定时分析任务"""

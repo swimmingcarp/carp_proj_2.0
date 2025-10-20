@@ -238,9 +238,7 @@ python3 scheduler.py
 
 #### 详细文档
 
-- [定时提醒完整文档](stock_trading_advisor/README_定时提醒.md)
-- [快速上手指南](stock_trading_advisor/QUICKSTART.md)
-- [使用说明](stock_trading_advisor/定时提醒使用说明.txt)
+- [快速上手指南](stock_trading_advisor/WechatQuickStart.txt)
 
 ## 项目结构
 

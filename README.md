@@ -2,6 +2,35 @@
 
 基于技术指标的股票交易策略分析系统，提供买卖信号提示和策略回测功能。
 
+## 🔔 定时提醒服务（推荐使用）
+
+系统已配置 **systemd 服务**，支持开机自启动和崩溃自动重启：
+
+```bash
+cd stock_trading_advisor
+
+# 查看服务状态
+./manage_scheduler.sh status
+
+# 查看日志
+./manage_scheduler.sh logs
+
+# 重启服务（修改配置后）
+./manage_scheduler.sh restart
+
+# 停止/启动服务
+./manage_scheduler.sh stop
+./manage_scheduler.sh start
+```
+
+**主要特性：**
+- ✅ **开机自动启动** - 系统重启后无需手动启动
+- ✅ **崩溃自动重启** - 进程异常退出后10秒自动重启
+- ✅ **定时自动执行** - 默认每天14:57执行分析
+- ✅ **微信消息通知** - 支持企业微信机器人推送
+
+**详细文档：** [stock_trading_advisor/SYSTEMD_SERVICE_README.md](stock_trading_advisor/SYSTEMD_SERVICE_README.md)
+
 ## 功能特性
 
 ✨ **核心功能**
@@ -152,49 +181,56 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 0000
 ================================================================================
 ```
 
-### 📅 定时提醒（新功能）
+### 📅 定时提醒
 
-**在固定时间自动运行并生成交易提醒**
+**系统已配置 systemd 服务，支持自动化运行和管理**
 
-#### 快速开始
+#### 🚀 快速管理
 
-1. **安装定时任务依赖**
 ```bash
 cd stock_trading_advisor
-source ../venv/bin/activate
-pip install schedule
+
+# 查看服务状态和进程信息
+./manage_scheduler.sh status
+
+# 查看最近日志
+./manage_scheduler.sh logs
+
+# 重启服务（修改配置后必须执行）
+./manage_scheduler.sh restart
 ```
 
-2. **配置监控列表** - 编辑 `config/watch_list.txt`
+#### ⚙️ 配置说明
+
+1. **监控股票列表** - 编辑 `config/watch_list.txt`
 ```
 300293  # 蓝英装备
 002920  # 德赛西威
 300757  # 罗博特科
 ```
 
-3. **设置运行时间** - 编辑 `config/scheduler_config.yaml`
+2. **定时时间设置** - 编辑 `config/scheduler_config.yaml`
 ```yaml
 schedule:
   run_times:
     - "14:57"  # 下午2:57（收盘前3分钟）
+    # - "09:35"  # 可添加多个时间点
 ```
 
-4. **启动调度器**
+3. **微信通知配置** - 编辑 `config/scheduler_config.yaml`
+```yaml
+wechat:
+  work_wechat:
+    enabled: true
+    webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY'
+```
+
+**修改配置后必须重启服务：**
 ```bash
-cd stock_trading_advisor
-source ../venv/bin/activate
-
-# 立即测试一次
-python3 scheduler.py --run-now
-
-# 启动定时调度器（等待到设定时间自动运行）
-python3 scheduler.py
-
-# 后台运行（推荐）
-nohup python3 scheduler.py > /tmp/scheduler.log 2>&1 &
+./manage_scheduler.sh restart
 ```
 
-#### 输出示例
+#### 📊 输出示例
 
 ```
 ======================================================================
@@ -216,27 +252,31 @@ nohup python3 scheduler.py > /tmp/scheduler.log 2>&1 &
 
 所有提醒保存在 `reports/trading_alerts.txt`
 
-#### ⚠️ 重要提示
+#### ✨ 服务特性
 
-1. **调度器需要持续运行**：启动后会等待到设定时间自动执行
-2. **修改配置后必须重启**：
+- **开机自启动** - 系统重启后自动运行，无需手动启动
+- **崩溃自动恢复** - 进程异常退出后10秒内自动重启
+- **完整日志记录** - 所有运行日志保存在 `logs/` 目录
+- **状态监控** - 使用 `./manage_scheduler.sh status` 随时查看运行状态
+
+#### 🔧 手动测试（可选）
+
+如果需要立即执行一次分析（不等待定时）：
+
 ```bash
-# 停止旧调度器
-ps aux | grep scheduler.py | grep -v grep
-kill <进程ID>
+cd stock_trading_advisor
 
-# 启动新调度器
-python3 scheduler.py
+# 1. 临时停止服务
+./manage_scheduler.sh stop
+
+# 2. 手动运行一次
+python3 scheduler.py --run-now
+
+# 3. 重新启动服务
+./manage_scheduler.sh start
 ```
 
-3. **后台运行推荐使用 screen**：
-```bash
-screen -S stock
-python3 scheduler.py
-# 按 Ctrl+A 然后 D 离开
-```
-
-#### 详细文档
+#### 📖 详细文档
 
 - [快速上手指南](stock_trading_advisor/WechatQuickStart.txt)
 
@@ -380,42 +420,62 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 5. 定时提醒相关
 
-#### 修改时间后没有执行？
-**原因**：修改配置后没有重启调度器。
+#### 如何查看服务状态？
+```bash
+cd stock_trading_advisor
+./manage_scheduler.sh status
+```
+
+#### 修改配置后没有生效？
+**原因**：修改配置后没有重启服务。
 
 **解决方法**：
 ```bash
-# 1. 停止旧调度器
-ps aux | grep scheduler.py | grep -v grep
-kill <进程ID>
-
-# 2. 启动新调度器
-python3 scheduler.py
+cd stock_trading_advisor
+./manage_scheduler.sh restart
 ```
 
-#### 如何确认调度器在运行？
+#### 如何查看执行日志？
 ```bash
-# 查看进程
-ps aux | grep scheduler.py | grep -v grep
-
-# 查看日志
-tail -f logs/scheduler.log
+cd stock_trading_advisor
+./manage_scheduler.sh logs
 ```
 
-#### ModuleNotFoundError: No module named 'schedule'
+#### 如何临时禁用调度器？
 ```bash
-source ../venv/bin/activate
-pip install schedule
+cd stock_trading_advisor
+./manage_scheduler.sh stop
+```
+
+#### 如何手动执行一次分析？
+```bash
+cd stock_trading_advisor
+# 1. 停止服务
+./manage_scheduler.sh stop
+
+# 2. 手动执行
+python3 scheduler.py --run-now
+
+# 3. 重新启动服务
+./manage_scheduler.sh start
+```
+
+#### 服务崩溃了怎么办？
+**不用担心！** systemd 会在10秒后自动重启服务。
+
+可以通过以下命令查看重启历史：
+```bash
+sudo journalctl -u stock-scheduler.service | grep restart
 ```
 
 详见：[定时提醒完整文档](stock_trading_advisor/README_定时提醒.md)
 
 ## 后续计划
 
-- [x] ⏰ **定时提醒功能** - 已完成！可在固定时间自动运行
+- [x] ⏰ **定时提醒功能** - 已完成！systemd 服务自动化管理
+- [x] 📱 **微信通知** - 已完成！支持企业微信机器人推送
 - [ ] 支持更多技术指标（RSI, BOLL 等）
 - [ ] 添加可视化图表
-- [ ] 邮件/微信通知
 - [ ] Web 界面
 - [ ] 策略参数自动优化
 

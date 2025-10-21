@@ -4,8 +4,8 @@
 schedule:
   enabled: true                    # 是否启用调度器
   run_times:                       # 运行时间列表（24小时制）
-    - "14:50"                      # 下午2:55（收盘前5分钟）
-    - "14:58"                      # 收盘前2分钟
+    # - "09:00"                      # 上午9:00（开盘前15分钟）
+    - "14:57"                      # 收盘前3分钟
     # - "11:25"                    # 上午收盘前5分钟（可选）
   check_trading_day: true          # 只在交易日运行
 
@@ -30,7 +30,7 @@ wechat:
   work_wechat:
     enabled: true                 # 是否启用
     webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=4d061115-7e61-493a-96fd-db020e1bea83'  # 机器人webhook地址
-    msg_type: 'text'               # 消息类型：text/markdown
+    msg_type: 'markdown'           # 消息类型：text/markdown (推荐使用markdown，格式更美观)
 
 
 # 分析设置

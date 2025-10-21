@@ -11,9 +11,7 @@ from typing import Dict, Optional, Tuple
 from .indicators import calculate_all_indicators
 from .divergence import (
     get_bottom_divergence_index,
-    get_peak_divergence_index,
-    get_peak_divergence_index_kdj,
-    get_peak_divergence_index_kd_variant
+    get_peak_divergence_index
 )
 from .indicator_validator import IndicatorValidator
 
@@ -23,7 +21,7 @@ logger = logging.getLogger(__name__)
 class MixedStrategy:
     """混合交易策略"""
 
-    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', order: str = 'auto', market: str = 'CN-A'):
+    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', order: str = 'auto', market: str = 'CN-A', use_simple_divergence: bool = False):
         """
         初始化策略
 
@@ -39,6 +37,7 @@ class MixedStrategy:
                 - 'high_frequency': 高频率模式（固定使用）
                 - 'high_quality': 高质量模式（固定使用）
             market: 市场类型 ('CN-A'-A股, 'HK'-港股, 'US'-美股)，用于选择正确的手续费率
+            use_simple_divergence: 是否使用简化版顶背离检测(get_peak_divergence_delayed)
         """
         self.config = self._default_config()
         if config:
@@ -50,6 +49,7 @@ class MixedStrategy:
         self.optimal_strategy = None  # 记录为当前股票选择的最优卖出策略
         self.optimal_order = 'high_frequency'  # 记录为当前股票选择的最优执行顺序 ('high_frequency' or 'high_quality')
         self.market = market
+        self.use_simple_divergence = use_simple_divergence  # 是否使用简化版顶背离检测
 
         # 初始化指标验证器
         if self.validate_indicators:
@@ -191,6 +191,8 @@ class MixedStrategy:
                 # 不中断流程，只记录警告
 
         # 3. 检测顶底背离
+        # 注意：顶背离检测已改为延迟确认版本（无未来函数）
+        # 返回的 top_index 是确认日（即极值点的下一天），实现了次日卖出
         df['top'] = 0
         df['bottom'] = 0
 
@@ -199,12 +201,10 @@ class MixedStrategy:
         bottom_index = []
 
         try:
-            # 顶部背离（三种方法的并集）
-            top_divergence_kdj = get_peak_divergence_index_kdj(df, self.config['lookback_days'])
-            top_divergence_diff = get_peak_divergence_index(df, self.config['lookback_days'])
-            top_divergence_kd = get_peak_divergence_index_kd_variant(df, self.config['lookback_days'])
-
-            top_index = list(set(top_divergence_kdj) | set(top_divergence_diff) | set(top_divergence_kd))
+            # 顶部背离（仅使用基于DIFF的检测方法）
+            # 返回的是延迟一天的确认日期（无未来函数）
+            # use_simple=True 使用简化版 get_peak_divergence_delayed
+            top_index = get_peak_divergence_index(df, self.config['lookback_days'], use_simple=self.use_simple_divergence)
             if len(top_index) > 0:
                 df.loc[top_index, 'top'] = 1
 
@@ -530,6 +530,7 @@ class MixedStrategy:
                     sell_index.add(idx)
 
         # 顶部背离强制卖出（所有策略共用）
+        # 注意：top_index 已经是延迟一天的确认日，即顶背离次日卖出
         sell_index = sell_index.union(set(top_index))
 
         # 应用卖出信号
@@ -559,38 +560,38 @@ class MixedStrategy:
             trades = []  # 记录每笔交易的收益率
 
             for i in range(len(df)):
-                if i > 0:
-                    prev_signal = df.iloc[i-1]['buy_signal']
-                    curr_price = df.iloc[i]['open']
+                row = df.iloc[i]
+                curr_signal = row['buy_signal']
+                curr_price = row['close']  # 使用收盘价
 
-                    # 买入
-                    if prev_signal == 1 and not holding:
-                        buy_price = curr_price
-                        shares = capital / buy_price  # 计算可买股数
-                        transaction_amount = shares * buy_price
+                # 买入
+                if curr_signal == 1 and not holding:
+                    buy_price = curr_price
+                    shares = capital / buy_price  # 计算可买股数
+                    transaction_amount = shares * buy_price
 
-                        # 扣除买入手续费
-                        buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
-                        capital -= buy_commission
+                    # 扣除买入手续费
+                    buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
+                    capital -= buy_commission
 
-                        holding = True
+                    holding = True
 
-                    # 卖出
-                    elif prev_signal == 0 and holding:
-                        sell_price = curr_price
-                        transaction_amount = shares * sell_price
+                # 卖出
+                elif curr_signal == 0 and holding:
+                    sell_price = curr_price
+                    transaction_amount = shares * sell_price
 
-                        # 扣除卖出手续费
-                        sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+                    # 扣除卖出手续费
+                    sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
 
-                        # 计算本次交易收益率
-                        trade_return = (sell_price - buy_price) / buy_price * 100
-                        trades.append(trade_return)
+                    # 计算本次交易收益率
+                    trade_return = (sell_price - buy_price) / buy_price * 100
+                    trades.append(trade_return)
 
-                        # 更新资金：卖出所得 - 手续费
-                        capital = transaction_amount - sell_commission
-                        holding = False
-                        shares = 0
+                    # 更新资金：卖出所得 - 手续费
+                    capital = transaction_amount - sell_commission
+                    holding = False
+                    shares = 0
 
             # 最后还持仓，用收盘价计算
             if holding:
@@ -882,10 +883,10 @@ class MixedStrategy:
         """
         回测策略（含手续费）
 
-        正确的交易逻辑：
-        - 看到买入信号(buy_signal=1)后，次日开盘买入
-        - 看到卖出信号(buy_signal=0)后，次日开盘卖出
-        - 收益 = (卖出开盘价 - 买入开盘价) / 买入开盘价
+        交易逻辑：
+        - 看到买入信号(buy_signal=1)后，当日收盘买入
+        - 看到卖出信号(buy_signal=0)后，当日收盘卖出
+        - 收益 = (卖出收盘价 - 买入收盘价) / 买入收盘价
         - 扣除手续费：
           * A股：买入佣金(0.015%,最低5元) + 卖出佣金(0.015%,最低5元) + 卖出印花税(0.05%)
           * 港股：买卖双向佣金(0.25%) + 买卖双向印花税(0.13%)
@@ -917,59 +918,55 @@ class MixedStrategy:
         for i in range(len(df)):
             row = df.iloc[i]
 
-            # 检查前一天是否有买入信号
-            if i > 0:
-                prev_row = df.iloc[i - 1]
+            # 当日有买入信号，当日收盘买入
+            if row['buy_signal'] == 1 and not holding:
+                buy_price = row['close']
+                buy_date = row['date']
 
-                # 前一天有买入信号，今天开盘买入
-                if prev_row['buy_signal'] == 1 and not holding:
-                    buy_price = row['open']
-                    buy_date = prev_row['date']
+                # 计算可买股数
+                shares = capital / buy_price
+                transaction_amount = shares * buy_price
 
-                    # 计算可买股数
-                    shares = capital / buy_price
-                    transaction_amount = shares * buy_price
+                # 计算并扣除买入手续费
+                buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
+                capital -= buy_commission
+                total_commission += buy_commission
 
-                    # 计算并扣除买入手续费
-                    buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
-                    capital -= buy_commission
-                    total_commission += buy_commission
+                holding = True
+                logger.debug(f"买入: {row['date']}, 价格: {buy_price:.2f}, 股数: {shares:.2f}, 手续费: {buy_commission:.2f}")
 
-                    holding = True
-                    logger.debug(f"买入: {row['date']}, 价格: {buy_price:.2f}, 股数: {shares:.2f}, 手续费: {buy_commission:.2f}")
+            # 当日有卖出信号（buy_signal=0），当日收盘卖出
+            elif row['buy_signal'] == 0 and holding:
+                sell_price = row['close']
+                transaction_amount = shares * sell_price
 
-                # 前一天有卖出信号（buy_signal=0），今天开盘卖出
-                elif prev_row['buy_signal'] == 0 and holding:
-                    sell_price = row['open']
-                    transaction_amount = shares * sell_price
+                # 计算并扣除卖出手续费
+                sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+                total_commission += sell_commission
 
-                    # 计算并扣除卖出手续费
-                    sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
-                    total_commission += sell_commission
+                # 更新资金：卖出所得 - 手续费
+                capital = transaction_amount - sell_commission
 
-                    # 更新资金：卖出所得 - 手续费
-                    capital = transaction_amount - sell_commission
+                # 计算收益率（基于初始买入资金）
+                initial_investment = shares * buy_price
+                profit = capital - (initial_capital - initial_investment + buy_commission)
+                profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
-                    # 计算收益率（基于初始买入资金）
-                    initial_investment = shares * buy_price
-                    profit = capital - (initial_capital - initial_investment + buy_commission)
-                    profit_rate = profit / initial_investment if initial_investment > 0 else 0
+                trades.append({
+                    'buy_date': buy_date,
+                    'buy_price': buy_price,
+                    'sell_date': row['date'],
+                    'sell_price': sell_price,
+                    'profit_rate': profit_rate,
+                    'capital': capital,
+                    'commission': buy_commission + sell_commission,  # 本次交易总手续费
+                    'buy_commission': buy_commission,  # 买入手续费
+                    'sell_commission': sell_commission,  # 卖出手续费
+                })
 
-                    trades.append({
-                        'buy_date': buy_date,
-                        'buy_price': buy_price,
-                        'sell_date': prev_row['date'],
-                        'sell_price': sell_price,
-                        'profit_rate': profit_rate,
-                        'capital': capital,
-                        'commission': buy_commission + sell_commission,  # 本次交易总手续费
-                        'buy_commission': buy_commission,  # 买入手续费
-                        'sell_commission': sell_commission,  # 卖出手续费
-                    })
-
-                    holding = False
-                    shares = 0
-                    logger.debug(f"卖出: {row['date']}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%, 手续费: {sell_commission:.2f}")
+                holding = False
+                shares = 0
+                logger.debug(f"卖出: {row['date']}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%, 手续费: {sell_commission:.2f}")
 
             capital_list.append(capital)
 
@@ -1113,7 +1110,18 @@ class MixedStrategy:
             sell_date = trade['sell_date']
 
             # 判断是否是最后一笔未平仓交易
-            is_last_open = (i == len(trades) - 1 and sell_date == df.iloc[-1]['date'])
+            # 当日收盘价买卖逻辑下：
+            # - 如果是最后一笔交易，且卖出日期是最后一天
+            # - 需要检查是否真的有卖出信号（buy_signal=0）
+            # - 如果有卖出信号，说明已经在当日收盘卖出了
+            # - 如果没有卖出信号，说明是持仓到最后一天（未平仓）
+            is_last_open = False
+            if i == len(trades) - 1 and sell_date == df.iloc[-1]['date']:
+                # 检查最后一天是否有真正的卖出信号
+                last_day_signal = df.iloc[-1]['buy_signal']
+                # 如果最后一天 buy_signal=1，说明是持仓状态（未卖出）
+                # 如果最后一天 buy_signal=0，说明当天已经卖出了
+                is_last_open = (last_day_signal == 1)
 
             # 获取买入日期的行信息（用于显示技术指标）
             buy_row = df[df['date'] == buy_date].iloc[0] if len(df[df['date'] == buy_date]) > 0 else None

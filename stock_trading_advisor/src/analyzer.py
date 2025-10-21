@@ -440,7 +440,7 @@ class SignalAnalyzer:
             initial_capital = signals_data.get('initial_capital', 10000.0)
             trades = signals_data.get('trades', [])  # 获取trades数据
 
-            output.append(f"{'序号':<6} {'买入信号':<12} {'次日买入价':<12} {'卖出信号':>1} {'次日卖出价':>10} {'收益率':>7} {'剩余本金':>10}")
+            output.append(f"{'序号':<6} {'买入日期':<12} {'买入价':<12} {'卖出日期':>10} {'卖出价':>10} {'收益率':>7} {'剩余本金':>10}")
             output.append("-" * 100)
 
             # 使用trades中的实际资金

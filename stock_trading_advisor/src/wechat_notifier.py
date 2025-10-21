@@ -39,10 +39,11 @@ class WorkWeChatRobot:
         """
         try:
             if msg_type == 'markdown':
+                # Markdown格式：使用更美观的排版
                 data = {
                     "msgtype": "markdown",
                     "markdown": {
-                        "content": f"# {title}\n\n{content}"
+                        "content": content  # Markdown格式不需要单独的标题
                     }
                 }
             else:
@@ -120,10 +121,6 @@ class WeChatNotificationManager:
             self.logger.warning("未配置企业微信通知")
             return False
 
-        # 提取标题和内容
-        title = f"📊 股票交易提醒 - {datetime.now().strftime('%m月%d日 %H:%M')}"
-        content = alert_text
-
         # 发送到企业微信
         for notifier_info in self.notifiers:
             name = notifier_info['name']
@@ -131,7 +128,14 @@ class WeChatNotificationManager:
             msg_type = notifier_info.get('msg_type', 'text')
 
             try:
-                if notifier.send(title, content, msg_type):
+                # 根据消息类型格式化内容
+                if msg_type == 'markdown':
+                    content = self._format_markdown(alert_text)
+                else:
+                    title = f"📊 股票交易提醒 - {datetime.now().strftime('%m月%d日 %H:%M')}"
+                    content = alert_text
+
+                if notifier.send("", content, msg_type):
                     self.logger.info(f"{name} 发送成功")
                     return True
                 else:
@@ -142,6 +146,69 @@ class WeChatNotificationManager:
                 return False
 
         return False
+
+    def _format_markdown(self, alert_text: str) -> str:
+        """
+        将纯文本格式转换为Markdown格式
+
+        Args:
+            alert_text: 原始提醒文本
+
+        Returns:
+            Markdown格式的文本
+        """
+        lines = alert_text.split('\n')
+        markdown_lines = []
+
+        for line in lines:
+            # 标题行
+            if '股票交易提醒' in line:
+                # 提取时间
+                import re
+                match = re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', line)
+                if match:
+                    time_str = match.group()
+                    # 转换为更友好的格式
+                    from datetime import datetime
+                    dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                    friendly_time = dt.strftime('%m月%d日 %H:%M')
+                    markdown_lines.append(f"# 📊 股票交易提醒")
+                    markdown_lines.append(f"> {friendly_time}")
+                else:
+                    markdown_lines.append(f"# {line.strip()}")
+            # 分隔线跳过
+            elif '=' in line and len(set(line.strip())) <= 1:
+                continue
+            # 统计信息行
+            elif '监控股票总数:' in line:
+                markdown_lines.append(f"**{line.strip()}**")
+            elif '买入:' in line and '卖出:' in line:
+                markdown_lines.append(f"**{line.strip()}**")
+            # 买入/卖出信号标题
+            elif '买入信号' in line or '卖出信号' in line:
+                markdown_lines.append(f"\n## {line.strip()}")
+            # 持有/观望标题
+            elif '持有中' in line or '观望' in line or '全部观望' in line:
+                markdown_lines.append(f"\n## {line.strip()}")
+            # 股票代码行 【000001】格式
+            elif '【' in line and '】' in line:
+                markdown_lines.append(f"\n### {line.strip()}")
+            # 操作行、理由行等
+            elif '操作:' in line or '理由:' in line or 'K值:' in line or '价格:' in line:
+                # 添加代码块样式
+                markdown_lines.append(f"`{line.strip()}`")
+            # 股票列表行 (数字开头)
+            elif line.strip() and line.strip()[0].isdigit():
+                markdown_lines.append(f"- {line.strip()}")
+            # 其他行
+            elif line.strip():
+                markdown_lines.append(line)
+            # 空行
+            else:
+                if markdown_lines and markdown_lines[-1] != '':
+                    markdown_lines.append('')
+
+        return '\n'.join(markdown_lines)
 
     def test_notification(self) -> Dict[str, bool]:
         """

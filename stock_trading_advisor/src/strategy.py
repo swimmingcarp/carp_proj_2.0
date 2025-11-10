@@ -530,26 +530,39 @@ class MixedStrategy:
             sell_index = set(sell_index1).union(set(sell_index2))
 
         elif strategy == 'gradual':
-            # 渐进式止损：首先恢复所有因单独跌破MA16被设为0的信号，然后仅在连续3天跌破MA16时才卖出
+            # 渐进式止损：区分上升趋势和下跌趋势
+            # 1. 下跌趋势（ma16 < ma45）：使用传统止损（跌破MA16立即止损）
+            # 2. 上升/横盘趋势（ma16 >= ma45）：使用渐进式止损（连续3天跌破MA16才止损）
 
             # 第一步：恢复所有因跌破MA16而被设置为0的信号为1（假设持有状态）
             # 这样做是为了取消基础买入条件中"跌破MA16立即卖出"的逻辑
             below_ma_index = df[df['close'] < df[f"{self.config['short_ma']}_ma"]].index
             df.loc[below_ma_index, 'buy_signal'] = 1  # 先恢复为持有状态
 
-            # 第二步：仅在连续3天跌破MA16时才设置为卖出
+            # 第二步：根据趋势应用不同的止损策略
             for i in range(2, len(df)):
                 idx = df.index[i]
-                idx_1 = df.index[i-1]
-                idx_2 = df.index[i-2]
-
+                # 检查当前趋势
+                ma16 = df.loc[idx, '16_ma']
+                ma45 = df.loc[idx, '45_ma']
                 below_ma_0 = df.loc[idx, 'close'] < df.loc[idx, f"{self.config['short_ma']}_ma"]
-                below_ma_1 = df.loc[idx_1, 'close'] < df.loc[idx_1, f"{self.config['short_ma']}_ma"]
-                below_ma_2 = df.loc[idx_2, 'close'] < df.loc[idx_2, f"{self.config['short_ma']}_ma"]
 
-                # 严格要求：只有连续3天都跌破才卖出
-                if below_ma_0 and below_ma_1 and below_ma_2:
-                    sell_index.add(idx)
+                if ma16 < ma45:
+                    # 下跌趋势：使用传统止损（跌破MA16立即止损）
+                    if below_ma_0:
+                        sell_index.add(idx)
+                else:
+                    # 上升/横盘趋势：使用渐进式止损（连续3天跌破MA16才止损）
+                    if i >= 2:  # 确保有足够的历史数据
+                        idx_1 = df.index[i-1]
+                        idx_2 = df.index[i-2]
+
+                        below_ma_1 = df.loc[idx_1, 'close'] < df.loc[idx_1, f"{self.config['short_ma']}_ma"]
+                        below_ma_2 = df.loc[idx_2, 'close'] < df.loc[idx_2, f"{self.config['short_ma']}_ma"]
+
+                        # 严格要求：只有连续3天都跌破才卖出
+                        if below_ma_0 and below_ma_1 and below_ma_2:
+                            sell_index.add(idx)
 
         # 顶部背离强制卖出（区分策略）
         # 注意：top_index 已经是延迟一天的确认日，即顶背离次日卖出

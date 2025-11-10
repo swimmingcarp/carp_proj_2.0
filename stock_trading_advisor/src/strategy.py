@@ -31,7 +31,7 @@ class MixedStrategy:
             sell_strategy: 卖出策略类型
                 - 'auto': 自动选择（对每只股票先回测，选择最优策略）
                 - 'original': 原始策略（跌破MA16或MACD<0）
-                - 'gradual': 渐进式止损（连续3天跌破MA16）
+                - 'gradual': 智能渐进式（连续3天跌破MA16，仅在上升趋势中屏蔽顶背离）
             order: 执行顺序类型
                 - 'auto': 自动选择（对每只股票先回测，选择最优执行顺序）
                 - 'high_frequency': 高频率模式（固定使用）
@@ -223,6 +223,7 @@ class MixedStrategy:
         df['buy_signal'] = 0
 
         # 基础买入条件：收盘价 >= 16日均线
+        # 这个条件生成原始的持有/卖出信号，后续的卖出策略会根据策略类型进行调整
         buy_index = df[df['close'] >= df[f"{self.config['short_ma']}_ma"]].index
         df.loc[buy_index, 'buy_signal'] = 1
 
@@ -450,6 +451,9 @@ class MixedStrategy:
             bottom_index: 底部背离索引列表
             top_index: 顶部背离索引列表
         """
+        # 首先确保买卖信号已正确初始化
+        # 注意：买入信号已在analyze()中基于"收盘价 >= 16日均线"生成
+
         if order == 'high_frequency':
             # NEW顺序：卖出策略 → 底部背离 → 顶部背离阻止 → RSI
             # 底部背离和RSI不会被错误阻止，产生更多买入机会
@@ -461,14 +465,19 @@ class MixedStrategy:
             bottom_shift_index = df[df['bottom'].shift(1) == 1].index
             df.loc[bottom_shift_index, 'buy_signal'] = 1
 
-            # 3. 顶部背离期间阻止买入
-            block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
-            df.loc[block_index, 'buy_signal'] = 0
+            # 3. 顶部背离期间阻止买入（根据策略类型决定是否启用)
+            if strategy == 'original':
+                # 原始策略：使用顶部背离阻止买入
+                block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
+                df.loc[block_index, 'buy_signal'] = 0
 
-            # 标记DIFF顶背离失效的日期
-            df['diff_invalidation'] = 0
-            if len(diff_invalidation_dates) > 0:
-                df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+                # 标记DIFF顶背离失效的日期
+                df['diff_invalidation'] = 0
+                if len(diff_invalidation_dates) > 0:
+                    df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+            elif strategy == 'gradual':
+                # 渐进式策略：禁用顶部背离阻止买入，保持原有信号
+                df['diff_invalidation'] = 0
 
             # 4. RSI增强买入（可选）
             if self.config.get('rsi_enabled', False):
@@ -489,14 +498,19 @@ class MixedStrategy:
             # 3. 应用卖出策略
             self._apply_sell_strategy(df, strategy, top_index)
 
-            # 4. 顶部背离期间阻止买入（会阻止上面的底部背离和RSI买入）
-            block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
-            df.loc[block_index, 'buy_signal'] = 0
+            # 4. 顶部背离期间阻止买入（根据策略类型决定是否启用）
+            if strategy == 'original':
+                # 原始策略：使用顶部背离阻止买入（会阻止上面的底部背离和RSI买入）
+                block_index, diff_invalidation_dates = self._calculate_block_index(df, top_index)
+                df.loc[block_index, 'buy_signal'] = 0
 
-            # 标记DIFF顶背离失效的日期
-            df['diff_invalidation'] = 0
-            if len(diff_invalidation_dates) > 0:
-                df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+                # 标记DIFF顶背离失效的日期
+                df['diff_invalidation'] = 0
+                if len(diff_invalidation_dates) > 0:
+                    df.loc[diff_invalidation_dates, 'diff_invalidation'] = 1
+            elif strategy == 'gradual':
+                # 渐进式策略：禁用顶部背离阻止买入，保持原有信号
+                df['diff_invalidation'] = 0
 
     def _apply_sell_strategy(self, df: pd.DataFrame, strategy: str, top_index: list) -> None:
         """
@@ -516,7 +530,14 @@ class MixedStrategy:
             sell_index = set(sell_index1).union(set(sell_index2))
 
         elif strategy == 'gradual':
-            # 渐进式止损：连续3天跌破MA16才卖出
+            # 渐进式止损：首先恢复所有因单独跌破MA16被设为0的信号，然后仅在连续3天跌破MA16时才卖出
+
+            # 第一步：恢复所有因跌破MA16而被设置为0的信号为1（假设持有状态）
+            # 这样做是为了取消基础买入条件中"跌破MA16立即卖出"的逻辑
+            below_ma_index = df[df['close'] < df[f"{self.config['short_ma']}_ma"]].index
+            df.loc[below_ma_index, 'buy_signal'] = 1  # 先恢复为持有状态
+
+            # 第二步：仅在连续3天跌破MA16时才设置为卖出
             for i in range(2, len(df)):
                 idx = df.index[i]
                 idx_1 = df.index[i-1]
@@ -526,12 +547,32 @@ class MixedStrategy:
                 below_ma_1 = df.loc[idx_1, 'close'] < df.loc[idx_1, f"{self.config['short_ma']}_ma"]
                 below_ma_2 = df.loc[idx_2, 'close'] < df.loc[idx_2, f"{self.config['short_ma']}_ma"]
 
+                # 严格要求：只有连续3天都跌破才卖出
                 if below_ma_0 and below_ma_1 and below_ma_2:
                     sell_index.add(idx)
 
-        # 顶部背离强制卖出（所有策略共用）
+        # 顶部背离强制卖出（区分策略）
         # 注意：top_index 已经是延迟一天的确认日，即顶背离次日卖出
-        sell_index = sell_index.union(set(top_index))
+        if strategy == 'original':
+            # 原始策略：所有顶部背离都强制卖出
+            sell_index = sell_index.union(set(top_index))
+        elif strategy == 'gradual':
+            # 渐进式策略：智能顶背离处理
+            # 只有在明显上升趋势（MA16 > MA45）时才完全屏蔽顶背离
+            # 在下跌/横盘趋势中，恢复顶背离的保护作用
+            filtered_top_index = []
+            for idx in top_index:
+                if idx in df.index:
+                    # 检查当前是否处于明显上升趋势
+                    ma16 = df.loc[idx, '16_ma']
+                    ma45 = df.loc[idx, '45_ma']
+
+                    if ma16 <= ma45:
+                        # 非上升趋势（下跌/横盘），执行顶背离卖出
+                        filtered_top_index.append(idx)
+                    # else: 上升趋势中，屏蔽顶背离卖出
+
+            sell_index = sell_index.union(set(filtered_top_index))
 
         # 应用卖出信号
         df.loc[list(sell_index), 'buy_signal'] = 0

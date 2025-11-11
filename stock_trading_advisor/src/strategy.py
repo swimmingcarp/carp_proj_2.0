@@ -1396,36 +1396,102 @@ class MixedStrategy:
                 })
 
             if sell_row is not None:
-                # 构建卖出理由（无论是否平仓都要检测）
-                sell_conditions = []  # 满足的卖出条件
-                hold_conditions = []  # 持有的理由（未满足卖出条件）
-
-                # 检测所有可能的卖出条件
-                if sell_row.get('top', 0) == 1:
-                    sell_conditions.append("顶部背离")
-                else:
-                    hold_conditions.append("无顶部背离")
-
-                if sell_row['close'] < sell_row[f"{self.config['short_ma']}_ma"]:
-                    sell_conditions.append(f"跌破{self.config['short_ma']}日均线")
-                else:
-                    hold_conditions.append(f"站稳{self.config['short_ma']}日均线")
-
-                if sell_row.get('macd', 0) < 0:
-                    sell_conditions.append("MACD空头")
-                else:
-                    hold_conditions.append("MACD多头")
-
-                # 如果是最后一笔未平仓交易，添加标注
+                # 如果是最后一笔未平仓交易，需要特殊处理
                 if is_last_open:
-                    if sell_conditions:
-                        # 有卖出条件
-                        reason = ', '.join(sell_conditions) + "(未平仓)"
+                    # 未平仓时，检查策略是否真正执行了卖出
+                    # buy_signal == 1 表示持有状态，说明虽然可能检测到卖出信号，但策略没有执行
+                    # buy_signal == 0 表示卖出状态，说明策略真正执行了卖出
+                    is_holding = (sell_row['buy_signal'] == 1)
+
+                    if is_holding:
+                        # 策略判定为持有，显示持有理由和警告信息
+                        hold_conditions = []  # 持有的积极理由
+                        warning_conditions = []  # 风险警告
+                        reason_explanation = []  # 策略未卖出的原因说明
+
+                        # 积极的持有理由
+                        if sell_row.get('top', 0) != 1:
+                            hold_conditions.append("无顶部背离")
+
+                        if sell_row['close'] >= sell_row[f"{self.config['short_ma']}_ma"]:
+                            hold_conditions.append(f"站稳{self.config['short_ma']}日均线")
+
+                        if sell_row.get('macd', 0) >= 0:
+                            hold_conditions.append("MACD多头")
+
+                        # 如果技术指标检测到顶背离但策略没卖，说明被保护逻辑屏蔽了
+                        if sell_row.get('top', 0) == 1:
+                            # 检查是否因为上升趋势保护
+                            ma16 = sell_row.get('16_ma', 0)
+                            ma45 = sell_row.get('45_ma', 0)
+                            if ma16 > ma45:
+                                hold_conditions.append("上升趋势保护(屏蔽顶背离)")
+
+                        # 风险警告及原因说明（虽然策略判定持有，但存在风险信号）
+                        ma16 = sell_row.get('16_ma', 0)
+                        ma45 = sell_row.get('45_ma', 0)
+                        close = sell_row.get('close', 0)
+
+                        # MACD空头警告
+                        if sell_row.get('macd', 0) < 0:
+                            warning_conditions.append("⚠️MACD空头")
+                            # 检查当前使用的策略
+                            current_strategy = self.optimal_strategy if hasattr(self, 'optimal_strategy') and self.optimal_strategy else 'gradual'
+                            if current_strategy == 'gradual':
+                                reason_explanation.append("渐进式策略不以MACD作为卖出条件")
+
+                        # 跌破均线警告
+                        if close < sell_row[f"{self.config['short_ma']}_ma"]:
+                            warning_conditions.append(f"⚠️跌破{self.config['short_ma']}日均线")
+                            # 检查当前使用的策略和趋势
+                            current_strategy = self.optimal_strategy if hasattr(self, 'optimal_strategy') and self.optimal_strategy else 'gradual'
+                            if current_strategy == 'gradual':
+                                if ma16 >= ma45:
+                                    reason_explanation.append(f"上升趋势(MA16≥MA45), 需连续3天跌破才卖出")
+                                else:
+                                    # 下跌趋势应该立即卖出，但没卖，可能是数据边界情况
+                                    reason_explanation.append("下跌趋势但未满足止损条件")
+
+                        # 组合理由和警告
+                        reason_parts = []
+                        if hold_conditions:
+                            reason_parts.append(', '.join(hold_conditions))
+                        if warning_conditions:
+                            warnings_str = ' | '.join(warning_conditions)
+                            reason_parts.append(warnings_str)
+
+                        # 如果有风险警告，添加原因说明
+                        if reason_explanation:
+                            reason = ', '.join(reason_parts) + ' 【原因: ' + '; '.join(reason_explanation) + '】(未平仓)'
+                        else:
+                            reason = (', '.join(reason_parts) if reason_parts else "持有中") + "(未平仓)"
                     else:
-                        # 无卖出条件，显示持有理由
-                        reason = ', '.join(hold_conditions) + "(未平仓)"
+                        # 策略判定为卖出，显示卖出条件
+                        sell_conditions = []
+
+                        if sell_row.get('top', 0) == 1:
+                            sell_conditions.append("顶部背离")
+
+                        if sell_row['close'] < sell_row[f"{self.config['short_ma']}_ma"]:
+                            sell_conditions.append(f"跌破{self.config['short_ma']}日均线")
+
+                        if sell_row.get('macd', 0) < 0:
+                            sell_conditions.append("MACD空头")
+
+                        reason = ', '.join(sell_conditions) + "(未平仓)" if sell_conditions else "满足卖出条件(未平仓)"
                 else:
-                    # 已平仓的正常交易
+                    # 已平仓的正常交易，显示真正导致卖出的条件
+                    sell_conditions = []
+
+                    if sell_row.get('top', 0) == 1:
+                        sell_conditions.append("顶部背离")
+
+                    if sell_row['close'] < sell_row[f"{self.config['short_ma']}_ma"]:
+                        sell_conditions.append(f"跌破{self.config['short_ma']}日均线")
+
+                    if sell_row.get('macd', 0) < 0:
+                        sell_conditions.append("MACD空头")
+
                     reason = ', '.join(sell_conditions) if sell_conditions else '满足卖出条件'
 
                 # 直接使用trade中保存的卖出手续费

@@ -457,22 +457,10 @@ class SignalAnalyzer:
                 buy_price = f"{buy['price']:>12.2f}"
 
                 if is_open:
-                    # 未平仓：根据是否有卖出信号显示不同状态
-                    reason = sell.get('reason', '')
-                    # 检测是否包含卖出条件（排除"无顶部背离"）
-                    # 只有真正的卖出条件才算，持有条件不算
-                    has_sell_signal = False
-                    if "顶部背离" in reason and "无顶部背离" not in reason:
-                        has_sell_signal = True
-                    elif "跌破" in reason:
-                        has_sell_signal = True
-                    elif "MACD空头" in reason:
-                        has_sell_signal = True
-
-                    if has_sell_signal:
-                        status_text = "持仓中（卖出信号）"
-                    else:
-                        status_text = "持仓中"
+                    # 未平仓：统一显示"持仓中"
+                    # 风险警告和原因说明已在"当前持仓状态"部分详细展示
+                    # 这里不需要重复显示"卖出信号"
+                    status_text = "持仓中"
 
                     sell_date = f"{Fore.YELLOW}{status_text:<20}{Style.RESET_ALL}"
                     sell_price = f"{Fore.YELLOW}{'--':<12}{Style.RESET_ALL}"
@@ -492,7 +480,12 @@ class SignalAnalyzer:
                     # 持仓中的累计手续费和毛收益率（基于已完成的交易）
                     gross_return_rate = (float_profit_capital + cumulative_commission - initial_capital) / initial_capital * 100
 
-                    profit_str = f"{Fore.YELLOW}(浮盈){profit_rate:>7.2f}%{Style.RESET_ALL}"
+                    # 根据收益率显示浮盈或浮亏
+                    if profit_rate >= 0:
+                        profit_str = f"{Fore.YELLOW}(浮盈){profit_rate:>7.2f}%{Style.RESET_ALL}"
+                    else:
+                        profit_str = f"{Fore.YELLOW}(浮亏){profit_rate:>7.2f}%{Style.RESET_ALL}"
+
                     commission_str = f"{Fore.YELLOW}¥{cumulative_commission:>11,.2f}{Style.RESET_ALL}"
                     gross_return_str = f"{Fore.YELLOW}{gross_return_rate:>9.2f}%{Style.RESET_ALL}"
                     capital_str = f"{Fore.YELLOW}¥{float_profit_capital:>13,.2f}{Style.RESET_ALL}"

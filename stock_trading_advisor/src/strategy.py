@@ -84,6 +84,11 @@ class MixedStrategy:
             'commission_min_cn': 5.0,     # A股最低佣金（元）
             'stamp_duty_cn': 0.0005,      # A股印花税（卖出时0.05%）
             'stamp_duty_hk': 0.0013,      # 港股印花税（双向各0.13%）
+            # 动态主升浪保护期配置
+            'main_wave_protection_enabled': True,  # 是否启用主升浪后保护期
+            'main_wave_min_gain': 65.0,     # 主升浪最小涨幅阈值（%）- 0.8倍上涨
+            'main_wave_min_days': 60,       # 主升浪最小持续天数（优化：80→60）
+            'main_wave_min_pullback': -10.0, # 回撤幅度才开始保护期（%）
         }
 
     def _calculate_commission(self, transaction_amount: float, is_buy: bool = True) -> float:
@@ -128,6 +133,132 @@ class MixedStrategy:
                 commission += transaction_amount * stamp_duty_rate
 
         return commission
+
+    def _detect_main_wave_protection_periods(self, df: pd.DataFrame, log_details: bool = False) -> list:
+        """
+        动态检测主升浪保护期
+
+        策略：
+        1. 动态查找 ma16 > ma45 的连续上升期间（主升浪）
+        2. 主升浪结束时（ma16 < ma45），开始保护期
+        3. 保护期持续到重新 ma16 > ma45
+
+        Args:
+            df: 包含price、ma16、ma45等列的DataFrame
+
+        Returns:
+            list: 保护期的日期索引列表
+        """
+        if not self.config.get('main_wave_protection_enabled', True):
+            return []
+
+        min_gain = self.config.get('main_wave_min_gain', 65.0)   # 65%
+        min_days = self.config.get('main_wave_min_days', 60)     # 60天
+        min_pullback = self.config.get('main_wave_min_pullback', -10.0)  # -10%
+
+        protection_periods = []
+
+        # 确保有MA数据
+        if '16_ma' not in df.columns or '45_ma' not in df.columns:
+            return protection_periods
+
+        i = 0
+        while i < len(df):
+            # 寻找主升浪开始：ma16 > ma45
+            while i < len(df) and df.iloc[i]['16_ma'] <= df.iloc[i]['45_ma']:
+                i += 1
+
+            if i >= len(df):
+                break
+
+            # 找到主升浪开始点
+            main_wave_start = i
+            start_price = df.iloc[i]['close']
+
+            # 寻找主升浪结束：ma16 < ma45
+            while i < len(df) and df.iloc[i]['16_ma'] > df.iloc[i]['45_ma']:
+                i += 1
+
+            if i >= len(df):
+                break
+
+            # 找到主升浪结束点
+            main_wave_end = i - 1
+
+            # 计算主升浪的涨幅和持续时间
+            peak_price = df.iloc[main_wave_start:i]['high'].max()
+            main_wave_duration = main_wave_end - main_wave_start + 1
+            main_wave_gain = (peak_price - start_price) / start_price * 100
+
+            # 检查是否符合主升浪条件
+            if main_wave_duration >= min_days and main_wave_gain >= min_gain:
+
+                # 检查主升浪结束后是否有足够的回撤
+                protection_start = i  # 从ma16 < ma45开始
+
+                # 计算从峰值的回撤
+                if protection_start < len(df):
+                    current_price = df.iloc[protection_start]['close']
+                    pullback_pct = (current_price - peak_price) / peak_price * 100
+
+                    # 如果回撤足够大，开始保护期
+                    if pullback_pct <= min_pullback:
+                        # 保护期持续到重新 ma16 > ma45
+                        protection_end = protection_start
+                        while (protection_end < len(df) and
+                               df.iloc[protection_end]['16_ma'] <= df.iloc[protection_end]['45_ma']):
+                            protection_end += 1
+
+                        # 添加保护期
+                        if protection_end > protection_start:
+                            for p_idx in range(protection_start, protection_end):
+                                if p_idx < len(df):
+                                    protection_periods.append(df.iloc[p_idx]['date'])
+
+                            main_wave_start_date = df.iloc[main_wave_start]['date']
+                            main_wave_end_date = df.iloc[main_wave_end]['date']
+                            protection_start_date = df.iloc[protection_start]['date']
+                            protection_end_date = df.iloc[protection_end-1]['date'] if protection_end > 0 else None
+
+                            if log_details:
+                                logger.info(f"🚨 检测到主升浪: {main_wave_start_date} → {main_wave_end_date}, "
+                                               f"涨幅{main_wave_gain:.1f}%, 持续{main_wave_duration}天")
+                                logger.info(f"🛡️  设置保护期: {protection_start_date} → {protection_end_date}, "
+                                               f"共{protection_end-protection_start}天")
+
+                        i = protection_end
+                    else:
+                        i += 1
+                else:
+                    i += 1
+            else:
+                i += 1
+
+        return list(set(protection_periods))  # 去重
+
+    def _apply_main_wave_protection(self, df: pd.DataFrame) -> None:
+        """
+        应用主升浪后保护期，禁止在保护期内买入
+
+        Args:
+            df: 数据框（会直接修改）
+        """
+        # 检查是否已经检测过主升浪（避免重复打印日志）
+        if not hasattr(self, '_main_wave_detected'):
+            self._main_wave_detected = True
+            log_details = True
+        else:
+            log_details = False
+
+        protection_periods = self._detect_main_wave_protection_periods(df, log_details=log_details)
+
+        if protection_periods:
+            # 在保护期内禁止买入 - 使用日期匹配而不是索引
+            protection_mask = df['date'].isin(protection_periods)
+            df.loc[protection_mask, 'buy_signal'] = 0
+            if log_details:
+                logger.info(f"🛡️  主升浪保护: 在{len(protection_periods)}个交易日内禁止买入")
+
 
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
@@ -454,6 +585,9 @@ class MixedStrategy:
         # 首先确保买卖信号已正确初始化
         # 注意：买入信号已在analyze()中基于"收盘价 >= 16日均线"生成
 
+        # 0. 应用主升浪后保护期（优先级最高）
+        self._apply_main_wave_protection(df)
+
         if order == 'high_frequency':
             # NEW顺序：卖出策略 → 底部背离 → 顶部背离阻止 → RSI
             # 底部背离和RSI不会被错误阻止，产生更多买入机会
@@ -461,9 +595,23 @@ class MixedStrategy:
             # 1. 应用卖出策略
             self._apply_sell_strategy(df, strategy, top_index)
 
-            # 2. 底部背离次日强制买入
+            # 2. 底部背离次日强制买入（但要尊重主升浪保护期）
             bottom_shift_index = df[df['bottom'].shift(1) == 1].index
-            df.loc[bottom_shift_index, 'buy_signal'] = 1
+            # 获取当前保护期，确保不覆盖保护期的限制
+            protection_periods = self._detect_main_wave_protection_periods(df)
+            if protection_periods:
+                protection_mask = df['date'].isin(protection_periods)
+                # 只在非保护期内执行底部背离买入
+                valid_bottom_index = [idx for idx in bottom_shift_index if not protection_mask.loc[idx]]
+                if valid_bottom_index:
+                    df.loc[valid_bottom_index, 'buy_signal'] = 1
+                # 记录被保护期阻止的底部背离次数
+                blocked_count = len(bottom_shift_index) - len(valid_bottom_index)
+                if blocked_count > 0:
+                    logger.info(f"🛡️ 主升浪保护阻止了{blocked_count}次底部背离买入")
+            else:
+                # 没有保护期，正常执行底部背离买入
+                df.loc[bottom_shift_index, 'buy_signal'] = 1
 
             # 3. 顶部背离期间阻止买入（根据策略类型决定是否启用)
             if strategy == 'original':
@@ -479,21 +627,39 @@ class MixedStrategy:
                 # 渐进式策略：禁用顶部背离阻止买入，保持原有信号
                 df['diff_invalidation'] = 0
 
-            # 4. RSI增强买入（可选）
+            # 4. RSI增强买入（可选，但要尊重主升浪保护期）
             if self.config.get('rsi_enabled', False):
-                self._apply_rsi_enhancements(df)
+                # 获取保护期，传递给RSI函数
+                protection_periods = self._detect_main_wave_protection_periods(df)
+                self._apply_rsi_enhancements(df, protection_periods)
 
         else:  # order == 'high_quality'
             # OLD顺序：底部背离 → RSI → 卖出策略 → 顶部背离阻止
             # 底部背离和RSI会被顶部背离阻止，过滤低质量交易，单笔收益更高
 
-            # 1. 底部背离次日强制买入（在卖出策略之前）
+            # 1. 底部背离次日强制买入（在卖出策略之前，但要尊重主升浪保护期）
             bottom_shift_index = df[df['bottom'].shift(1) == 1].index
-            df.loc[bottom_shift_index, 'buy_signal'] = 1
+            # 获取当前保护期，确保不覆盖保护期的限制
+            protection_periods = self._detect_main_wave_protection_periods(df)
+            if protection_periods:
+                protection_mask = df['date'].isin(protection_periods)
+                # 只在非保护期内执行底部背离买入
+                valid_bottom_index = [idx for idx in bottom_shift_index if not protection_mask.loc[idx]]
+                if valid_bottom_index:
+                    df.loc[valid_bottom_index, 'buy_signal'] = 1
+                # 记录被保护期阻止的底部背离次数
+                blocked_count = len(bottom_shift_index) - len(valid_bottom_index)
+                if blocked_count > 0:
+                    logger.info(f"🛡️ 主升浪保护阻止了{blocked_count}次底部背离买入")
+            else:
+                # 没有保护期，正常执行底部背离买入
+                df.loc[bottom_shift_index, 'buy_signal'] = 1
 
-            # 2. RSI增强买入（在卖出策略之前）
+            # 2. RSI增强买入（在卖出策略之前，但要尊重主升浪保护期）
             if self.config.get('rsi_enabled', False):
-                self._apply_rsi_enhancements(df)
+                # 获取保护期，传递给RSI函数
+                protection_periods = self._detect_main_wave_protection_periods(df)
+                self._apply_rsi_enhancements(df, protection_periods)
 
             # 3. 应用卖出策略
             self._apply_sell_strategy(df, strategy, top_index)
@@ -678,7 +844,7 @@ class MixedStrategy:
             logger.error(f"快速回测失败: {e}")
             return None
 
-    def _apply_rsi_enhancements(self, df: pd.DataFrame) -> None:
+    def _apply_rsi_enhancements(self, df: pd.DataFrame, protection_periods: list = None) -> None:
         """
         应用RSI增强买入逻辑（改进v3：大幅降低交易频率，避免手续费侵蚀）
 
@@ -724,9 +890,15 @@ class MixedStrategy:
 
             # 规则1：RSI极度超卖（< 18），接近均线，且不在跌停
             if rsi < rsi_oversold and close >= ma_16 * rsi_ma_ratio and p_change > -8:
-                df.loc[idx, 'buy_signal'] = 1
-                df.loc[idx, 'rsi_buy_type'] = 'RSI超卖'
-                last_rsi_buy_idx = i
+                # 检查是否在主升浪保护期内
+                current_date = df.loc[idx, 'date']
+                if protection_periods is None or current_date not in protection_periods:
+                    df.loc[idx, 'buy_signal'] = 1
+                    df.loc[idx, 'rsi_buy_type'] = 'RSI超卖'
+                    last_rsi_buy_idx = i
+                    logger.debug(f"RSI超卖买入: {current_date}, RSI={rsi:.1f}")
+                else:
+                    logger.debug(f"RSI超卖买入被主升浪保护期阻止: {current_date}")
                 logger.debug(f"RSI超卖买入: {df.loc[idx, 'date']}, RSI={rsi:.1f}")
 
             # 规则2：RSI短期金叉，且在极低位，并满足更严格的确认条件
@@ -753,9 +925,15 @@ class MixedStrategy:
                         confirmed = True
 
                 if confirmed:
-                    df.loc[idx, 'buy_signal'] = 1
-                    df.loc[idx, 'rsi_buy_type'] = 'RSI金叉'
-                    last_rsi_buy_idx = i
+                    # 检查是否在主升浪保护期内
+                    current_date = df.loc[idx, 'date']
+                    if protection_periods is None or current_date not in protection_periods:
+                        df.loc[idx, 'buy_signal'] = 1
+                        df.loc[idx, 'rsi_buy_type'] = 'RSI金叉'
+                        last_rsi_buy_idx = i
+                        logger.debug(f"RSI金叉买入: {current_date}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
+                    else:
+                        logger.debug(f"RSI金叉买入被主升浪保护期阻止: {current_date}")
                     logger.debug(f"RSI金叉买入: {df.loc[idx, 'date']}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
 
     def _apply_signals_order(self, df: pd.DataFrame, order: str, bottom_index: list, top_index: list) -> None:

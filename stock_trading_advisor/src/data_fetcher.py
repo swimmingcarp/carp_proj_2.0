@@ -319,43 +319,164 @@ class DataFetcher:
 
     def _fetch_akshare(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
-        """使用 AKShare 获取数据"""
+        """使用 AKShare 获取数据，支持多数据源备用"""
         # AKShare 股票代码格式：直接使用 6 位数字代码（如 000001, 600519）
         # 如果代码带有 sh 或 sz 前缀，需要去掉
         original_code = code
         if code.startswith(('sh', 'sz')):
             code = code[2:]  # 去掉前缀
 
-        # 获取历史行情数据
         adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
-        df = self.ak.stock_zh_a_hist(
-            symbol=code,
-            start_date=start_date.replace('-', ''),
-            end_date=end_date.replace('-', ''),
-            adjust=adjust_map.get(adjust, 'qfq')
-        )
 
-        if df is None or len(df) == 0:
+        # 定义多个数据源，按优先级排列
+        data_sources = [
+            ('东方财富', lambda: self.ak.stock_zh_a_hist(
+                symbol=code,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust=adjust_map.get(adjust, 'qfq')
+            )),
+            ('新浪财经', lambda: self._fetch_sina(code, start_date, end_date, adjust)),
+            ('腾讯财经', lambda: self._fetch_tencent(code, start_date, end_date, adjust)),
+            ('网易财经', lambda: self._fetch_netease(code, start_date, end_date, adjust)),
+        ]
+
+        last_error = None
+        for source_name, fetch_func in data_sources:
+            try:
+                logger.debug(f"尝试从 {source_name} 获取股票 {code} 数据...")
+                df = fetch_func()
+
+                if df is not None and len(df) > 0:
+                    # 检查数据是否已经是标准格式
+                    if 'date' in df.columns:
+                        logger.info(f"✓ 成功从 {source_name} 获取股票 {code} 数据")
+                        return df
+
+                    # 如果是东方财富数据，需要重命名
+                    df = df.rename(columns={
+                        '日期': 'date',
+                        '开盘': 'open',
+                        '收盘': 'close',
+                        '最高': 'high',
+                        '最低': 'low',
+                        '成交量': 'volume',
+                        '成交额': 'amount',
+                        '涨跌幅': 'pct_change'
+                    })
+
+                    # 选择需要的列
+                    df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                    df['code'] = code
+                    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+
+                    logger.info(f"✓ 成功从 {source_name} 获取股票 {code} 数据")
+                    return df.reset_index(drop=True)
+
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                # 检查是否是连接错误
+                if 'RemoteDisconnected' in error_msg or 'Connection' in error_msg:
+                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
+                else:
+                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
+                continue
+
+        # 所有数据源都失败
+        logger.error(f"所有数据源均失败，无法获取股票 {code} 数据")
+        if last_error:
+            raise last_error
+        return None
+
+    def _fetch_sina(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+        """从新浪财经获取数据"""
+        try:
+            # 新浪财经需要带市场前缀的代码格式: sh600519 或 sz000001
+            if code.startswith(('sh', 'sz')):
+                symbol = code
+            elif code.startswith('6'):
+                symbol = 'sh' + code
+            else:
+                symbol = 'sz' + code
+
+            # 使用 AKShare 的新浪日线数据接口
+            adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
+            df = self.ak.stock_zh_a_daily(
+                symbol=symbol,
+                adjust=adjust_map.get(adjust, 'qfq')
+            )
+
+            if df is not None and len(df) > 0:
+                # 筛选日期范围
+                df['date'] = pd.to_datetime(df['date'])
+                df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+
+                # 确保有必要的列
+                if 'date' in df.columns:
+                    # 选择需要的列
+                    df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                    df['code'] = code
+                    df['date'] = df['date'].dt.strftime('%Y-%m-%d')
+                    return df.reset_index(drop=True)
+        except AttributeError:
+            logger.debug("新浪财经接口不可用")
+        except Exception as e:
+            logger.debug(f"新浪财经获取失败: {e}")
+        return None
+
+    def _fetch_tencent(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+        """从腾讯财经获取数据"""
+        try:
+            # 使用 AKShare 的腾讯数据源接口
+            adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
+            df = self.ak.stock_zh_a_hist_tx(
+                symbol=code,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust=adjust_map.get(adjust, 'qfq')
+            )
+            if df is not None and len(df) > 0:
+                # 腾讯数据也是类似格式，需要重命名
+                df = df.rename(columns={
+                    '日期': 'date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高': 'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                })
+                # 确保有必要的列
+                if 'date' in df.columns:
+                    df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                    df['code'] = code
+                    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+                    return df.reset_index(drop=True)
+        except AttributeError:
+            logger.debug("腾讯财经接口不可用")
+        except Exception as e:
+            logger.debug(f"腾讯财经获取失败: {e}")
+        return None
+
+    def _fetch_netease(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+        """
+        从网易/其他备用源获取数据
+
+        注意：
+        - 雪球(xueqiu)的 stock_individual_spot_xq 只提供实时数据，不提供历史K线
+        - AKShare 目前没有网易财经的历史K线接口
+        - 可以考虑使用 baostock 或其他数据源作为备用
+        """
+        try:
+            # 目前暂无可用的网易/雪球历史K线接口
+            # 如果需要更多数据源，建议：
+            # 1. 使用 baostock (需要额外安装)
+            # 2. 使用 tushare (需要token)
+            # 3. 使用其他付费数据源
             return None
-
-        # 重命名列以匹配标准格式
-        df = df.rename(columns={
-            '日期': 'date',
-            '开盘': 'open',
-            '收盘': 'close',
-            '最高': 'high',
-            '最低': 'low',
-            '成交量': 'volume',
-            '成交额': 'amount',
-            '涨跌幅': 'pct_change'
-        })
-
-        # 选择需要的列
-        df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
-        df['code'] = code
-        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-
-        return df.reset_index(drop=True)
+        except Exception as e:
+            logger.debug(f"备用数据源获取失败: {e}")
+        return None
 
 
     def _fetch_tushare(self, code: str, start_date: str, end_date: str,
@@ -572,7 +693,7 @@ class DataFetcher:
 
     def get_stock_info(self, code: str) -> Optional[dict]:
         """
-        获取股票基本信息
+        获取股票基本信息（支持多数据源备用）
 
         Args:
             code: 股票代码
@@ -580,13 +701,71 @@ class DataFetcher:
         Returns:
             包含股票名称、行业等信息的字典
         """
+        if self.source != 'akshare':
+            return None
+
+        # 格式化代码（去掉前缀）
+        clean_code = code
+        if code.startswith(('sh', 'sz')):
+            clean_code = code[2:]
+
+        # 定义多个数据源，按优先级排列
+        data_sources = [
+            ('东方财富个股信息', lambda: self._get_stock_info_em(clean_code)),
+            ('东方财富实时行情', lambda: self._get_stock_info_from_spot(clean_code)),
+            ('简化信息', lambda: {'股票简称': clean_code, '股票代码': clean_code}),  # 最后的保底方案
+        ]
+
+        last_error = None
+        for source_name, fetch_func in data_sources:
+            try:
+                logger.debug(f"尝试从 {source_name} 获取股票 {clean_code} 信息...")
+                info = fetch_func()
+
+                if info is not None and len(info) > 0:
+                    logger.info(f"✓ 成功从 {source_name} 获取股票 {clean_code} 信息")
+                    return info
+
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                if 'RemoteDisconnected' in error_msg or 'Connection' in error_msg:
+                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
+                else:
+                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
+                continue
+
+        # 所有数据源都失败，返回最基本的信息
+        logger.warning(f"所有数据源均失败，使用默认信息: {clean_code}")
+        return {'股票简称': clean_code, '股票代码': clean_code}
+
+    def _get_stock_info_em(self, code: str) -> Optional[dict]:
+        """从东方财富获取个股详细信息"""
         try:
-            if self.source == 'akshare':
-                df = self.ak.stock_individual_info_em(symbol=code)
-                info = {}
-                for _, row in df.iterrows():
-                    info[row['item']] = row['value']
-                return info
+            df = self.ak.stock_individual_info_em(symbol=code)
+            info = {}
+            for _, row in df.iterrows():
+                info[row['item']] = row['value']
+            return info if len(info) > 0 else None
         except Exception as e:
-            logger.error(f"获取股票信息失败 {code}: {e}")
+            logger.debug(f"东方财富个股信息接口失败: {e}")
+            return None
+
+    def _get_stock_info_from_spot(self, code: str) -> Optional[dict]:
+        """从东方财富实时行情获取股票名称"""
+        try:
+            df = self.ak.stock_zh_a_spot_em()
+            stock_data = df[df['代码'] == code]
+
+            if len(stock_data) > 0:
+                row = stock_data.iloc[0]
+                return {
+                    '股票简称': row['名称'],
+                    '股票代码': code,
+                    '最新价': row['最新价'],
+                    '涨跌幅': row['涨跌幅'],
+                }
+            return None
+        except Exception as e:
+            logger.debug(f"东方财富实时行情接口失败: {e}")
             return None

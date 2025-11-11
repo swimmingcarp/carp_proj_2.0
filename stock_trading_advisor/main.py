@@ -160,11 +160,13 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True):
     # 4. 获取最新信号
     signal_data = strategy.get_latest_signal(df_analyzed)
 
-    # 5. 获取股票基本信息
-    stock_info = fetcher.get_stock_info(stock_code)
-    if stock_info:
-        signal_data['code'] = stock_code
-        signal_data['name'] = stock_info.get('总股本', stock_code)
+    # 5. 获取股票基本信息（回测模式下跳过以避免网络请求）
+    stock_info = None
+    if not show_backtest:  # 只在非回测模式下获取股票信息
+        stock_info = fetcher.get_stock_info(stock_code)
+        if stock_info:
+            signal_data['code'] = stock_code
+            signal_data['name'] = stock_info.get('总股本', stock_code)
 
     # 6. 显示信号
     print(analyzer.format_signal(signal_data, {'code': stock_code, 'name': stock_info.get('股票简称', '') if stock_info else ''}))

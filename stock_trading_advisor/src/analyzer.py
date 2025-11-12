@@ -453,7 +453,9 @@ class SignalAnalyzer:
 
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
-                buy_date = f"{buy['date']:<12}"
+                # 将日期转换为字符串格式
+                buy_date_str = str(buy['date']).split()[0] if hasattr(buy['date'], 'strftime') else str(buy['date'])
+                buy_date = f"{buy_date_str:<12}"
                 buy_price = f"{buy['price']:>12.2f}"
 
                 if is_open:
@@ -491,7 +493,9 @@ class SignalAnalyzer:
                     capital_str = f"{Fore.YELLOW}¥{float_profit_capital:>13,.2f}{Style.RESET_ALL}"
                 else:
                     # 已平仓：正常显示
-                    sell_date = f"{sell['date']:>20}"
+                    # 将日期转换为字符串格式
+                    sell_date_str = str(sell['date']).split()[0] if hasattr(sell['date'], 'strftime') else str(sell['date'])
+                    sell_date = f"{sell_date_str:>20}"
                     sell_price = f"{sell['price']:>12.2f}"
 
                     profit_rate = (sell['price'] - buy['price']) / buy['price'] * 100

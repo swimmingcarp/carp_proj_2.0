@@ -211,6 +211,100 @@ def rsi_indicator(data: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
+def bollinger_bands(data: pd.Series, period: int = 20, std_dev: float = 2.0):
+    """
+    布林线指标 - 向量化版本
+
+    Args:
+        data: 价格序列
+        period: 计算周期
+        std_dev: 标准差倍数
+
+    Returns:
+        tuple: (upper_band, middle_band, lower_band, width, %b)
+    """
+    # 中轨 = 简单移动平均线
+    middle_band = data.rolling(period).mean()
+
+    # 标准差
+    std = data.rolling(period).std()
+
+    # 上轨 = 中轨 + (标准差 * 倍数)
+    upper_band = middle_band + (std * std_dev)
+
+    # 下轨 = 中轨 - (标准差 * 倍数)
+    lower_band = middle_band - (std * std_dev)
+
+    # 布林线宽度 = (上轨 - 下轨) / 中轨
+    width = (upper_band - lower_band) / middle_band
+
+    # %B = (价格 - 下轨) / (上轨 - 下轨)
+    percent_b = (data - lower_band) / (upper_band - lower_band)
+
+    return upper_band, middle_band, lower_band, width, percent_b
+
+
+def bollinger_channel_analysis(df: pd.DataFrame, period: int = 20, lookback: int = 10):
+    """
+    布林线通道分析 - 检测通道趋势变化
+
+    Args:
+        df: 包含价格数据的DataFrame
+        period: 布林线计算周期
+        lookback: 趋势分析回望期
+
+    Returns:
+        dict: 通道分析结果
+    """
+    # 计算布林线
+    upper, middle, lower, width, percent_b = bollinger_bands(df['close'], period)
+
+    # 通道斜率分析（最近lookback天）
+    if len(upper) < lookback:
+        return {
+            'channel_trend': 'unknown',
+            'upper_slope': 0,
+            'lower_slope': 0,
+            'width_change': 0,
+            'is_converging': False
+        }
+
+    # 计算上下轨斜率
+    recent_upper = upper.tail(lookback)
+    recent_lower = lower.tail(lookback)
+    recent_width = width.tail(lookback)
+
+    upper_slope = np.polyfit(range(lookback), recent_upper, 1)[0]
+    lower_slope = np.polyfit(range(lookback), recent_lower, 1)[0]
+
+    # 宽度变化率
+    width_change = (recent_width.iloc[-1] - recent_width.iloc[0]) / recent_width.iloc[0]
+
+    # 通道趋势判断
+    avg_slope = (upper_slope + lower_slope) / 2
+    slope_threshold = df['close'].iloc[-1] * 0.001  # 0.1%的价格变化作为阈值
+
+    if avg_slope > slope_threshold:
+        channel_trend = 'ascending'  # 上升通道
+    elif avg_slope < -slope_threshold:
+        channel_trend = 'descending'  # 下降通道
+    else:
+        channel_trend = 'sideways'  # 横向整理
+
+    # 通道是否收敛
+    is_converging = width_change < -0.1  # 宽度缩小超过10%
+
+    return {
+        'channel_trend': channel_trend,
+        'upper_slope': upper_slope,
+        'lower_slope': lower_slope,
+        'width_change': width_change,
+        'is_converging': is_converging,
+        'current_width': recent_width.iloc[-1],
+        'percent_b': percent_b.iloc[-1] if not pd.isna(percent_b.iloc[-1]) else 0.5
+    }
+
+
 def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
                              init_d: float = None, init_date: str = '2018-01-02',
                              rsi_fast_period: int = 5, rsi_slow_period: int = 10):
@@ -259,7 +353,10 @@ def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
     df['rsi'] = rsi_indicator(df['close'], period=rsi_slow_period)  # 慢线（默认10，优化：14→10⭐）
     df['rsi_6'] = rsi_indicator(df['close'], period=rsi_fast_period)  # 快线（默认5，优化：6→5⭐）
 
-    # 7. 从起始日期截断
+    # 7. 布林线指标
+    df['bb_upper'], df['bb_middle'], df['bb_lower'], df['bb_width'], df['bb_percent'] = bollinger_bands(df['close'])
+
+    # 8. 从起始日期截断
     df = df.loc[df['date'] >= init_date].copy()
 
     return df

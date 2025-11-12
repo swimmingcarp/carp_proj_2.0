@@ -277,45 +277,34 @@ class DataFetcher:
 
     def _fetch_with_retry(self, code: str, start_date: str, end_date: str,
                           adjust: str, market: str = 'CN-A') -> Optional[pd.DataFrame]:
-        """带指数退避的重试机制"""
-        last_exception = None
-
-        for attempt in range(self.max_retries):
-            try:
-                # 根据数据源和市场类型获取数据
-                if self.source == 'akshare':
-                    if market == 'HK':
-                        df = self._fetch_akshare_hk(code, start_date, end_date, adjust)
-                    else:
-                        df = self._fetch_akshare(code, start_date, end_date, adjust)
-                elif self.source == 'tushare':
-                    df = self._fetch_tushare(code, start_date, end_date, adjust)
-                elif self.source == 'yfinance':
-                    df = self._fetch_yfinance(code, start_date, end_date)
+        """
+        获取数据（支持多数据源自动切换）
+        注意：对于akshare，重试逻辑已经在 _fetch_akshare 内部实现（多数据源切换）
+        """
+        try:
+            # 根据数据源和市场类型获取数据
+            if self.source == 'akshare':
+                if market == 'HK':
+                    df = self._fetch_akshare_hk(code, start_date, end_date, adjust)
                 else:
-                    return None
+                    # akshare内部已实现多数据源切换，无需外层重试
+                    df = self._fetch_akshare(code, start_date, end_date, adjust)
+            elif self.source == 'tushare':
+                df = self._fetch_tushare(code, start_date, end_date, adjust)
+            elif self.source == 'yfinance':
+                df = self._fetch_yfinance(code, start_date, end_date)
+            else:
+                return None
 
-                if df is not None and len(df) > 0:
-                    logger.info(f"成功获取股票 {code} 数据")
-                    return df
-                else:
-                    logger.warning(f"股票 {code} 数据为空")
-                    return None
+            if df is not None and len(df) > 0:
+                return df
+            else:
+                logger.warning(f"股票 {code} 数据为空")
+                return None
 
-            except Exception as e:
-                last_exception = e
-                logger.warning(f"获取股票 {code} 数据失败 (尝试 {attempt + 1}/{self.max_retries}): {e}")
-
-                # 如果不是最后一次尝试，进行指数退避
-                if attempt < self.max_retries - 1:
-                    # 指数退避: delay * (2 ^ attempt)
-                    backoff_time = self.retry_delay * (2 ** attempt)
-                    logger.info(f"等待 {backoff_time:.1f} 秒后重试...")
-                    time.sleep(backoff_time)
-
-        # 所有重试都失败
-        logger.error(f"获取股票 {code} 数据失败，已重试 {self.max_retries} 次: {last_exception}")
-        return None
+        except Exception as e:
+            logger.error(f"获取股票 {code} 数据失败: {e}")
+            return None
 
     def _fetch_akshare(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
@@ -344,7 +333,7 @@ class DataFetcher:
         last_error = None
         for source_name, fetch_func in data_sources:
             try:
-                logger.debug(f"尝试从 {source_name} 获取股票 {code} 数据...")
+                logger.info(f"尝试从 {source_name} 获取股票 {code} 数据...")
                 df = fetch_func()
 
                 if df is not None and len(df) > 0:
@@ -385,8 +374,6 @@ class DataFetcher:
 
         # 所有数据源都失败
         logger.error(f"所有数据源均失败，无法获取股票 {code} 数据")
-        if last_error:
-            raise last_error
         return None
 
     def _fetch_sina(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
@@ -713,13 +700,13 @@ class DataFetcher:
         data_sources = [
             ('东方财富个股信息', lambda: self._get_stock_info_em(clean_code)),
             ('东方财富实时行情', lambda: self._get_stock_info_from_spot(clean_code)),
-            ('简化信息', lambda: {'股票简称': clean_code, '股票代码': clean_code}),  # 最后的保底方案
+            ('股票名称缓存', lambda: self._get_stock_name_from_cache(clean_code)),
         ]
 
         last_error = None
         for source_name, fetch_func in data_sources:
             try:
-                logger.debug(f"尝试从 {source_name} 获取股票 {clean_code} 信息...")
+                logger.info(f"尝试从 {source_name} 获取股票 {clean_code} 信息...")
                 info = fetch_func()
 
                 if info is not None and len(info) > 0:
@@ -754,6 +741,7 @@ class DataFetcher:
     def _get_stock_info_from_spot(self, code: str) -> Optional[dict]:
         """从东方财富实时行情获取股票名称"""
         try:
+            # 尝试使用个股实时行情接口（更轻量）
             df = self.ak.stock_zh_a_spot_em()
             stock_data = df[df['代码'] == code]
 
@@ -768,4 +756,48 @@ class DataFetcher:
             return None
         except Exception as e:
             logger.debug(f"东方财富实时行情接口失败: {e}")
+            # 尝试从历史数据中获取股票名称
+            try:
+                df_hist = self.ak.stock_zh_a_hist(
+                    symbol=code,
+                    start_date='20250101',
+                    end_date='20251231',
+                    adjust='qfq'
+                )
+                if df_hist is not None and len(df_hist) > 0:
+                    # 历史数据中没有名称，使用stock_individual_info_em
+                    return None
+            except:
+                pass
             return None
+
+    def _get_stock_name_from_cache(self, code: str) -> Optional[dict]:
+        """从缓存或静态映射获取股票名称"""
+        # 常见股票的静态映射表
+        stock_names = {
+            '600519': '贵州茅台', '601318': '中国平安', '600036': '招商银行',
+            '000858': '五粮液', '000651': '格力电器', '601398': '工商银行',
+            '600276': '恒瑞医药', '000333': '美的集团', '002415': '海康威视',
+            '600887': '伊利股份', '000002': '万科A', '600030': '中信证券',
+            '601166': '兴业银行', '600016': '民生银行', '000001': '平安银行',
+            '600000': '浦发银行', '601328': '交通银行', '601288': '农业银行',
+            '601939': '建设银行', '601988': '中国银行', '600885': '宏发股份',
+            '000034': '神州数码', '002920': '德赛西威', '300293': '蓝英装备',
+            '300476': '胜宏科技', '001279': '强邦新材', '605117': '德业股份',
+            '603501': '韦尔股份', '688981': '中芯国际',
+        }
+
+        name = stock_names.get(code)
+        if name:
+            logger.info(f"✓ 从静态映射获取股票 {code} 名称: {name}")
+            return {
+                '股票简称': name,
+                '股票代码': code,
+            }
+
+        # 如果不在映射表中，使用代码作为名称（最后的保底方案）
+        logger.debug(f"股票 {code} 不在名称映射表中，使用代码作为名称")
+        return {
+            '股票简称': code,
+            '股票代码': code,
+        }

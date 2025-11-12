@@ -96,7 +96,7 @@ class WeChatNotificationManager:
         """初始化通知器"""
         wechat_config = self.config.get('wechat', {})
 
-        # 企业微信机器人
+        # 兼容旧版单个企业微信机器人配置
         if wechat_config.get('work_wechat', {}).get('enabled'):
             webhook_url = wechat_config['work_wechat'].get('webhook_url')
             if webhook_url:
@@ -107,6 +107,20 @@ class WeChatNotificationManager:
                 })
                 self.logger.info("已启用企业微信通知")
 
+        # 支持多个企业微信机器人配置 (新版)
+        work_wechat_list = wechat_config.get('work_wechat_list', [])
+        for idx, wechat_item in enumerate(work_wechat_list, 1):
+            if wechat_item.get('enabled', True):
+                webhook_url = wechat_item.get('webhook_url')
+                if webhook_url:
+                    name = wechat_item.get('name', f'企业微信{idx}')
+                    self.notifiers.append({
+                        'name': name,
+                        'notifier': WorkWeChatRobot(webhook_url),
+                        'msg_type': wechat_item.get('msg_type', 'text')
+                    })
+                    self.logger.info(f"已启用 {name} 通知")
+
     def send_alert(self, alert_text: str) -> bool:
         """
         发送交易提醒
@@ -115,13 +129,16 @@ class WeChatNotificationManager:
             alert_text: 提醒文本
 
         Returns:
-            是否发送成功
+            是否至少有一个通知器发送成功
         """
         if not self.notifiers:
             self.logger.warning("未配置企业微信通知")
             return False
 
-        # 发送到企业微信
+        success_count = 0
+        total_count = len(self.notifiers)
+
+        # 发送到所有配置的企业微信机器人
         for notifier_info in self.notifiers:
             name = notifier_info['name']
             notifier = notifier_info['notifier']
@@ -137,15 +154,19 @@ class WeChatNotificationManager:
 
                 if notifier.send("", content, msg_type):
                     self.logger.info(f"{name} 发送成功")
-                    return True
+                    success_count += 1
                 else:
                     self.logger.error(f"{name} 发送失败")
-                    return False
             except Exception as e:
                 self.logger.error(f"{name} 发送失败: {e}")
-                return False
 
-        return False
+        # 只要有一个发送成功就返回True
+        if success_count > 0:
+            self.logger.info(f"通知发送完成: {success_count}/{total_count} 个通知器发送成功")
+            return True
+        else:
+            self.logger.error(f"所有通知器发送失败 (共 {total_count} 个)")
+            return False
 
     def _format_markdown(self, alert_text: str) -> str:
         """

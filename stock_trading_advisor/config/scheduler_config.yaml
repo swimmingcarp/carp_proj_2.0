@@ -26,11 +26,29 @@ notification:
 
 # 微信通知配置
 wechat:
-  # 企业微信机器人（推荐）
+  # 方式1: 单个企业微信机器人（兼容旧版配置）
   work_wechat:
     enabled: true                 # 是否启用
     webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=4d061115-7e61-493a-96fd-db020e1bea83'  # 机器人webhook地址
     msg_type: 'markdown'           # 消息类型：text/markdown (推荐使用markdown，格式更美观)
+
+  # 方式2: 多个企业微信机器人（新版，支持同时推送到多个群）
+  work_wechat_list:
+    - enabled: true               # 是否启用此机器人
+      name: '交易群1'             # 机器人名称（用于日志）
+      webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY_1'
+      msg_type: 'markdown'        # 消息类型：text/markdown
+
+    - enabled: true
+      name: '交易群2'
+      webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY_2'
+      msg_type: 'text'
+
+    # 可以继续添加更多机器人
+    # - enabled: false
+    #   name: '备用群'
+    #   webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY_3'
+    #   msg_type: 'markdown'
 
 
 # 分析设置

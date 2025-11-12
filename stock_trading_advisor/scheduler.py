@@ -314,14 +314,19 @@ class TradingScheduler:
             lines.append("=" * 70)
             for signal in buy_signals:
                 code = signal.get('code', '')
-                name = signal.get('name', '')
+                name = signal.get('name', code)
                 action = signal.get('action', '')
                 price = signal.get('price', 0)
                 reason = signal.get('reason', '')
                 k = signal.get('k', 0)
                 macd = signal.get('macd', 0)
 
-                lines.append(f"  【{code}】 {name}")
+                # 显示格式：【代码】 名称（当名称与代码不同时）或 【代码】（相同时）
+                if name and name != code:
+                    display_title = f"【{code}】 {name}"
+                else:
+                    display_title = f"【{code}】"
+                lines.append(f"  {display_title}")
                 lines.append(f"     操作: {action}  |  当前价: ¥{price:.2f}")
                 if reason:
                     lines.append(f"     理由: {reason}")
@@ -334,14 +339,19 @@ class TradingScheduler:
             lines.append("=" * 70)
             for signal in sell_signals:
                 code = signal.get('code', '')
-                name = signal.get('name', '')
+                name = signal.get('name', code)
                 action = signal.get('action', '')
                 price = signal.get('price', 0)
                 reason = signal.get('reason', '')
                 k = signal.get('k', 0)
                 macd = signal.get('macd', 0)
 
-                lines.append(f"  【{code}】 {name}")
+                # 显示格式：【代码】 名称（当名称与代码不同时）或 【代码】（相同时）
+                if name and name != code:
+                    display_title = f"【{code}】 {name}"
+                else:
+                    display_title = f"【{code}】"
+                lines.append(f"  {display_title}")
                 lines.append(f"     操作: {action}  |  当前价: ¥{price:.2f}")
                 if reason:
                     lines.append(f"     理由: {reason}")
@@ -355,9 +365,14 @@ class TradingScheduler:
             lines.append("=" * 20)
             for signal in hold_signals:
                 code = signal.get('code', '')
-                name = signal.get('name', '')
+                name = signal.get('name', code)
                 price = signal.get('price', 0)
-                lines.append(f"  {code} {name}  |  价格: ¥{price:.2f}")
+                # 显示格式：代码 名称（当名称与代码不同时）或 代码（相同时）
+                if name and name != code:
+                    display_name = f"{code} {name}"
+                else:
+                    display_name = code
+                lines.append(f"  {display_name}  |  价格: ¥{price:.2f}")
 
         # 显示观望的股票（空仓，无明确信号）
         if watch_signals and not buy_signals and not sell_signals and not hold_signals:
@@ -369,10 +384,14 @@ class TradingScheduler:
             lines.append("")
             for signal in watch_signals:
                 code = signal.get('code', '')
-                name = signal.get('name', '')
+                name = signal.get('name', code)
                 price = signal.get('price', 0)
-
-                lines.append(f"  {code} {name}  |  价格: ¥{price:.2f}")
+                # 显示格式：代码 名称（当名称与代码不同时）或 代码（相同时）
+                if name and name != code:
+                    display_name = f"{code} {name}"
+                else:
+                    display_name = code
+                lines.append(f"  {display_name}  |  价格: ¥{price:.2f}")
         elif watch_signals:
             # 有其他信号时，简化显示观望股票
             lines.append(f"\n{'='*20}")
@@ -380,9 +399,14 @@ class TradingScheduler:
             lines.append("=" * 20)
             for signal in watch_signals:
                 code = signal.get('code', '')
-                name = signal.get('name', '')
+                name = signal.get('name', code)
                 price = signal.get('price', 0)
-                lines.append(f"  {code} {name}  |  价格: ¥{price:.2f}")
+                # 显示格式：代码 名称（当名称与代码不同时）或 代码（相同时）
+                if name and name != code:
+                    display_name = f"{code} {name}"
+                else:
+                    display_name = code
+                lines.append(f"  {display_name}  |  价格: ¥{price:.2f}")
 
         lines.append("\n" + "=" * 20)
 

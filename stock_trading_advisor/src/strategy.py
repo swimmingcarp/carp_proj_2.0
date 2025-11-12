@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class MixedStrategy:
     """混合交易策略"""
 
-    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', order: str = 'auto', market: str = 'CN-A', use_simple_divergence: bool = False):
+    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', order: str = 'auto', market: str = 'CN-A', use_simple_divergence: bool = False, adaptive_oscillation: bool = False, stock_code: str = ''):
         """
         初始化策略
 
@@ -47,6 +47,8 @@ class MixedStrategy:
                 - 'high_quality': 高质量模式（固定使用）
             market: 市场类型 ('CN-A'-A股, 'HK'-港股, 'US'-美股)，用于选择正确的手续费率
             use_simple_divergence: 是否使用简化版顶背离检测(get_peak_divergence_delayed)
+            adaptive_oscillation: 是否启用自适应震荡参数选择
+            stock_code: 股票代码（当adaptive_oscillation=True时使用）
         """
         self.config = self._default_config()
         if config:
@@ -57,6 +59,9 @@ class MixedStrategy:
         self.order_mode = order  # 执行顺序模式：'auto', 'high_frequency', 'high_quality'
         self.optimal_strategy = None  # 记录为当前股票选择的最优卖出策略
         self.optimal_order = 'high_frequency'  # 记录为当前股票选择的最优执行顺序 ('high_frequency' or 'high_quality')
+        self.adaptive_oscillation = adaptive_oscillation  # 是否启用自适应震荡参数
+        self.stock_code = stock_code  # 股票代码
+        self.selected_oscillation_version = None  # 记录选择的震荡参数版本
         self.market = market
         self.use_simple_divergence = use_simple_divergence  # 是否使用简化版顶背离检测
 
@@ -391,9 +396,13 @@ class MixedStrategy:
                 window_current = df_analysis['close'].iloc[i]
                 price_range_pct = (window_high - window_low) / window_current
 
-                if 0.05 < price_range_pct < 0.60:  # 震荡范围
+                # 使用自适应选择的参数（外层和内层范围）
+                outer_upper = getattr(self, '_oscillation_outer_upper', 0.30)
+                inner_upper = getattr(self, '_oscillation_inner_upper', 0.20)
+
+                if 0.05 < price_range_pct < outer_upper:  # 震荡范围（外层）
                     score += 1
-                    if 0.10 < price_range_pct < 0.30:  # 内层范围
+                    if 0.10 < price_range_pct < inner_upper:  # 内层范围
                         score += 1
 
             position_scores.append((i, current_date, score))
@@ -508,6 +517,12 @@ class MixedStrategy:
             logger.warning("数据为空，无法分析")
             return None, None
 
+        # 设置默认震荡参数（如果不启用自适应）
+        if not self.adaptive_oscillation:
+            # 使用原始的默认参数（与commit d4c0caa一致）
+            self._oscillation_outer_upper = 0.60
+            self._oscillation_inner_upper = 0.30
+
         # 1. 跌停保护检查（只检查最近一段时间的数据，避免因历史跌停拒绝分析）
         df_temp = df.copy()
         df_temp['p_change_temp'] = df_temp['close'].pct_change() * 100
@@ -591,8 +606,72 @@ class MixedStrategy:
         df.loc[buy_index, 'buy_signal'] = 1
 
         # 5. 自适应策略和执行顺序选择
+        # 步骤0: 选择震荡参数 (V1 vs V4)
         # 步骤1: 选择卖出策略 (original vs gradual)
         # 步骤2: 选择执行顺序 (high_frequency vs high_quality)
+
+        # === 步骤0: 选择震荡参数（如果启用） ===
+        if not self.adaptive_oscillation:
+            # 设置默认震荡参数（如果不启用自适应）
+            # 使用原始的默认参数（与commit d4c0caa一致）
+            self._oscillation_outer_upper = 0.60
+            self._oscillation_inner_upper = 0.30
+        else:
+            logger.info("自适应模式：正在评估最优震荡参数...")
+
+            # 测试 V1 参数 (5%-60%, 10%-30%) - 原始默认参数
+            self._oscillation_outer_upper = 0.60
+            self._oscillation_inner_upper = 0.30
+            df_test_v1 = df.copy()
+            # 应用完整的过滤器组合（使用默认的original和high_frequency，只关注震荡参数影响）
+            self._apply_combination(df_test_v1, 'original', 'high_frequency', bottom_index, top_index)
+            backtest_v1 = self._quick_backtest(df_test_v1)
+
+            # 测试 V4 参数 (5%-80%, 10%-50%) - 更宽松的参数
+            self._oscillation_outer_upper = 0.80
+            self._oscillation_inner_upper = 0.50
+            df_test_v4 = df.copy()
+            self._apply_combination(df_test_v4, 'original', 'high_frequency', bottom_index, top_index)
+            backtest_v4 = self._quick_backtest(df_test_v4)
+
+            # 选择最优参数
+            if backtest_v1 is not None and backtest_v4 is not None:
+                initial_capital = 10000.0
+                capital_v1 = backtest_v1['capital']
+                capital_v4 = backtest_v4['capital']
+                trades_v1 = backtest_v1['trades']
+                trades_v4 = backtest_v4['trades']
+                return_v1 = (capital_v1 - initial_capital) / initial_capital * 100
+                return_v4 = (capital_v4 - initial_capital) / initial_capital * 100
+
+                # 规则1: V4收益率 > V1收益率
+                if capital_v4 > capital_v1:
+                    diff = return_v4 - return_v1
+                    self._oscillation_outer_upper = 0.80
+                    self._oscillation_inner_upper = 0.50
+                    self.selected_oscillation_version = 'V4'
+                    logger.info(f"选择V4参数（收益更高: +{diff:.1f}%: {return_v4:.1f}% vs {return_v1:.1f}%, "
+                              f"V1: {trades_v1}笔 vs V4: {trades_v4}笔）")
+                # 规则2: V1交易次数比V4多50%以上（过度交易）
+                elif trades_v4 > 0 and trades_v1 > trades_v4 * 1.5:
+                    increase_pct = ((trades_v1 - trades_v4) / trades_v4 * 100)
+                    self._oscillation_outer_upper = 0.80
+                    self._oscillation_inner_upper = 0.50
+                    self.selected_oscillation_version = 'V4'
+                    logger.info(f"选择V4参数（V1交易过频: V1 {trades_v1}笔 vs V4 {trades_v4}笔, +{increase_pct:.0f}%）")
+                # 规则3: 默认V1
+                else:
+                    self._oscillation_outer_upper = 0.60
+                    self._oscillation_inner_upper = 0.30
+                    self.selected_oscillation_version = 'V1'
+                    logger.info(f"选择V1参数（默认选择: {return_v1:.1f}% vs {return_v4:.1f}%, "
+                              f"V1: {trades_v1}笔 vs V4: {trades_v4}笔）")
+            else:
+                # 回测失败，使用默认V1
+                self._oscillation_outer_upper = 0.60
+                self._oscillation_inner_upper = 0.30
+                self.selected_oscillation_version = 'V1'
+                logger.warning("震荡参数回测失败，使用默认V1参数")
 
         # === 步骤1: 选择卖出策略 ===
         if self.sell_strategy == 'auto':

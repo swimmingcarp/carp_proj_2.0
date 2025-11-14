@@ -361,16 +361,18 @@ class SignalAnalyzer:
         # 买入点详情
         if buy_points:
             output.append(f"\n{Fore.GREEN}━━━ 买入点 (最近 {min(show_limit, len(buy_points))} 次) ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<14} {'价格':<10} {'手续费':<16}   {'原因'}")
+            output.append(f"{'序号':<6} {'日期':<14} {'价格':<12} {'手续费':<12}   {'原因'}")
             output.append("-" * 80)
 
             # 显示最近的买入点
             for i, point in enumerate(buy_points[-show_limit:], 1):
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
-                date_str = f"{point['date']:<14}"
-                price_str = f"{point['price']:>10.2f}"
-                commission_str = f"{Fore.YELLOW}{point.get('commission', 0):>16.2f}{Style.RESET_ALL}"
+                # 确保日期是字符串格式，只取日期部分（去掉时间）
+                date_value = str(point.get('date', '')).strip().split()[0]
+                date_str = f"{date_value:<14}"
+                price_str = f"{point['price']:>12.2f}"
+                commission_str = f"{Fore.YELLOW}{point.get('commission', 0):>12.2f}{Style.RESET_ALL}"
                 reason = point['reason']
 
                 output.append(
@@ -384,16 +386,18 @@ class SignalAnalyzer:
         # 卖出点详情（只显示已完成的交易）
         if closed_sells:
             output.append(f"\n{Fore.RED}━━━ 卖出点 (最近 {min(show_limit, len(closed_sells))} 次) ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<14} {'价格':<10} {'手续费':<16}   {'原因'}")
+            output.append(f"{'序号':<6} {'日期':<14} {'价格':<12} {'手续费':<12}   {'原因'}")
             output.append("-" * 80)
 
             # 显示最近的卖出点
             for i, point in enumerate(closed_sells[-show_limit:], 1):
                 # 格式化数据，确保与标题对齐
                 seq = f"{i:<6}"
-                date_str = f"{point['date']:<14}"
-                price_str = f"{point['price']:>10.2f}"
-                commission_str = f"{Fore.YELLOW}{point.get('commission', 0):>16.2f}{Style.RESET_ALL}"
+                # 确保日期是字符串格式，只取日期部分（去掉时间）
+                date_value = str(point.get('date', '')).strip().split()[0]
+                date_str = f"{date_value:<14}"
+                price_str = f"{point['price']:>12.2f}"
+                commission_str = f"{Fore.YELLOW}{point.get('commission', 0):>12.2f}{Style.RESET_ALL}"
                 reason = point['reason']
 
                 output.append(

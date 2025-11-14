@@ -65,6 +65,11 @@ class MixedStrategy:
         self.market = market
         self.use_simple_divergence = use_simple_divergence  # 是否使用简化版顶背离检测
 
+        # 震荡期间检测缓存（避免重复检测和日志打印）
+        self._oscillation_periods_cache = None
+        self._oscillation_cache_key = None
+        self._oscillation_log_printed = False  # 记录是否已打印过震荡检测日志
+
         # 初始化指标验证器
         if self.validate_indicators:
             self.indicator_validator = IndicatorValidator()
@@ -291,6 +296,13 @@ class MixedStrategy:
         - 300274: 2021-08-03 ~ 2022-04-07 (已知震荡下行)
         - 300274: 2022-07-21 ~ 2023-01-05 (已知震荡下行)
         """
+        # 使用缓存，避免重复检测和日志打印
+        cache_key = (len(df), df['date'].iloc[0] if 'date' in df.columns else df.index[0],
+                     df['date'].iloc[-1] if 'date' in df.columns else df.index[-1])
+
+        if self._oscillation_cache_key == cache_key and self._oscillation_periods_cache is not None:
+            return self._oscillation_periods_cache
+
         if len(df) < 50:
             return []
 
@@ -463,12 +475,21 @@ class MixedStrategy:
         periods = known_oscillation_periods
 
         logger.info(f"🔍 总共确定 {len(periods)} 个震荡下行期间 (包含{len(known_oscillation_periods) - len([p for p in periods if p[4] < 8.0])}个已知期间)")
+
+        # 保存到缓存
+        self._oscillation_periods_cache = periods
+        self._oscillation_cache_key = cache_key
+
         return periods
 
-    def _apply_oscillation_decline_filter(self, df: pd.DataFrame) -> None:
+    def _apply_oscillation_decline_filter(self, df: pd.DataFrame, log_details: bool = True) -> None:
         """
         应用震荡下行过滤
         在检测到的震荡下行期间暂停买入信号
+
+        Args:
+            df: 数据DataFrame
+            log_details: 是否打印详细日志（用于避免重复打印）
         """
         if not self.config.get('oscillation_detection_enabled', True):
             return
@@ -479,13 +500,26 @@ class MixedStrategy:
         if not oscillation_periods:
             return
 
+        # 第一次调用时打印详细日志，后续不打印
+        should_log = log_details and not self._oscillation_log_printed
+        if should_log:
+            self._oscillation_log_printed = True
+
         total_signals = (df['buy_signal'] == 1).sum()
         filtered_count = 0
 
         for period_start_idx, period_end_idx, period_start_date, period_end_date, avg_score in oscillation_periods:
             # 根据日期过滤（如果有日期列）
             if 'date' in df.columns and hasattr(period_start_date, 'strftime'):
-                period_mask = (df['date'] >= period_start_date) & (df['date'] <= period_end_date)
+                # 确保日期类型一致（df['date']可能是字符串）
+                if df['date'].dtype == 'object':
+                    # df['date'] 是字符串，需要转换为日期格式
+                    start_str = period_start_date.strftime('%Y-%m-%d')
+                    end_str = period_end_date.strftime('%Y-%m-%d')
+                    period_mask = (df['date'] >= start_str) & (df['date'] <= end_str)
+                else:
+                    # df['date'] 是 Timestamp，直接比较
+                    period_mask = (df['date'] >= period_start_date) & (df['date'] <= period_end_date)
                 date_info = f"{period_start_date.strftime('%Y-%m-%d')} ~ {period_end_date.strftime('%Y-%m-%d')}"
             else:
                 # 根据索引过滤
@@ -497,10 +531,12 @@ class MixedStrategy:
             if period_signals > 0:
                 df.loc[period_mask, 'buy_signal'] = 0
                 filtered_count += period_signals
-                logger.info(f"🚫 震荡下行期间过滤: {date_info}, 过滤{period_signals}个信号")
+                if should_log:
+                    logger.info(f"🚫 震荡下行期间过滤: {date_info}, 过滤{period_signals}个信号")
 
         remaining_signals = (df['buy_signal'] == 1).sum()
-        logger.info(f"📊 震荡下行过滤完成: 原始{total_signals}个 -> 过滤{filtered_count}个 -> 保留{remaining_signals}个")
+        if should_log:
+            logger.info(f"📊 震荡下行过滤完成: 原始{total_signals}个 -> 过滤{filtered_count}个 -> 保留{remaining_signals}个")
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
         """

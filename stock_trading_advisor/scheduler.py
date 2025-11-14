@@ -68,12 +68,17 @@ class TradingScheduler:
             return self._get_default_config()
 
     def _get_default_config(self) -> dict:
-        """获取默认配置"""
+        """
+        获取默认配置
+
+        注意：这只是 fallback 配置，仅在配置文件加载失败时使用
+        实际生产环境应使用 config/scheduler_config.yaml
+        """
         return {
             'schedule': {
                 'enabled': True,
-                'run_times': ['14:57'],  # 默认下午2:57
-                'check_trading_day': True,  # 只在交易日运行
+                'run_times': [],  # 默认为空，强制用户在配置文件中设置
+                'check_trading_day': True,
             },
             'stocks': {
                 'watch_list': [],  # 监控列表
@@ -456,8 +461,13 @@ class TradingScheduler:
             except Exception as e:
                 self.logger.error(f"发送微信通知异常: {e}")
 
-    def run_analysis(self):
-        """执行定时分析任务"""
+    def run_analysis(self, market_filter: List[str] = None):
+        """
+        执行定时分析任务
+
+        Args:
+            market_filter: 市场过滤列表，如 ['CN-A'] 或 ['HK']，None表示所有市场
+        """
         schedule_config = self.config.get('schedule', {})
 
         # 检查是否需要验证交易日
@@ -468,7 +478,10 @@ class TradingScheduler:
                 return
 
         self.logger.info("=" * 50)
-        self.logger.info("开始定时分析任务")
+        if market_filter:
+            self.logger.info(f"开始定时分析任务（市场: {', '.join(market_filter)}）")
+        else:
+            self.logger.info("开始定时分析任务（所有市场）")
 
         # 加载监控列表
         watch_list = self._load_watch_list()
@@ -478,8 +491,32 @@ class TradingScheduler:
             print("⚠️  监控列表为空，请在配置文件中添加股票代码")
             return
 
+        # 根据市场过滤股票
+        if market_filter:
+            from src.data_fetcher import DataFetcher
+            fetcher = DataFetcher(source='akshare', cache_enabled=True)
+
+            filtered_watch_list = []
+            for code in watch_list:
+                market = fetcher._detect_market(code)
+                if market in market_filter:
+                    filtered_watch_list.append(code)
+
+            watch_list = filtered_watch_list
+
+            if not watch_list:
+                market_names = {'CN-A': 'A股', 'HK': '港股', 'US': '美股'}
+                market_str = ', '.join([market_names.get(m, m) for m in market_filter])
+                self.logger.info(f"当前时段没有{market_str}股票需要推送")
+                print(f"ℹ️  当前时段没有{market_str}股票需要推送")
+                return
+
         self.logger.info(f"监控股票数量: {len(watch_list)}")
         print(f"\n🔍 开始分析 {len(watch_list)} 只股票...")
+        if market_filter:
+            market_names = {'CN-A': 'A股', 'HK': '港股', 'US': '美股'}
+            market_str = ', '.join([market_names.get(m, m) for m in market_filter])
+            print(f"   市场类型: {market_str}")
 
         # 分析所有股票
         signals = []
@@ -510,17 +547,58 @@ class TradingScheduler:
             print("⚠️  调度器已禁用")
             return
 
-        run_times = schedule_config.get('run_times', ['14:57'])
+        run_times = schedule_config.get('run_times', [])
+
+        # 兼容两种配置格式
+        # 格式1: ['14:57', '15:57'] - 字符串列表（所有市场）
+        # 格式2: [{'time': '14:57', 'markets': ['CN-A']}, ...] - 字典列表（分市场）
+
+        if not run_times:
+            print("⚠️  未配置运行时间")
+            return
 
         # 注册定时任务
-        for run_time in run_times:
-            schedule.every().day.at(run_time).do(self.run_analysis)
-            print(f"⏰ 已设置定时任务: 每天 {run_time}")
+        task_count = 0
+        for item in run_times:
+            if isinstance(item, str):
+                # 格式1: 简单字符串，所有市场
+                run_time = item
+                markets = None
+                schedule.every().day.at(run_time).do(self.run_analysis, market_filter=markets)
+                print(f"⏰ 已设置定时任务: 每天 {run_time} (所有市场)")
+                task_count += 1
 
-        self.logger.info(f"调度器已启动，运行时间: {', '.join(run_times)}")
+            elif isinstance(item, dict):
+                # 格式2: 字典，包含时间和市场信息
+                run_time = item.get('time')
+                markets = item.get('markets', None)
+
+                if not run_time:
+                    self.logger.warning(f"任务配置缺少时间: {item}")
+                    continue
+
+                # 使用 lambda 捕获 markets 的值（避免闭包问题）
+                schedule.every().day.at(run_time).do(
+                    lambda m=markets: self.run_analysis(market_filter=m)
+                )
+
+                # 格式化显示
+                if markets:
+                    market_names = {'CN-A': 'A股', 'HK': '港股', 'US': '美股'}
+                    market_str = ', '.join([market_names.get(m, m) for m in markets])
+                    print(f"⏰ 已设置定时任务: 每天 {run_time} ({market_str})")
+                else:
+                    print(f"⏰ 已设置定时任务: 每天 {run_time} (所有市场)")
+                task_count += 1
+
+        if task_count == 0:
+            print("⚠️  未能设置任何定时任务")
+            return
+
+        self.logger.info(f"调度器已启动，共 {task_count} 个定时任务")
         print(f"\n✓ 调度器已启动")
         print(f"📋 监控股票列表: {len(self._load_watch_list())} 只")
-        print(f"⏰ 运行时间: {', '.join(run_times)}")
+        print(f"📅 定时任务数: {task_count} 个")
         print(f"\n💡 提示: 按 Ctrl+C 停止调度器\n")
 
         # 循环执行

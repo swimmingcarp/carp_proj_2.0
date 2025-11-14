@@ -186,10 +186,79 @@ class DataFetcher:
             return None
 
     def _save_to_cache(self, df: pd.DataFrame, cache_path: Path):
-        """保存数据到缓存"""
+        """
+        增量保存数据到缓存
+
+        策略：
+        1. 如果缓存文件已存在，加载旧数据
+        2. 智能合并：保留缓存中更早的历史数据
+        3. 按日期去重（保留最新）
+        4. 保存完整的历史数据
+
+        重要：即使新数据的起始日期晚于缓存，也会保留缓存中更早的历史数据
+
+        Args:
+            df: 新获取的数据
+            cache_path: 缓存文件路径
+        """
         try:
-            df.to_csv(cache_path, index=False)
-            logger.debug(f"数据已缓存: {cache_path}")
+            if cache_path.exists():
+                # 读取现有缓存
+                try:
+                    old_df = pd.read_csv(cache_path)
+
+                    if len(old_df) > 0:
+                        # 智能合并：保留所有历史数据
+                        # 合并新旧数据（old_df 在前，确保保留更早的历史）
+                        combined_df = pd.concat([old_df, df], ignore_index=True)
+
+                        # 确保 date 列是字符串格式（统一格式）
+                        combined_df['date'] = pd.to_datetime(combined_df['date']).dt.strftime('%Y-%m-%d')
+
+                        # 按日期去重，保留最后出现的（即新数据）
+                        combined_df = combined_df.drop_duplicates(subset=['date'], keep='last')
+
+                        # 按日期排序
+                        combined_df = combined_df.sort_values('date').reset_index(drop=True)
+
+                        # 计算变化
+                        old_count = len(old_df)
+                        new_count = len(df)
+                        total_count = len(combined_df)
+                        added_count = total_count - old_count
+
+                        # 保存合并后的完整数据
+                        combined_df.to_csv(cache_path, index=False)
+
+                        # 显示详细信息
+                        old_date_range = f"{old_df['date'].iloc[0]} ~ {old_df['date'].iloc[-1]}"
+                        new_date_range = f"{combined_df['date'].iloc[0]} ~ {combined_df['date'].iloc[-1]}"
+
+                        if added_count > 0:
+                            logger.info(f"增量更新缓存: {cache_path.name}")
+                            logger.info(f"  原有: {old_count} 条 ({old_date_range})")
+                            logger.info(f"  更新: {total_count} 条 ({new_date_range}), 新增 {added_count} 条")
+                        elif added_count == 0:
+                            logger.info(f"缓存已是最新: {cache_path.name} ({total_count} 条)")
+                        else:
+                            # 理论上不应该出现
+                            logger.warning(f"缓存记录减少: {cache_path.name} ({old_count} → {total_count})")
+
+                    else:
+                        # 旧缓存为空，直接保存新数据
+                        df.to_csv(cache_path, index=False)
+                        logger.debug(f"缓存为空，保存新数据: {cache_path}")
+
+                except Exception as e:
+                    # 读取旧缓存失败，直接覆盖
+                    logger.warning(f"读取旧缓存失败 {cache_path}: {e}，将覆盖保存")
+                    df.to_csv(cache_path, index=False)
+            else:
+                # 缓存文件不存在，直接保存
+                df.to_csv(cache_path, index=False)
+                date_range = f"{df['date'].iloc[0]} ~ {df['date'].iloc[-1]}"
+                logger.info(f"创建新缓存: {cache_path.name} ({len(df)} 条, {date_range})")
+
         except Exception as e:
             logger.warning(f"保存缓存失败 {cache_path}: {e}")
 
@@ -328,7 +397,8 @@ class DataFetcher:
             )),
             ('新浪财经', lambda: self._fetch_sina(code, start_date, end_date, adjust)),
             ('腾讯财经', lambda: self._fetch_tencent(code, start_date, end_date, adjust)),
-            ('网易财经', lambda: self._fetch_netease(code, start_date, end_date, adjust)),
+            ('Baostock', lambda: self._fetch_baostock(code, start_date, end_date, adjust)),
+            # 网易财经：API已下线（502错误），已用Baostock替代
         ]
 
         # 随机打乱数据源顺序，避免单一网站访问过量
@@ -417,57 +487,142 @@ class DataFetcher:
         return None
 
     def _fetch_tencent(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
-        """从腾讯财经获取数据"""
+        """
+        从腾讯财经获取数据
+
+        注意：腾讯接口需要带市场标识的代码（如 sz002916）
+        """
         try:
+            # 腾讯接口需要带市场前缀的代码格式
+            if code.startswith(('sh', 'sz')):
+                symbol = code  # 已经有前缀
+            elif code.startswith('6'):
+                symbol = 'sh' + code  # 上海主板
+            else:
+                symbol = 'sz' + code  # 深圳市场（主板、创业板、中小板）
+
             # 使用 AKShare 的腾讯数据源接口
             adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
             df = self.ak.stock_zh_a_hist_tx(
-                symbol=code,
+                symbol=symbol,
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
                 adjust=adjust_map.get(adjust, 'qfq')
             )
             if df is not None and len(df) > 0:
-                # 腾讯数据也是类似格式，需要重命名
-                df = df.rename(columns={
-                    '日期': 'date',
-                    '开盘': 'open',
-                    '收盘': 'close',
-                    '最高': 'high',
-                    '最低': 'low',
-                    '成交量': 'volume',
-                })
+                # 腾讯返回的数据已经是标准英文列名
+                # 列名: ['date', 'open', 'close', 'high', 'low', 'amount']
+                # 注意: 腾讯返回的是 'amount' (成交额) 而不是 'volume' (成交量)
+
+                # 检查是否需要重命名（兼容可能的中文列名）
+                if '日期' in df.columns:
+                    df = df.rename(columns={
+                        '日期': 'date',
+                        '开盘': 'open',
+                        '收盘': 'close',
+                        '最高': 'high',
+                        '最低': 'low',
+                        '成交量': 'volume',
+                    })
+
+                # 处理列名: amount -> volume（保持一致性）
+                if 'amount' in df.columns and 'volume' not in df.columns:
+                    df['volume'] = df['amount']
+
                 # 确保有必要的列
-                if 'date' in df.columns:
+                if 'date' in df.columns and 'volume' in df.columns:
                     df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
                     df['code'] = code
                     df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
                     return df.reset_index(drop=True)
+
         except AttributeError:
             logger.debug("腾讯财经接口不可用")
         except Exception as e:
             logger.debug(f"腾讯财经获取失败: {e}")
         return None
 
-    def _fetch_netease(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
+    def _fetch_baostock(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
         """
-        从网易/其他备用源获取数据
+        从Baostock获取数据
 
-        注意：
-        - 雪球(xueqiu)的 stock_individual_spot_xq 只提供实时数据，不提供历史K线
-        - AKShare 目前没有网易财经的历史K线接口
-        - 可以考虑使用 baostock 或其他数据源作为备用
+        Baostock数据说明：
+        - 免费开源，由证券宝提供
+        - 支持前复权、后复权、不复权
+        - 数据质量高，更新及时
+        - 需要登录/登出操作
+
+        注意：网易财经API已下线（返回502错误），改用Baostock作为第4数据源
         """
         try:
-            # 目前暂无可用的网易/雪球历史K线接口
-            # 如果需要更多数据源，建议：
-            # 1. 使用 baostock (需要额外安装)
-            # 2. 使用 tushare (需要token)
-            # 3. 使用其他付费数据源
+            import baostock as bs
+
+            # 格式化代码
+            if code.startswith(('sh', 'sz')):
+                clean_code = code[2:]
+            else:
+                clean_code = code
+
+            # 生成Baostock代码格式
+            if clean_code.startswith('6'):
+                bs_code = f'sh.{clean_code}'
+            else:
+                bs_code = f'sz.{clean_code}'
+
+            # 登录（如果未登录）
+            if not hasattr(self, '_baostock_logged_in') or not self._baostock_logged_in:
+                lg = bs.login()
+                if lg.error_code != '0':
+                    logger.debug(f"Baostock登录失败: {lg.error_msg}")
+                    return None
+                self._baostock_logged_in = True
+
+            # 复权类型映射
+            adjust_map = {'qfq': '2', 'hfq': '1', '': '3'}
+            adjustflag = adjust_map.get(adjust, '2')
+
+            # 查询数据（注意：Baostock需要带分隔符的日期格式 YYYY-MM-DD）
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date=start_date,  # 直接使用 YYYY-MM-DD 格式
+                end_date=end_date,      # 直接使用 YYYY-MM-DD 格式
+                frequency='d',
+                adjustflag=adjustflag
+            )
+
+            if rs.error_code != '0':
+                logger.debug(f"Baostock查询失败: {rs.error_msg}")
+                return None
+
+            # 转换为DataFrame
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+
+            if not data_list:
+                return None
+
+            df = pd.DataFrame(data_list, columns=rs.fields)
+
+            # 标准化列名和数据类型
+            df['code'] = clean_code
+
+            # 转换数据类型
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            df = df[['date', 'open', 'close', 'high', 'low', 'volume', 'code']]
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+
+            return df.reset_index(drop=True)
+
+        except ImportError:
+            logger.debug("Baostock未安装 (pip install baostock)")
             return None
         except Exception as e:
-            logger.debug(f"备用数据源获取失败: {e}")
-        return None
+            logger.debug(f"Baostock获取失败: {e}")
+            return None
 
 
     def _fetch_tushare(self, code: str, start_date: str, end_date: str,

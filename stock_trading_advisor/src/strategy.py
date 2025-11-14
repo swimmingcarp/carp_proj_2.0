@@ -70,6 +70,13 @@ class MixedStrategy:
         self._oscillation_cache_key = None
         self._oscillation_log_printed = False  # 记录是否已打印过震荡检测日志
 
+        # 主升浪保护检测缓存
+        self._main_wave_periods_cache = None
+        self._main_wave_cache_key = None
+
+        # 背离检测缓存
+        self._divergence_cache = {}
+
         # 初始化指标验证器
         if self.validate_indicators:
             self.indicator_validator = IndicatorValidator()
@@ -170,10 +177,18 @@ class MixedStrategy:
 
         Args:
             df: 包含price、ma16、ma45等列的DataFrame
+            log_details: 是否打印详细日志
 
         Returns:
             list: 保护期的日期索引列表
         """
+        # 使用缓存，避免重复检测
+        cache_key = (len(df), df['date'].iloc[0] if 'date' in df.columns else df.index[0],
+                     df['date'].iloc[-1] if 'date' in df.columns else df.index[-1])
+
+        if self._main_wave_cache_key == cache_key and self._main_wave_periods_cache is not None:
+            return self._main_wave_periods_cache
+
         if not self.config.get('main_wave_protection_enabled', True):
             return []
 
@@ -259,7 +274,12 @@ class MixedStrategy:
             else:
                 i += 1
 
-        return list(set(protection_periods))  # 去重
+        # 保存到缓存
+        protection_periods_unique = list(set(protection_periods))  # 去重
+        self._main_wave_periods_cache = protection_periods_unique
+        self._main_wave_cache_key = cache_key
+
+        return protection_periods_unique
 
     def _apply_main_wave_protection(self, df: pd.DataFrame) -> None:
         """

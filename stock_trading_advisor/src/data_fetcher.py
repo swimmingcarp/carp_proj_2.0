@@ -14,6 +14,7 @@ import logging
 import time
 import os
 import hashlib
+import random
 from pathlib import Path
 
 from .data_validator import DataValidator
@@ -317,7 +318,7 @@ class DataFetcher:
 
         adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
 
-        # 定义多个数据源，按优先级排列
+        # 定义多个数据源，随机选择以分散负载
         data_sources = [
             ('东方财富', lambda: self.ak.stock_zh_a_hist(
                 symbol=code,
@@ -329,6 +330,9 @@ class DataFetcher:
             ('腾讯财经', lambda: self._fetch_tencent(code, start_date, end_date, adjust)),
             ('网易财经', lambda: self._fetch_netease(code, start_date, end_date, adjust)),
         ]
+
+        # 随机打乱数据源顺序，避免单一网站访问过量
+        random.shuffle(data_sources)
 
         last_error = None
         for source_name, fetch_func in data_sources:
@@ -696,12 +700,15 @@ class DataFetcher:
         if code.startswith(('sh', 'sz')):
             clean_code = code[2:]
 
-        # 定义多个数据源，按优先级排列
+        # 定义多个数据源，随机选择以分散负载
         data_sources = [
             ('东方财富个股信息', lambda: self._get_stock_info_em(clean_code)),
             ('东方财富实时行情', lambda: self._get_stock_info_from_spot(clean_code)),
             ('股票名称缓存', lambda: self._get_stock_name_from_cache(clean_code)),
         ]
+
+        # 随机打乱数据源顺序，避免单一网站访问过量
+        random.shuffle(data_sources)
 
         last_error = None
         for source_name, fetch_func in data_sources:

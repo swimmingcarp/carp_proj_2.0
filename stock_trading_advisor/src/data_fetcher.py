@@ -185,7 +185,7 @@ class DataFetcher:
             logger.warning(f"读取缓存失败 {cache_path}: {e}")
             return None
 
-    def _save_to_cache(self, df: pd.DataFrame, cache_path: Path):
+    def _save_to_cache(self, df: pd.DataFrame, cache_path: Path, source_name: str = None):
         """
         增量保存数据到缓存
 
@@ -194,12 +194,16 @@ class DataFetcher:
         2. 智能合并：保留缓存中更早的历史数据
         3. 按日期去重（保留最新）
         4. 保存完整的历史数据
+        5. 港股特殊处理：
+           - 新浪财经：只增量更新
+           - 东方财富/Yahoo：检查并更新历史数据（修正新浪的差异）
 
         重要：即使新数据的起始日期晚于缓存，也会保留缓存中更早的历史数据
 
         Args:
             df: 新获取的数据
             cache_path: 缓存文件路径
+            source_name: 数据源名称（如 '东方财富', '新浪财经', 'Yahoo Finance'）
         """
         try:
             if cache_path.exists():
@@ -208,15 +212,99 @@ class DataFetcher:
                     old_df = pd.read_csv(cache_path)
 
                     if len(old_df) > 0:
-                        # 智能合并：保留所有历史数据
-                        # 合并新旧数据（old_df 在前，确保保留更早的历史）
-                        combined_df = pd.concat([old_df, df], ignore_index=True)
+                        # 检测是否是港股（通过代码判断）
+                        is_hk_stock = False
+                        if 'code' in old_df.columns and len(old_df) > 0:
+                            code = str(old_df['code'].iloc[0])
+                            # 港股：1-5位数字
+                            if code.isdigit() and len(code) <= 5:
+                                is_hk_stock = True
 
-                        # 确保 date 列是字符串格式（统一格式）
-                        combined_df['date'] = pd.to_datetime(combined_df['date']).dt.strftime('%Y-%m-%d')
+                        # 检测旧缓存的数据源
+                        old_source = None
+                        if 'source' in old_df.columns:
+                            old_source = old_df['source'].iloc[0]
 
-                        # 按日期去重，保留最后出现的（即新数据）
-                        combined_df = combined_df.drop_duplicates(subset=['date'], keep='last')
+                        # 港股特殊处理
+                        if is_hk_stock and source_name:
+                            # 添加source列到新数据
+                            df_with_source = df.copy()
+                            df_with_source['source'] = source_name
+
+                            # 判断合并策略
+                            if source_name == '新浪财经':
+                                # 新浪财经：只增量更新（保留旧数据的历史部分）
+                                logger.info(f"港股增量策略: 新浪财经数据，保留历史")
+                                combined_df = pd.concat([old_df, df_with_source], ignore_index=True)
+                                combined_df['date'] = pd.to_datetime(combined_df['date']).dt.strftime('%Y-%m-%d')
+                                # 去重时保留最新的（新数据优先）
+                                combined_df = combined_df.drop_duplicates(subset=['date'], keep='last')
+
+                            else:
+                                # 东方财富/Yahoo：检查并更新历史数据（仅过去2年）
+                                logger.info(f"港股修正策略: {source_name}，检查过去2年内的差异数据")
+
+                                # 统一日期格式
+                                old_df['date'] = pd.to_datetime(old_df['date']).dt.strftime('%Y-%m-%d')
+                                df_with_source['date'] = pd.to_datetime(df_with_source['date']).dt.strftime('%Y-%m-%d')
+
+                                # 计算2年前的日期
+                                from datetime import datetime, timedelta
+                                two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+
+                                # 找出重叠的日期（只考虑过去2年）
+                                new_dates = set(df_with_source['date'])
+                                old_dates_recent = set(old_df[old_df['date'] >= two_years_ago]['date'])
+                                overlap_dates = new_dates & old_dates_recent
+
+                                if len(overlap_dates) > 0:
+                                    # 检查重叠日期的数据是否有差异
+                                    updates_needed = []
+
+                                    for date in overlap_dates:
+                                        old_row = old_df[old_df['date'] == date].iloc[0]
+                                        new_row = df_with_source[df_with_source['date'] == date].iloc[0]
+
+                                        # 比较收盘价（允许0.01的误差）
+                                        if abs(float(old_row['close']) - float(new_row['close'])) > 0.01:
+                                            updates_needed.append(date)
+
+                                    if len(updates_needed) > 0:
+                                        logger.info(f"  发现 {len(updates_needed)}/{len(overlap_dates)} 个日期数据不同，用{source_name}数据更新")
+                                        # 删除旧数据中需要更新的日期
+                                        old_df_filtered = old_df[~old_df['date'].isin(updates_needed)]
+                                        # 只保留需要更新的新数据
+                                        df_to_merge = df_with_source[df_with_source['date'].isin(updates_needed)]
+                                        # 保留新增的日期（不在旧数据中的）
+                                        new_only_dates = new_dates - old_dates_recent - set(old_df['date'])
+                                        if len(new_only_dates) > 0:
+                                            df_new_only = df_with_source[df_with_source['date'].isin(new_only_dates)]
+                                            df_to_merge = pd.concat([df_to_merge, df_new_only], ignore_index=True)
+
+                                        # 合并：保留的旧数据 + 更新的数据 + 新增的数据
+                                        combined_df = pd.concat([old_df_filtered, df_to_merge], ignore_index=True)
+                                    else:
+                                        logger.info(f"  检查了 {len(overlap_dates)} 个重叠日期，数据一致，无需更新")
+                                        # 只添加新日期
+                                        new_only_dates = new_dates - set(old_df['date'])
+                                        if len(new_only_dates) > 0:
+                                            df_new_only = df_with_source[df_with_source['date'].isin(new_only_dates)]
+                                            combined_df = pd.concat([old_df, df_new_only], ignore_index=True)
+                                        else:
+                                            combined_df = old_df
+                                else:
+                                    # 没有重叠（只有新日期），直接合并
+                                    logger.info(f"  无重叠日期，只添加新数据")
+                                    combined_df = pd.concat([old_df, df_with_source], ignore_index=True)
+
+                                # 确保没有重复
+                                combined_df = combined_df.drop_duplicates(subset=['date'], keep='last')
+
+                        else:
+                            # A股或没有source_name：使用原有逻辑
+                            combined_df = pd.concat([old_df, df], ignore_index=True)
+                            combined_df['date'] = pd.to_datetime(combined_df['date']).dt.strftime('%Y-%m-%d')
+                            combined_df = combined_df.drop_duplicates(subset=['date'], keep='last')
 
                         # 按日期排序
                         combined_df = combined_df.sort_values('date').reset_index(drop=True)
@@ -241,8 +329,9 @@ class DataFetcher:
                         elif added_count == 0:
                             logger.info(f"缓存已是最新: {cache_path.name} ({total_count} 条)")
                         else:
-                            # 理论上不应该出现
-                            logger.warning(f"缓存记录减少: {cache_path.name} ({old_count} → {total_count})")
+                            # 可能是修正了历史数据
+                            logger.info(f"缓存数据已修正: {cache_path.name} ({old_count} → {total_count})")
+
 
                     else:
                         # 旧缓存为空，直接保存新数据
@@ -333,7 +422,11 @@ class DataFetcher:
             # 保存到缓存（如果启用）
             if df is not None and self.cache_enabled:
                 cache_path = self._get_cache_path(code, start_date, end_date, adjust)
-                self._save_to_cache(df, cache_path)
+                # 从DataFrame中提取source_name（如果有）
+                source_name = None
+                if 'source' in df.columns:
+                    source_name = df['source'].iloc[0] if len(df) > 0 else None
+                self._save_to_cache(df, cache_path, source_name)
 
         if df is None:
             return None, None
@@ -694,13 +787,14 @@ class DataFetcher:
         df['date'] = df.index.strftime('%Y-%m-%d')
         df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
         df['code'] = code
+        df['source'] = 'Yahoo Finance'  # 添加数据源标记
 
         return df.reset_index(drop=True)
 
     def _fetch_akshare_hk(self, code: str, start_date: str, end_date: str,
                           adjust: str) -> pd.DataFrame:
         """
-        使用 AKShare 获取港股数据
+        使用 AKShare 获取港股数据（支持多数据源备用）
 
         Args:
             code: 港股代码 (5位数字，如 '00700' 或带后缀 '00700.HK')
@@ -722,9 +816,46 @@ class DataFetcher:
 
         logger.info(f"获取港股数据: {code} (原始代码: {original_code})")
 
+        # 定义多个数据源，随机选择以分散负载
+        import random
+        data_sources = [
+            ('东方财富', lambda: self._fetch_hk_eastmoney(code, start_date, end_date, adjust)),
+            ('新浪财经', lambda: self._fetch_hk_sina(code, start_date, end_date, adjust)),
+            ('Yahoo Finance', lambda: self._fetch_hk_yfinance(code, start_date, end_date)),
+        ]
+
+        # 随机打乱数据源顺序，避免单一网站访问过量
+        random.shuffle(data_sources)
+
+        last_error = None
+        for source_name, fetch_func in data_sources:
+            try:
+                logger.info(f"尝试从 {source_name} 获取港股 {code} 数据...")
+                df = fetch_func()
+
+                if df is not None and len(df) > 0:
+                    logger.info(f"✓ 成功从 {source_name} 获取港股 {code} 数据，共 {len(df)} 条")
+                    return df
+
+                logger.warning(f"✗ {source_name} 返回空数据")
+
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                if 'ConnectTimeout' in error_msg or 'Connection' in error_msg:
+                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
+                else:
+                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
+                continue
+
+        # 所有数据源都失败
+        logger.error(f"所有数据源均失败，无法获取港股 {code} 数据")
+        return None
+
+    def _fetch_hk_eastmoney(self, code: str, start_date: str, end_date: str,
+                            adjust: str) -> pd.DataFrame:
+        """从东方财富获取港股数据"""
         try:
-            # 使用 AKShare 的港股历史数据接口
-            # stock_hk_hist: 获取港股历史行情数据
             adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
             df = self.ak.stock_hk_hist(
                 symbol=code,
@@ -734,7 +865,6 @@ class DataFetcher:
             )
 
             if df is None or len(df) == 0:
-                logger.warning(f"港股 {code} 数据为空")
                 return None
 
             # 重命名列以匹配标准格式
@@ -753,43 +883,89 @@ class DataFetcher:
             df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
             df['code'] = code
             df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+            df['source'] = '东方财富'  # 添加数据源标记
 
-            logger.info(f"成功获取港股 {code} 数据，共 {len(df)} 条")
             return df.reset_index(drop=True)
 
         except Exception as e:
-            logger.error(f"获取港股 {code} 数据失败: {e}")
-            # 如果 AKShare 失败，尝试使用 yfinance 作为备用
-            logger.info(f"尝试使用 yfinance 获取港股 {code} 数据")
-            try:
-                # yfinance 需要 .HK 后缀
-                yf_code = f"{code}.HK"
-                import yfinance as yf
-                ticker = yf.Ticker(yf_code)
-                df = ticker.history(start=start_date, end=end_date)
+            logger.debug(f"东方财富获取失败: {e}")
+            return None
 
-                if df is None or len(df) == 0:
-                    return None
+    def _fetch_hk_sina(self, code: str, start_date: str, end_date: str,
+                       adjust: str) -> pd.DataFrame:
+        """从新浪财经获取港股数据"""
+        try:
+            adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
+            df = self.ak.stock_hk_daily(
+                symbol=code,
+                adjust=adjust_map.get(adjust, 'qfq')
+            )
 
-                # 重命名列
-                df = df.rename(columns={
-                    'Open': 'open',
-                    'Close': 'close',
-                    'High': 'high',
-                    'Low': 'low',
-                    'Volume': 'volume'
-                })
-
-                df['date'] = df.index.strftime('%Y-%m-%d')
-                df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
-                df['code'] = code
-
-                logger.info(f"使用 yfinance 成功获取港股 {code} 数据，共 {len(df)} 条")
-                return df.reset_index(drop=True)
-
-            except Exception as yf_error:
-                logger.error(f"yfinance 也无法获取港股 {code} 数据: {yf_error}")
+            if df is None or len(df) == 0:
                 return None
+
+            # 新浪返回的列名已经是英文标准格式
+            # 列名: ['date', 'open', 'high', 'low', 'close', 'volume']
+
+            # 确保有所需的列
+            required_cols = ['date', 'open', 'close', 'high', 'low', 'volume']
+            if not all(col in df.columns for col in required_cols):
+                return None
+
+            # 过滤日期范围（新浪返回全部历史数据）
+            df['date'] = pd.to_datetime(df['date'])
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+            df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
+
+            if len(df) == 0:
+                return None
+
+            # 选择需要的列
+            df = df[required_cols].copy()
+            df['code'] = code
+            df['date'] = df['date'].dt.strftime('%Y-%m-%d')
+            df['source'] = '新浪财经'  # 添加数据源标记
+
+            return df.reset_index(drop=True)
+
+        except Exception as e:
+            logger.debug(f"新浪财经获取失败: {e}")
+            return None
+
+    def _fetch_hk_yfinance(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """从 Yahoo Finance 获取港股数据"""
+        try:
+            # yfinance 需要 .HK 后缀
+            yf_code = f"{code}.HK"
+            import yfinance as yf
+            ticker = yf.Ticker(yf_code)
+            df = ticker.history(start=start_date, end=end_date)
+
+            if df is None or len(df) == 0:
+                return None
+
+            # 重命名列
+            df = df.rename(columns={
+                'Open': 'open',
+                'Close': 'close',
+                'High': 'high',
+                'Low': 'low',
+                'Volume': 'volume'
+            })
+
+            df['date'] = df.index.strftime('%Y-%m-%d')
+            df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+            df['code'] = code
+
+            return df.reset_index(drop=True)
+
+        except ImportError:
+            logger.debug("yfinance 未安装，跳过")
+            return None
+        except Exception as e:
+            logger.debug(f"Yahoo Finance 获取失败: {e}")
+            return None
 
 
     def get_realtime_data(self, code: str) -> Optional[dict]:
@@ -839,7 +1015,7 @@ class DataFetcher:
 
     def get_stock_info(self, code: str) -> Optional[dict]:
         """
-        获取股票基本信息（支持多数据源备用）
+        获取股票基本信息（支持A股和港股，支持多数据源备用）
 
         Args:
             code: 股票代码
@@ -850,6 +1026,94 @@ class DataFetcher:
         if self.source != 'akshare':
             return None
 
+        # 检测市场类型
+        market = self._detect_market(code)
+
+        if market == 'HK':
+            # 港股逻辑
+            return self._get_hk_stock_info(code)
+        else:
+            # A股逻辑
+            return self._get_cn_stock_info(code)
+
+    def _get_hk_stock_info(self, code: str) -> Optional[dict]:
+        """获取港股基本信息（仅使用静态映射表，不访问网络）"""
+        # 格式化港股代码
+        if code.endswith('.HK'):
+            code = code[:-3]
+        if code.isdigit():
+            code = code.zfill(5)  # 补齐为5位
+
+        # 只使用静态映射表，不访问网络API
+        info = self._get_hk_name_from_cache(code)
+
+        if info is not None:
+            return info
+
+        # 不在映射表中，返回代码本身
+        return {'股票简称': code, '股票代码': code}
+
+    def _get_hk_info_from_em(self, code: str) -> Optional[dict]:
+        """从东方财富获取港股信息"""
+        try:
+            # 使用东方财富港股实时行情接口
+            df = self.ak.stock_hk_spot_em()
+
+            if df is not None and len(df) > 0:
+                # 代码列名可能是'代码'或'symbol'
+                if '代码' in df.columns:
+                    stock_data = df[df['代码'] == code]
+                elif 'symbol' in df.columns:
+                    stock_data = df[df['symbol'] == code]
+                else:
+                    return None
+
+                if len(stock_data) > 0:
+                    row = stock_data.iloc[0]
+                    # 名称列名可能是'名称'或'name'
+                    name = row.get('名称', row.get('name', code))
+                    return {
+                        '股票简称': name,
+                        '股票代码': code,
+                    }
+            return None
+        except Exception as e:
+            logger.debug(f"东方财富港股信息接口失败: {e}")
+            return None
+
+    def _get_hk_name_from_cache(self, code: str) -> Optional[dict]:
+        """从静态映射获取港股名称"""
+        # 常见港股的静态映射表
+        hk_stock_names = {
+            '00700': '腾讯控股', '09988': '阿里巴巴-SW', '00941': '中国移动',
+            '03690': '美团-W', '01810': '小米集团-W', '09618': '京东集团-SW',
+            '09888': '百度集团-SW', '09999': '网易-S', '01024': '快手-W',
+            '00388': '香港交易所', '01398': '工商银行', '03988': '中国银行',
+            '00939': '建设银行', '01288': '农业银行', '02318': '中国平安',
+            '00883': '中国海洋石油', '00386': '中国石油化工', '02628': '中国人寿',
+            '01299': '友邦保险', '00175': '吉利汽车', '02333': '长城汽车',
+            '01211': '比亚迪股份', '02015': '理想汽车-W', '09868': '小鹏汽车-W',
+            '09866': '蔚来-SW', '01772': '赣锋锂业', '06862': '海底捞',
+            '09961': '携程集团-S', '00981': '中芯国际', '00992': '联想集团',
+            '02269': '药明生物', '00857': '中国石油股份', '01093': '石药集团',
+            '02382': '舜宇光学科技', '02020': '安踏体育', '01177': '中国生物制药',
+            '02367': '巨子生物', '06690': '海尔智家', '01347': '华虹半导体',
+            '01585': '雅迪控股', '06682': '第四范式', '03692': '翰森制药',
+        }
+
+        name = hk_stock_names.get(code)
+        if name:
+            logger.info(f"✓ 从静态映射获取港股 {code} 名称: {name}")
+            return {
+                '股票简称': name,
+                '股票代码': code,
+            }
+
+        # 不在映射表中，返回None让上层继续尝试其他数据源
+        return None
+
+    def _get_cn_stock_info(self, code: str) -> Optional[dict]:
+        """获取A股基本信息"""
         # 格式化代码（去掉前缀）
         clean_code = code
         if code.startswith(('sh', 'sz')):

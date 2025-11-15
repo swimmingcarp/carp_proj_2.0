@@ -579,24 +579,56 @@ class MixedStrategy:
             self._oscillation_outer_upper = 0.60
             self._oscillation_inner_upper = 0.30
 
-        # 1. 跌停保护检查（只检查最近一段时间的数据，避免因历史跌停拒绝分析）
-        df_temp = df.copy()
-        df_temp['p_change_temp'] = df_temp['close'].pct_change() * 100
+        # 1. 跌停保护检查（只对A股执行，港股无涨跌停限制）
+        # 使用与 data_fetcher.py 相同的港股识别逻辑
+        is_hk_stock = False
+        stock_code = None
 
-        # 只检查最近30天的数据
-        recent_data = df_temp.tail(30) if len(df_temp) > 30 else df_temp
+        # 尝试从多个位置获取股票代码
+        if 'ts_code' in df.columns and len(df) > 0:
+            stock_code = str(df['ts_code'].iloc[0])
+        elif 'code' in df.columns and len(df) > 0:
+            stock_code = str(df['code'].iloc[0])
+        elif hasattr(self, 'stock_code'):
+            stock_code = str(self.stock_code)
 
-        if (recent_data['p_change_temp'] <= self.config['stop_loss']).any():
-            # 找出最近的跌停日期
-            drop_dates = recent_data[recent_data['p_change_temp'] <= self.config['stop_loss']]
-            latest_drop = drop_dates.iloc[-1] if len(drop_dates) > 0 else None
+        # 港股检测逻辑（与 data_fetcher.py 保持一致）
+        if stock_code:
+            # 去掉可能的市场后缀（如 .SH, .SZ）提取纯代码
+            code_clean = stock_code.split('.')[0]
 
-            if latest_drop is not None:
-                logger.warning(
-                    f"近期存在跌停风险: {latest_drop['date']}, "
-                    f"跌幅: {latest_drop['p_change_temp']:.2f}%, 跳过该股票"
-                )
-            return None, None
+            # 检测是否为港股
+            if code_clean.isdigit():
+                code_len = len(code_clean)
+                # 港股代码: 1-5位数字（可能去掉前导0）
+                # A股代码: 6位数字
+                if code_len <= 5:
+                    is_hk_stock = True
+            # 带后缀的港股代码
+            elif '.HK' in stock_code.upper():
+                is_hk_stock = True
+
+        logger.info(f"[跌停检查] 股票代码: {stock_code}, is_hk_stock={is_hk_stock}")
+
+        # 只对A股执行跌停检查
+        if not is_hk_stock:
+            df_temp = df.copy()
+            df_temp['p_change_temp'] = df_temp['close'].pct_change() * 100
+
+            # 只检查最近30天的数据
+            recent_data = df_temp.tail(30) if len(df_temp) > 30 else df_temp
+
+            if (recent_data['p_change_temp'] <= self.config['stop_loss']).any():
+                # 找出最近的跌停日期
+                drop_dates = recent_data[recent_data['p_change_temp'] <= self.config['stop_loss']]
+                latest_drop = drop_dates.iloc[-1] if len(drop_dates) > 0 else None
+
+                if latest_drop is not None:
+                    logger.warning(
+                        f"近期存在跌停风险: {latest_drop['date']}, "
+                        f"跌幅: {latest_drop['p_change_temp']:.2f}%, 跳过该股票"
+                    )
+                    return None, None
 
         # 2. 计算所有技术指标
         try:

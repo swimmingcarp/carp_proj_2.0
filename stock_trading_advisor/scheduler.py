@@ -185,7 +185,9 @@ class TradingScheduler:
 
             fetcher = DataFetcher(
                 source=data_config.get('provider', app_config.DATA_SOURCE),
-                cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
+                # 微信推送场景：为了确保信号完全基于最新网络数据，这里强制关闭缓存
+                # 即便网络失败也不回退到本地缓存，而是直接视为无信号
+                cache_enabled=False,
                 max_retries=app_config.MAX_RETRIES,
                 retry_delay=app_config.RETRY_DELAY,
                 is_backtest_mode=False  # 实时模式

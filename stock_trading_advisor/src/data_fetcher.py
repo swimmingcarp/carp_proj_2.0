@@ -973,41 +973,82 @@ class DataFetcher:
         获取实时行情数据
 
         Args:
-            code: 股票代码
+            code: 股票代码（A股/港股）
 
         Returns:
             包含实时价格、涨跌幅等信息的字典
         """
         try:
             if self.source == 'akshare':
-                # 格式化代码
-                if not code.startswith(('sh', 'sz')):
-                    if code.startswith('6'):
-                        code = 'sh' + code
+                # 检测市场类型
+                market = self._detect_market(code)
+
+                if market == 'HK':
+                    # ---- 港股实时行情 ----
+                    # 统一为 5 位数字代码
+                    if code.endswith('.HK'):
+                        code = code[:-3]
+                    if code.isdigit():
+                        code = code.zfill(5)
+
+                    df = self.ak.stock_hk_spot_em()
+                    if df is None or len(df) == 0:
+                        return None
+
+                    # 代码列可能为 '代码' 或 'symbol'
+                    if '代码' in df.columns:
+                        stock_data = df[df['代码'] == code]
+                    elif 'symbol' in df.columns:
+                        stock_data = df[df['symbol'] == code]
                     else:
-                        code = 'sz' + code
+                        return None
 
-                # 获取实时数据
-                df = self.ak.stock_zh_a_spot_em()
-                stock_data = df[df['代码'] == code.replace('sh', '').replace('sz', '')]
+                    if len(stock_data) == 0:
+                        return None
 
-                if len(stock_data) == 0:
-                    return None
+                    row = stock_data.iloc[0]
+                    return {
+                        'code': code,
+                        'name': row.get('名称', row.get('name', code)),
+                        'price': row.get('最新价'),
+                        'change': row.get('涨跌额'),
+                        'pct_change': row.get('涨跌幅'),
+                        'volume': row.get('成交量'),
+                        'amount': row.get('成交额'),
+                        'high': row.get('最高'),
+                        'low': row.get('最低'),
+                        'open': row.get('今开'),
+                        'last_close': row.get('昨收'),
+                    }
+                else:
+                    # ---- A股实时行情 ----
+                    # 格式化代码为带市场前缀的形式
+                    if not code.startswith(('sh', 'sz')):
+                        if code.startswith('6'):
+                            code = 'sh' + code
+                        else:
+                            code = 'sz' + code
 
-                row = stock_data.iloc[0]
-                return {
-                    'code': code,
-                    'name': row['名称'],
-                    'price': row['最新价'],
-                    'change': row['涨跌额'],
-                    'pct_change': row['涨跌幅'],
-                    'volume': row['成交量'],
-                    'amount': row['成交额'],
-                    'high': row['最高'],
-                    'low': row['最低'],
-                    'open': row['今开'],
-                    'last_close': row['昨收']
-                }
+                    df = self.ak.stock_zh_a_spot_em()
+                    stock_data = df[df['代码'] == code.replace('sh', '').replace('sz', '')]
+
+                    if len(stock_data) == 0:
+                        return None
+
+                    row = stock_data.iloc[0]
+                    return {
+                        'code': code,
+                        'name': row['名称'],
+                        'price': row['最新价'],
+                        'change': row['涨跌额'],
+                        'pct_change': row['涨跌幅'],
+                        'volume': row['成交量'],
+                        'amount': row['成交额'],
+                        'high': row['最高'],
+                        'low': row['最低'],
+                        'open': row['今开'],
+                        'last_close': row['昨收']
+                    }
 
         except Exception as e:
             logger.error(f"获取实时数据失败 {code}: {e}")
@@ -1030,28 +1071,61 @@ class DataFetcher:
         market = self._detect_market(code)
 
         if market == 'HK':
-            # 港股逻辑
+            # 港股逻辑：优先走网络，失败再回退到本地映射
             return self._get_hk_stock_info(code)
         else:
             # A股逻辑
             return self._get_cn_stock_info(code)
 
     def _get_hk_stock_info(self, code: str) -> Optional[dict]:
-        """获取港股基本信息（仅使用静态映射表，不访问网络）"""
-        # 格式化港股代码
+        """
+        获取港股基本信息
+
+        策略（与 _get_cn_stock_info 保持同样结构）：
+        1. 定义多个数据源（实时接口 / 本地名称缓存）
+        2. 随机打乱数据源顺序，避免单一网站访问过量
+        3. 依次尝试，成功即返回
+        4. 所有数据源失败时，用代码本身兜底
+        """
+        # 格式化港股代码：去掉 .HK 后缀，并补齐为 5 位数字
         if code.endswith('.HK'):
             code = code[:-3]
         if code.isdigit():
-            code = code.zfill(5)  # 补齐为5位
+            code = code.zfill(5)
 
-        # 只使用静态映射表，不访问网络API
-        info = self._get_hk_name_from_cache(code)
+        clean_code = code
 
-        if info is not None:
-            return info
+        # 定义多个数据源，随机选择以分散负载
+        data_sources = [
+            ('东方财富港股实时行情', lambda: self._get_hk_info_from_em(clean_code)),
+            ('港股名称缓存',         lambda: self._get_hk_name_from_cache(clean_code)),
+        ]
 
-        # 不在映射表中，返回代码本身
-        return {'股票简称': code, '股票代码': code}
+        # 随机打乱数据源顺序，避免单一网站访问过量
+        random.shuffle(data_sources)
+
+        last_error = None
+        for source_name, fetch_func in data_sources:
+            try:
+                logger.info(f"尝试从 {source_name} 获取港股 {clean_code} 信息...")
+                info = fetch_func()
+
+                if info is not None and len(info) > 0:
+                    logger.info(f"✓ 成功从 {source_name} 获取港股 {clean_code} 信息")
+                    return info
+
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                if 'RemoteDisconnected' in error_msg or 'Connection' in error_msg:
+                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
+                else:
+                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
+                continue
+
+        # 所有数据源都失败，返回最基本的信息
+        logger.warning(f"所有港股信息数据源均失败，使用默认信息: {clean_code}")
+        return {'股票简称': clean_code, '股票代码': clean_code}
 
     def _get_hk_info_from_em(self, code: str) -> Optional[dict]:
         """从东方财富获取港股信息"""

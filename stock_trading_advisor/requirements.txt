@@ -9,7 +9,7 @@ numba>=0.56.0
 # 数据源
 akshare>=1.10.0
 # tushare>=1.2.89  # 可选，需要 token
-# yfinance>=0.2.0   # 可选，用于国际市场
+yfinance>=0.2.0   # 用于港股/美股分钟级及实时数据
 
 # 配置和日志
 PyYAML>=6.0

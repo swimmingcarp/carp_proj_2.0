@@ -58,6 +58,9 @@ class TradingScheduler:
             self.logger.warning(f"初始化微信通知失败: {e}")
             self.wechat_manager = None
 
+        # 实时数据获取失败的股票列表（在每次 run_analysis 内重置）
+        self.network_failed_stocks = []
+
     def _load_config(self, config_path: str) -> dict:
         """加载配置文件"""
         try:
@@ -210,13 +213,24 @@ class TradingScheduler:
                 df = result
                 validation_report = None
 
-            # 检查数据验证
+            # 检查网络/实时数据状态（在交易时间内，避免用过期数据发出信号）
+            net_status = None
+            if validation_report and isinstance(validation_report, dict):
+                net_status = validation_report.get('net_status')
+            if net_status == 'REALTIME_FAILED':
+                self.logger.warning(f"{stock_code} 实时分钟数据获取失败，在交易时间内跳过信号计算")
+                self.network_failed_stocks.append(stock_code)
+                return None
+
+            # 检查数据验证（仅针对数据质量）
             if validation_report and validation_report.get('status') == 'FAILED':
                 self.logger.warning(f"{stock_code} 数据验证失败")
                 return None
 
             if df is None or len(df) == 0:
                 self.logger.warning(f"{stock_code} 无数据")
+                # 视为网络或接口获取失败，在推送中提示
+                self.network_failed_stocks.append(stock_code)
                 return None
 
             # 执行策略分析
@@ -485,6 +499,9 @@ class TradingScheduler:
         else:
             self.logger.info("开始定时分析任务（所有市场）")
 
+        # 每次分析前重置网络失败列表
+        self.network_failed_stocks = []
+
         # 加载监控列表
         watch_list = self._load_watch_list()
 
@@ -534,8 +551,18 @@ class TradingScheduler:
         # 过滤信号
         filtered_signals = self._filter_signals(signals)
 
-        # 生成并发送提醒
+        # 生成提醒文本
         alert_text = self._format_alert(filtered_signals)
+
+        # 如果存在网络/实时数据获取失败的股票，在推送中追加提示
+        if self.network_failed_stocks:
+            unique_codes = sorted(set(self.network_failed_stocks))
+            alert_text += (
+                "\n\n⚠️ 实时数据获取失败的股票（可能是网络或接口问题）:\n  "
+                + ", ".join(unique_codes)
+            )
+
+        # 发送提醒
         self._send_notification(alert_text)
 
         self.logger.info(f"分析完成，共 {len(signals)} 个信号")

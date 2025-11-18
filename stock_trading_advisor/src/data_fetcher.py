@@ -17,6 +17,8 @@ import hashlib
 import random
 from pathlib import Path
 
+import requests
+
 from .data_validator import DataValidator
 from .market_hours import MarketHours
 
@@ -66,7 +68,6 @@ class DataFetcher:
             try:
                 import akshare as ak
                 self.ak = ak
-                logger.info("使用 AKShare 数据源")
             except ImportError:
                 raise ImportError("请安装 akshare: pip install akshare")
 
@@ -377,11 +378,12 @@ class DataFetcher:
 
         # 检测市场类型
         market = self._detect_market(code)
-        logger.info(f"检测到市场类型: {market}, 股票代码: {code}")
 
         # 智能缓存策略
         df = None
         should_fetch_new_data = False
+        # 实时数据获取状态，用于上层区分网络/实时失败场景
+        realtime_failed = False
 
         if self.cache_enabled:
             cache_path = self._get_cache_path(code, start_date, end_date, adjust)
@@ -429,13 +431,98 @@ class DataFetcher:
                 self._save_to_cache(df, cache_path, source_name)
 
         if df is None:
+            # 日线数据获取失败，直接返回；上层根据 df=None 判断
             return None, None
 
+        # 实时模式：用分钟级实时行情更新当日K线
+        # 目的：避免依赖日K历史接口的「最新一行」，确保最新价格来自 get_realtime_data
+        if not self.is_backtest_mode:
+            try:
+                # 判断日线是否已经包含当日数据
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                has_today_k = False
+                if 'date' in df.columns and len(df) > 0:
+                    last_date = pd.to_datetime(df['date'].iloc[-1]).strftime('%Y-%m-%d')
+                    has_today_k = (last_date == today_str)
+
+                # 当前是否在交易时间（用于分钟级实时数据的调用控制）
+                is_trading_now = MarketHours.is_trading_time(market)
+
+                # 逻辑调整：
+                # - 只在“交易时间内 + 当日K线还不存在”时，才尝试调用分钟级实时接口
+                # - 非交易时间不再请求分钟级数据，避免无意义的实时调用
+                # - 如果日线已经包含最新交易日，则不再调用分钟级接口，直接跳过
+                # - 是否标记为 REALTIME_FAILED 则仍然只在「交易时间内」处理，避免盘后误报
+                if not has_today_k and is_trading_now:
+                    realtime = self.get_realtime_data(code)
+
+                    # realtime 结构参考 get_realtime_data 返回
+                    if realtime and realtime.get('price') is not None:
+                        today_str = datetime.now().strftime('%Y-%m-%d')
+
+                        # 统一日期格式为字符串 YYYY-MM-DD
+                        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+
+                        open_price = realtime.get('open', realtime['price'])
+                        high_price = realtime.get('high', realtime['price'])
+                        low_price = realtime.get('low', realtime['price'])
+                        close_price = realtime['price']
+                        volume = realtime.get('volume', 0)
+
+                        new_row = {
+                            'date': today_str,
+                            'open': open_price,
+                            'high': high_price,
+                            'low': low_price,
+                            'close': close_price,
+                            'volume': volume,
+                            'code': code,
+                        }
+
+                        if len(df) > 0 and str(df.iloc[-1]['date']) == today_str:
+                            # 已经有当日K线（部分数据源会在盘中生成），用实时数据覆盖最后一行
+                            last_idx = df.index[-1]
+                            for col in ['open', 'high', 'low', 'close', 'volume', 'code']:
+                                df.at[last_idx, col] = new_row[col]
+                        else:
+                            # 追加一根当日的临时K线
+                            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+                    else:
+                        # 只有在交易时间内未能获取到有效实时价格时，才标记为实时失败
+                        if is_trading_now:
+                            realtime_failed = True
+                else:
+                    # 非交易时间或日线已经包含最新交易日，分钟K线获取逻辑跳过
+                    if has_today_k:
+                        summary_line = f"分钟K线获取[{code}]：日线已经包含最新数据，跳过！"
+                    else:
+                        summary_line = f"分钟K线获取[{code}]：当前非交易时间，跳过！"
+                    logger.info(summary_line)
+
+            except Exception as e:
+                # 实时更新失败不影响整体流程，只记录警告
+                logger.warning(f"实时模式更新当日K线失败 {code}: {e}")
+                if MarketHours.is_trading_time(market):
+                    realtime_failed = True
+
         # 数据验证（传入市场类型）
+        extra_report = {}
+        if realtime_failed and MarketHours.is_trading_time(market):
+            # 标记为实时数据获取失败，让上层在交易时间内避免使用过期数据发出信号
+            extra_report['net_status'] = 'REALTIME_FAILED'
+
         if self.validate_data and self.validator:
             df, report = self.validator.validate(df, code, market=market)
+            if extra_report:
+                if report is None:
+                    report = {}
+                report.update(extra_report)
             return df, report
         else:
+            # 如果不启用数据验证，但需要传递实时失败信息，也通过第二个返回值返回
+            if extra_report:
+                return df, extra_report
             return df, None
 
     def _fetch_with_retry(self, code: str, start_date: str, end_date: str,
@@ -471,7 +558,7 @@ class DataFetcher:
 
     def _fetch_akshare(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
-        """使用 AKShare 获取数据，支持多数据源备用"""
+        """使用 AKShare 获取 A 股日 K 数据，支持多数据源备用"""
         # AKShare 股票代码格式：直接使用 6 位数字代码（如 000001, 600519）
         # 如果代码带有 sh 或 sz 前缀，需要去掉
         original_code = code
@@ -498,16 +585,24 @@ class DataFetcher:
         random.shuffle(data_sources)
 
         last_error = None
-        for source_name, fetch_func in data_sources:
+        total_sources = len(data_sources)
+        summary_parts = []
+        result_df = None
+
+        for idx, (source_name, fetch_func) in enumerate(data_sources, start=1):
             try:
-                logger.info(f"尝试从 {source_name} 获取股票 {code} 数据...")
+                logger.debug(
+                    f"[DAILY_K] 尝试从 {source_name} 获取 A股 {original_code} 日K 数据 "
+                    f"（源 {idx}/{total_sources}）"
+                )
                 df = fetch_func()
 
                 if df is not None and len(df) > 0:
                     # 检查数据是否已经是标准格式
                     if 'date' in df.columns:
-                        logger.info(f"✓ 成功从 {source_name} 获取股票 {code} 数据")
-                        return df
+                        summary_parts.append(f"{source_name}（成功！{len(df)}条）")
+                        result_df = df
+                        break
 
                     # 如果是东方财富数据，需要重命名
                     df = df.rename(columns={
@@ -526,25 +621,54 @@ class DataFetcher:
                     df['code'] = code
                     df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
 
-                    logger.info(f"✓ 成功从 {source_name} 获取股票 {code} 数据")
-                    return df.reset_index(drop=True)
+                    summary_parts.append(f"{source_name}（成功！{len(df)}条）")
+                    result_df = df.reset_index(drop=True)
+                    break
+
+                # df 为空视为失败（详细原因写入调试日志，汇总通过 summary_parts 打印）
+                logger.debug(
+                    f"[DAILY_K] ✗ {source_name} 返回空的 A股 {original_code} 日K 数据"
+                )
+                summary_parts.append(f"{source_name}（失败：空数据）")
 
             except Exception as e:
                 last_error = e
                 error_msg = str(e)
                 # 检查是否是连接错误
                 if 'RemoteDisconnected' in error_msg or 'Connection' in error_msg:
-                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
+                    err_short = error_msg[:80]
+                    logger.debug(
+                        f"[DAILY_K] ✗ {source_name} 获取 A股 {original_code} 日K 数据连接失败: "
+                        f"{err_short}"
+                    )
+                    # 汇总信息只保留高层含义，避免打印过长的异常细节
+                    summary_parts.append(f"{source_name}（失败：网络异常）")
                 else:
-                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
-                continue
+                    err_short = error_msg[:80]
+                    logger.debug(
+                        f"[DAILY_K] ✗ {source_name} 获取 A股 {original_code} 日K 数据失败: "
+                        f"{err_short}"
+                    )
+                    summary_parts.append(f"{source_name}（失败：其它异常）")
+
+        # 汇总打印：日线K线获取：源A（结果） -> 源B（结果） -> ...
+        if summary_parts:
+            summary_line = f"日线K线获取[{original_code}]：" + " -> ".join(summary_parts)
+        else:
+            summary_line = f"日线K线获取[{original_code}]：未尝试任何数据源"
+
+        logger.info(summary_line)
+
+        if result_df is not None:
+            return result_df
 
         # 所有数据源都失败
-        logger.error(f"所有数据源均失败，无法获取股票 {code} 数据")
+        msg_final = f"[DAILY_K] 所有数据源均失败，无法获取 A股 {original_code} 日K 数据"
+        logger.error(msg_final)
         return None
 
     def _fetch_sina(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
-        """从新浪财经获取数据"""
+        """从新浪财经获取 A 股日 K 数据"""
         try:
             # 新浪财经需要带市场前缀的代码格式: sh600519 或 sz000001
             if code.startswith(('sh', 'sz')):
@@ -573,6 +697,8 @@ class DataFetcher:
                     df['code'] = code
                     df['date'] = df['date'].dt.strftime('%Y-%m-%d')
                     return df.reset_index(drop=True)
+            else:
+                logger.debug(f"[DAILY_K] ✗ 新浪财经 返回空的 A股 {code} 日K 数据")
         except AttributeError:
             logger.debug("新浪财经接口不可用")
         except Exception as e:
@@ -581,7 +707,7 @@ class DataFetcher:
 
     def _fetch_tencent(self, code: str, start_date: str, end_date: str, adjust: str) -> pd.DataFrame:
         """
-        从腾讯财经获取数据
+        从腾讯财经获取 A 股日 K 数据
 
         注意：腾讯接口需要带市场标识的代码（如 sz002916）
         """
@@ -628,6 +754,8 @@ class DataFetcher:
                     df['code'] = code
                     df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
                     return df.reset_index(drop=True)
+            else:
+                logger.debug(f"[DAILY_K] ✗ 腾讯财经 返回空的 A股 {code} 日K 数据")
 
         except AttributeError:
             logger.debug("腾讯财经接口不可用")
@@ -720,7 +848,7 @@ class DataFetcher:
 
     def _fetch_tushare(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
-        """使用 Tushare 获取数据"""
+        """使用 Tushare 获取 A 股日 K 数据"""
         # Tushare 需要设置 token
         # ts.set_token('your_token')
         pro = self.ts.pro_api()
@@ -740,6 +868,7 @@ class DataFetcher:
         )
 
         if df is None or len(df) == 0:
+            logger.warning(f"[DAILY_K] ✗ Tushare 返回空的 A股 {code} 日K 数据")
             return None
 
         # 复权处理
@@ -764,15 +893,26 @@ class DataFetcher:
         df['code'] = code
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
 
-        return df.sort_values('date').reset_index(drop=True)
+        df = df.sort_values('date').reset_index(drop=True)
+
+        summary_line = f"日线K线获取[{code}]：Tushare（成功！{len(df)}条）"
+        logger.info(summary_line)
+        return df
 
 
     def _fetch_yfinance(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """使用 yfinance 获取数据（主要用于港股、美股）"""
-        ticker = self.yf.Ticker(code)
+        """使用 yfinance 获取日 K 数据（主要用于港股、美股）"""
+        # 根据市场类型对代码进行适配，特别是港股需要转换为 4 位数字 + '.HK'
+        market = self._detect_market(code)
+        yf_code = code
+        if market == 'HK':
+            yf_code = self._to_yahoo_hk_symbol(code)
+
+        ticker = self.yf.Ticker(yf_code)
         df = ticker.history(start=start_date, end=end_date)
 
         if df is None or len(df) == 0:
+            logger.warning(f"[DAILY_K] ✗ yfinance 返回空的 {yf_code} 日K 数据")
             return None
 
         # 重命名列
@@ -786,15 +926,19 @@ class DataFetcher:
 
         df['date'] = df.index.strftime('%Y-%m-%d')
         df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+        # 这里的 code 字段仍然保留调用者传入的代码形式，便于与外部配置对齐
         df['code'] = code
         df['source'] = 'Yahoo Finance'  # 添加数据源标记
 
-        return df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
+        summary_line = f"日线K线获取[{code}]：yfinance（成功！{len(df)}条，Yahoo代码: {yf_code}）"
+        logger.info(summary_line)
+        return df
 
     def _fetch_akshare_hk(self, code: str, start_date: str, end_date: str,
                           adjust: str) -> pd.DataFrame:
         """
-        使用 AKShare 获取港股数据（支持多数据源备用）
+        使用 AKShare 获取港股日 K 数据（支持多数据源备用）
 
         Args:
             code: 港股代码 (5位数字，如 '00700' 或带后缀 '00700.HK')
@@ -828,28 +972,60 @@ class DataFetcher:
         random.shuffle(data_sources)
 
         last_error = None
-        for source_name, fetch_func in data_sources:
+        total_sources = len(data_sources)
+        summary_parts = []
+        result_df = None
+
+        for idx, (source_name, fetch_func) in enumerate(data_sources, start=1):
             try:
-                logger.info(f"尝试从 {source_name} 获取港股 {code} 数据...")
+                logger.debug(
+                    f"[DAILY_K] 尝试从 {source_name} 获取港股 {code} 日K 数据 "
+                    f"（源 {idx}/{total_sources}）"
+                )
                 df = fetch_func()
 
                 if df is not None and len(df) > 0:
-                    logger.info(f"✓ 成功从 {source_name} 获取港股 {code} 数据，共 {len(df)} 条")
-                    return df
+                    summary_parts.append(f"{source_name}（成功！{len(df)}条）")
+                    result_df = df
+                    break
 
-                logger.warning(f"✗ {source_name} 返回空数据")
+                logger.debug(
+                    f"[DAILY_K] ✗ {source_name} 返回空的港股 {code} 日K 数据"
+                )
+                summary_parts.append(f"{source_name}（失败：空数据）")
 
             except Exception as e:
                 last_error = e
                 error_msg = str(e)
                 if 'ConnectTimeout' in error_msg or 'Connection' in error_msg:
-                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
+                    err_short = error_msg[:80]
+                    logger.debug(
+                        f"[DAILY_K] ✗ {source_name} 获取港股 {code} 日K 数据连接失败: "
+                        f"{err_short}"
+                    )
+                    summary_parts.append(f"{source_name}（失败：网络异常）")
                 else:
-                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
-                continue
+                    err_short = error_msg[:80]
+                    logger.debug(
+                        f"[DAILY_K] ✗ {source_name} 获取港股 {code} 日K 数据失败: "
+                        f"{err_short}"
+                    )
+                    summary_parts.append(f"{source_name}（失败：其它异常）")
+
+        # 汇总打印
+        if summary_parts:
+            summary_line = f"日线K线获取[{original_code}]：" + " -> ".join(summary_parts)
+        else:
+            summary_line = f"日线K线获取[{original_code}]：未尝试任何数据源"
+
+        logger.info(summary_line)
+
+        if result_df is not None:
+            return result_df
 
         # 所有数据源都失败
-        logger.error(f"所有数据源均失败，无法获取港股 {code} 数据")
+        msg_final = f"[DAILY_K] 所有数据源均失败，无法获取港股 {code} 日K 数据"
+        logger.error(msg_final)
         return None
 
     def _fetch_hk_eastmoney(self, code: str, start_date: str, end_date: str,
@@ -893,7 +1069,7 @@ class DataFetcher:
 
     def _fetch_hk_sina(self, code: str, start_date: str, end_date: str,
                        adjust: str) -> pd.DataFrame:
-        """从新浪财经获取港股数据"""
+        """从新浪财经获取港股日 K 数据"""
         try:
             adjust_map = {'qfq': 'qfq', 'hfq': 'hfq', '': ''}
             df = self.ak.stock_hk_daily(
@@ -902,6 +1078,7 @@ class DataFetcher:
             )
 
             if df is None or len(df) == 0:
+                logger.debug(f"[DAILY_K] ✗ 新浪财经 返回空的港股 {code} 日K 数据")
                 return None
 
             # 新浪返回的列名已经是英文标准格式
@@ -919,6 +1096,9 @@ class DataFetcher:
             df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
 
             if len(df) == 0:
+                logger.debug(
+                    f"[DAILY_K] ✗ 新浪财经 返回空的港股 {code} 日K 数据（筛选日期后为空）"
+                )
                 return None
 
             # 选择需要的列
@@ -936,8 +1116,11 @@ class DataFetcher:
     def _fetch_hk_yfinance(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """从 Yahoo Finance 获取港股数据"""
         try:
-            # yfinance 需要 .HK 后缀
-            yf_code = f"{code}.HK"
+            # 统一转换为 Yahoo 港股代码格式
+            # 例如:
+            #   本地: 00700 / 00700.HK -> Yahoo: 0700.HK
+            #   本地: 01810 / 01810.HK -> Yahoo: 1810.HK
+            yf_code = self._to_yahoo_hk_symbol(code)
             import yfinance as yf
             ticker = yf.Ticker(yf_code)
             df = ticker.history(start=start_date, end=end_date)
@@ -958,7 +1141,8 @@ class DataFetcher:
             df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
             df['code'] = code
 
-            return df.reset_index(drop=True)
+            df = df.reset_index(drop=True)
+            return df
 
         except ImportError:
             logger.debug("yfinance 未安装，跳过")
@@ -970,88 +1154,760 @@ class DataFetcher:
 
     def get_realtime_data(self, code: str) -> Optional[dict]:
         """
-        获取实时行情数据
+        获取实时行情数据（多数据源）
+
+        当前支持：
+        - A股: 新浪财经实时 + 东方财富实时 + Baostock 实时（按优先级依次尝试）
+        - 港股: 新浪财经实时 + 东方财富实时 + Yahoo Finance 实时（按优先级依次尝试）
+        - 美股: Yahoo Finance 实时（若可用）
 
         Args:
-            code: 股票代码（A股/港股）
+            code: 股票代码（A股/港股/美股）
 
         Returns:
-            包含实时价格、涨跌幅等信息的字典
+            包含实时价格、涨跌幅等信息的字典，或 None 表示获取失败
         """
         try:
-            if self.source == 'akshare':
-                # 检测市场类型
-                market = self._detect_market(code)
+            market = self._detect_market(code)
 
-                if market == 'HK':
-                    # ---- 港股实时行情 ----
-                    # 统一为 5 位数字代码
-                    if code.endswith('.HK'):
-                        code = code[:-3]
-                    if code.isdigit():
-                        code = code.zfill(5)
-
-                    df = self.ak.stock_hk_spot_em()
-                    if df is None or len(df) == 0:
-                        return None
-
-                    # 代码列可能为 '代码' 或 'symbol'
-                    if '代码' in df.columns:
-                        stock_data = df[df['代码'] == code]
-                    elif 'symbol' in df.columns:
-                        stock_data = df[df['symbol'] == code]
-                    else:
-                        return None
-
-                    if len(stock_data) == 0:
-                        return None
-
-                    row = stock_data.iloc[0]
-                    return {
-                        'code': code,
-                        'name': row.get('名称', row.get('name', code)),
-                        'price': row.get('最新价'),
-                        'change': row.get('涨跌额'),
-                        'pct_change': row.get('涨跌幅'),
-                        'volume': row.get('成交量'),
-                        'amount': row.get('成交额'),
-                        'high': row.get('最高'),
-                        'low': row.get('最低'),
-                        'open': row.get('今开'),
-                        'last_close': row.get('昨收'),
-                    }
-                else:
-                    # ---- A股实时行情 ----
-                    # 格式化代码为带市场前缀的形式
-                    if not code.startswith(('sh', 'sz')):
-                        if code.startswith('6'):
-                            code = 'sh' + code
-                        else:
-                            code = 'sz' + code
-
-                    df = self.ak.stock_zh_a_spot_em()
-                    stock_data = df[df['代码'] == code.replace('sh', '').replace('sz', '')]
-
-                    if len(stock_data) == 0:
-                        return None
-
-                    row = stock_data.iloc[0]
-                    return {
-                        'code': code,
-                        'name': row['名称'],
-                        'price': row['最新价'],
-                        'change': row['涨跌额'],
-                        'pct_change': row['涨跌幅'],
-                        'volume': row['成交量'],
-                        'amount': row['成交额'],
-                        'high': row['最高'],
-                        'low': row['最低'],
-                        'open': row['今开'],
-                        'last_close': row['昨收']
-                    }
+            if market == 'HK':
+                return self._get_realtime_hk_multi(code)
+            elif market == 'CN-A':
+                return self._get_realtime_cn_multi(code)
+            elif market == 'US':
+                return self._get_realtime_us(code)
+            else:
+                # 兜底：按 A 股处理
+                return self._get_realtime_cn_multi(code)
 
         except Exception as e:
             logger.error(f"获取实时数据失败 {code}: {e}")
+            return None
+
+    @staticmethod
+    def _safe_float(value):
+        """将值安全转换为 float，失败时返回 None"""
+        try:
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    def _build_realtime_dict(
+        self,
+        code: str,
+        name: Optional[str],
+        price,
+        open_price=None,
+        high=None,
+        low=None,
+        last_close=None,
+        volume=None,
+        amount=None,
+        pct_change=None,
+        change=None,
+    ) -> Optional[dict]:
+        """
+        统一构建实时行情字典，尽量补全涨跌额/涨跌幅
+        """
+        price_f = self._safe_float(price)
+        if price_f is None:
+            return None
+
+        open_f = self._safe_float(open_price)
+        high_f = self._safe_float(high)
+        low_f = self._safe_float(low)
+        last_close_f = self._safe_float(last_close)
+        volume_f = self._safe_float(volume)
+        amount_f = self._safe_float(amount)
+
+        change_f = self._safe_float(change)
+        pct_change_f = self._safe_float(pct_change)
+
+        # 如果缺失，尝试根据 price 和 last_close 计算
+        if change_f is None and last_close_f is not None:
+            change_f = price_f - last_close_f
+
+        if pct_change_f is None and change_f is not None and last_close_f not in (None, 0):
+            pct_change_f = change_f / last_close_f * 100
+
+        return {
+            'code': code,
+            'name': name or code,
+            'price': price_f,
+            'change': change_f,
+            'pct_change': pct_change_f,
+            'volume': volume_f,
+            'amount': amount_f,
+            'high': high_f,
+            'low': low_f,
+            'open': open_f,
+            'last_close': last_close_f,
+        }
+
+    def _normalize_cn_code(self, code: str) -> str:
+        """
+        规范化 A 股代码为 6 位数字（不带前缀）
+        """
+        clean = code
+        if clean.startswith(('sh', 'sz', 'SH', 'SZ')):
+            clean = clean[2:]
+        if clean.endswith(('.SH', '.SZ')):
+            clean = clean[:-3]
+        if clean.isdigit() and len(clean) < 6:
+            clean = clean.zfill(6)
+        return clean
+
+    def _normalize_hk_code(self, code: str) -> str:
+        """
+        规范化港股代码为 5 位数字（不带 .HK 后缀）
+        """
+        clean = code
+        if clean.endswith('.HK'):
+            clean = clean[:-3]
+        if clean.isdigit() and len(clean) < 5:
+            clean = clean.zfill(5)
+        return clean
+
+    def _to_yahoo_hk_symbol(self, code: str) -> str:
+        """
+        将本地港股代码转换为 Yahoo Finance 使用的代码格式（4位数字 + '.HK'）
+
+        支持输入形式:
+        - '09988', '9988'
+        - '09988.HK', '9988.HK'
+        统一返回: 例如 '9988.HK'
+        """
+        base = code
+        # 去掉 .HK 后缀（如果有）
+        if base.endswith('.HK'):
+            base = base[:-3]
+
+        # 纯数字：去掉多余前导 0，再按至少 4 位补零
+        if base.isdigit():
+            try:
+                num = int(base)
+                return f"{num:04d}.HK"
+            except ValueError:
+                # 理论上不会触发，兜底返回原始格式
+                return f"{base}.HK"
+
+        # 其它情况：尽量补上 .HK 后缀
+        if not code.endswith('.HK'):
+            return f"{code}.HK"
+        return code
+
+    def _get_realtime_cn_multi(self, code: str) -> Optional[dict]:
+        """
+        A股实时行情（多数据源）：
+        1. 新浪财经 1 分钟分时（ak.stock_zh_a_minute）
+        2. 东方财富 1 分钟分时（ak.stock_zh_a_hist_min_em）
+        3. 腾讯财经 1 分钟分时（web.ifzq.gtimg.cn）
+        """
+        raw_code = code
+        clean_code = self._normalize_cn_code(code)
+
+        sources = [
+            ('新浪财经 A股 分时',   lambda: self._get_realtime_cn_from_sina(clean_code, raw_code)),
+            ('东方财富 A股 分时',   lambda: self._get_realtime_cn_from_em(clean_code, raw_code)),
+            ('腾讯财经 A股 分时',   lambda: self._get_realtime_cn_from_tx_minute(clean_code, raw_code)),
+        ]
+
+        # 随机打乱顺序：相当于随机选择一个起点，如果失败再依次尝试其他源
+        random.shuffle(sources)
+
+        # 调试日志：标记已进入多源实时逻辑，以及当前随机顺序（仅写入日志，不在控制台展开）
+        try:
+            order_str = " -> ".join(name for name, _ in sources)
+        except Exception:
+            order_str = " / ".join(name for name, _ in sources)
+        logger.debug(
+            f"[REALTIME_CN_MULTI] {clean_code} 分钟级实时K 源顺序: {order_str}"
+        )
+
+        last_error = None
+        total_sources = len(sources)
+        summary_parts = []
+        result_data = None
+
+        for idx, (source_name, fetch_func) in enumerate(sources, start=1):
+            try:
+                logger.debug(
+                    f"[REALTIME_CN_MULTI] 尝试源 {idx}/{total_sources}: "
+                    f"{source_name} 获取 A股 {clean_code} 分钟级实时K 数据"
+                )
+                data = fetch_func()
+                if data and data.get('price') is not None:
+                    logger.info(
+                        f"[REALTIME_CN_MULTI] ✓ 成功从 {source_name} 获取 A股 "
+                        f"{clean_code} 分钟级实时K 数据（源 {idx}/{total_sources}）"
+                    )
+                    summary_parts.append(f"{source_name}（成功！）")
+                    result_data = data
+                    break
+                else:
+                    logger.debug(
+                        f"[REALTIME_CN_MULTI] ✗ {source_name} 返回空的 A股 {clean_code} "
+                        f"分钟级实时K 数据或无价格（源 {idx}/{total_sources}）"
+                    )
+                    summary_parts.append(f"{source_name}（失败：空数据）")
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                err_short = error_msg[:80]
+                logger.debug(
+                    f"[REALTIME_CN_MULTI] ✗ {source_name} 获取 A股 {clean_code} "
+                    f"分钟级实时K 数据失败（源 {idx}/{total_sources}）: {err_short}"
+                )
+                if 'Connection' in error_msg or 'ConnectTimeout' in error_msg:
+                    summary_parts.append(f"{source_name}（失败：网络异常）")
+                else:
+                    summary_parts.append(f"{source_name}（失败：其它异常）")
+
+        # 汇总打印
+        display_code = raw_code
+        if summary_parts:
+            summary_line = f"分钟K线获取[{display_code}]：" + " -> ".join(summary_parts)
+        else:
+            summary_line = f"分钟K线获取[{display_code}]：未尝试任何数据源"
+
+        logger.info(summary_line)
+
+        if result_data is not None:
+            return result_data
+
+        # 所有实时数据源均失败
+        if last_error:
+            logger.error(
+                f"[REALTIME_CN_MULTI] 所有实时数据源均失败，无法获取 A股 {clean_code} "
+                f"分钟级实时K 数据: {last_error}"
+            )
+        else:
+            logger.error(
+                f"[REALTIME_CN_MULTI] 所有实时数据源均失败，无法获取 A股 {clean_code} "
+                f"分钟级实时K 数据"
+            )
+        return None
+
+    def _get_realtime_hk_multi(self, code: str) -> Optional[dict]:
+        """
+        港股实时行情（多数据源）：
+        1. 东方财富 1 分钟分时（ak.stock_hk_hist_min_em）
+        2. 腾讯财经 1 分钟分时（web.ifzq.gtimg.cn）
+        3. Yahoo Finance 1 分钟分时（yfinance）
+        """
+        raw_code = code
+        clean_code = self._normalize_hk_code(code)
+
+        sources = [
+            ('东方财富 港股 分时',   lambda: self._get_realtime_hk_from_em(clean_code, raw_code)),
+            ('腾讯财经 港股 分时',   lambda: self._get_realtime_hk_from_tx_minute(clean_code, raw_code)),
+            ('Yahoo 港股 实时',     lambda: self._get_realtime_hk_from_yahoo(clean_code, raw_code)),
+        ]
+
+        # 随机打乱顺序：相当于随机选择一个起点，如果失败再依次尝试其他源
+        random.shuffle(sources)
+
+        # 调试日志：标记已进入多源实时逻辑，以及当前随机顺序（仅写入日志）
+        try:
+            order_str = " -> ".join(name for name, _ in sources)
+        except Exception:
+            order_str = " / ".join(name for name, _ in sources)
+        logger.debug(
+            f"[REALTIME_HK_MULTI] {clean_code} 分钟级实时K 源顺序: {order_str}"
+        )
+
+        last_error = None
+        total_sources = len(sources)
+        summary_parts = []
+        result_data = None
+
+        for idx, (source_name, fetch_func) in enumerate(sources, start=1):
+            try:
+                logger.debug(
+                    f"[REALTIME_HK_MULTI] 尝试源 {idx}/{total_sources}: "
+                    f"{source_name} 获取港股 {clean_code} 分钟级实时K 数据"
+                )
+                data = fetch_func()
+                if data and data.get('price') is not None:
+                    logger.info(
+                        f"[REALTIME_HK_MULTI] ✓ 成功从 {source_name} 获取港股 "
+                        f"{clean_code} 分钟级实时K 数据（源 {idx}/{total_sources}）"
+                    )
+                    summary_parts.append(f"{source_name}（成功！）")
+                    result_data = data
+                    break
+                else:
+                    logger.debug(
+                        f"[REALTIME_HK_MULTI] ✗ {source_name} 返回空的港股 {clean_code} "
+                        f"分钟级实时K 数据或无价格（源 {idx}/{total_sources}）"
+                    )
+                    summary_parts.append(f"{source_name}（失败：空数据）")
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                err_short = error_msg[:80]
+                logger.debug(
+                    f"[REALTIME_HK_MULTI] ✗ {source_name} 获取港股 {clean_code} "
+                    f"分钟级实时K 数据失败（源 {idx}/{total_sources}）: {err_short}"
+                )
+                if 'Connection' in error_msg or 'ConnectTimeout' in error_msg:
+                    summary_parts.append(f"{source_name}（失败：网络异常）")
+                else:
+                    summary_parts.append(f"{source_name}（失败：其它异常）")
+
+        # 汇总打印
+        display_code = raw_code
+        if summary_parts:
+            summary_line = f"分钟K线获取[{display_code}]：" + " -> ".join(summary_parts)
+        else:
+            summary_line = f"分钟K线获取[{display_code}]：未尝试任何数据源"
+
+        logger.info(summary_line)
+
+        if result_data is not None:
+            return result_data
+
+        # 所有实时数据源均失败
+        if last_error:
+            logger.error(
+                f"[REALTIME_HK_MULTI] 所有实时数据源均失败，无法获取港股 {clean_code} "
+                f"分钟级实时K 数据: {last_error}"
+            )
+        else:
+            logger.error(
+                f"[REALTIME_HK_MULTI] 所有实时数据源均失败，无法获取港股 {clean_code} "
+                f"分钟级实时K 数据"
+            )
+        return None
+
+    def _get_realtime_us(self, code: str) -> Optional[dict]:
+        """
+        美股实时行情（简单版，基于 Yahoo Finance）
+        """
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.debug("yfinance 未安装，无法获取美股实时行情")
+            return None
+
+        try:
+            ticker = yf.Ticker(code)
+            # 优先用 1 分钟级别数据
+            df = ticker.history(period='1d', interval='1m')
+            if df is None or len(df) == 0:
+                df = ticker.history(period='1d', interval='1d')
+
+            if df is None or len(df) == 0:
+                return None
+
+            last = df.iloc[-1]
+            price = last.get('Close')
+            open_price = last.get('Open')
+            high = last.get('High')
+            low = last.get('Low')
+            volume = last.get('Volume')
+
+            return self._build_realtime_dict(
+                code=code,
+                name=None,
+                price=price,
+                open_price=open_price,
+                high=high,
+                low=low,
+                last_close=None,
+                volume=volume,
+                amount=None,
+                pct_change=None,
+                change=None,
+            )
+        except Exception as e:
+            logger.debug(f"Yahoo Finance 美股实时行情获取失败: {e}")
+            return None
+
+    def _get_realtime_cn_from_sina(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从新浪财经获取 A 股实时行情
+
+        实现说明：
+        - 早期使用 ak.stock_zh_a_spot 获取全市场快照，在当前环境中已无法解析返回格式
+        - 改为使用 ak.stock_zh_a_minute 获取 1 分钟级别分时数据
+        - 取最新一条分钟数据，作为实时行情近似
+        """
+        # 需要 akshare 支持
+        if not hasattr(self, 'ak'):
+            return None
+
+        # 将 6 位代码转换为带市场前缀的形式：shXXXXXX / szXXXXXX
+        if clean_code.startswith('6'):
+            symbol = f"sh{clean_code}"
+        else:
+            symbol = f"sz{clean_code}"
+
+        # 1 分钟周期，不复权
+        df = self.ak.stock_zh_a_minute(
+            symbol=symbol,
+            period='1',
+            adjust=''
+        )
+        if df is None or len(df) == 0:
+            return None
+
+        # 必要列检查
+        required_cols = ['day', 'open', 'high', 'low', 'close', 'volume']
+        if not all(col in df.columns for col in required_cols):
+            return None
+
+        # 按时间排序，取最新一条
+        df = df.sort_values('day')
+        row = df.iloc[-1]
+
+        return self._build_realtime_dict(
+            code=display_code,
+            name=None,  # 分时接口不提供名称，这里留空交给上层兜底
+            price=row.get('close'),
+            open_price=row.get('open'),
+            high=row.get('high'),
+            low=row.get('low'),
+            last_close=None,
+            volume=row.get('volume'),
+            amount=None,
+            pct_change=None,
+            change=None,
+        )
+
+    def _get_realtime_cn_from_em(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从东方财富获取 A 股实时行情
+
+        实现说明：
+        - 早期使用 ak.stock_zh_a_spot_em 获取全市场快照，在当前环境中不稳定
+        - 改为使用 ak.stock_zh_a_hist_min_em 获取 1 分钟级别分时数据
+        - 取最新一条分钟数据，作为实时行情近似
+        """
+        if not hasattr(self, 'ak'):
+            return None
+
+        # 使用 1 分钟周期的分时数据（前复权）
+        df = self.ak.stock_zh_a_hist_min_em(
+            symbol=clean_code,
+            period='1',
+            adjust='qfq'
+        )
+        if df is None or len(df) == 0:
+            return None
+
+        # 必要列检查
+        required_cols = ['时间', '开盘', '收盘', '最高', '最低', '成交量', '成交额']
+        if not all(col in df.columns for col in required_cols):
+            return None
+
+        # 按时间排序，取最新一条
+        df = df.sort_values('时间')
+        row = df.iloc[-1]
+
+        return self._build_realtime_dict(
+            code=display_code,
+            name=None,  # 分时接口不提供名称，这里留空交给上层兜底
+            price=row.get('收盘'),
+            open_price=row.get('开盘'),
+            high=row.get('最高'),
+            low=row.get('最低'),
+            last_close=None,
+            volume=row.get('成交量'),
+            amount=row.get('成交额'),
+            pct_change=None,
+            change=None,
+        )
+
+    def _get_realtime_cn_from_tx_minute(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从腾讯财经获取 A 股分钟级实时行情
+
+        使用接口:
+        https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=sh600885
+        数据格式示例:
+        {
+            "data": {
+                "sh600885": {
+                    "data": {
+                        "data": [
+                            "0930 31.20 453 1413360.00",
+                            "0931 31.17 2865 8919000.00",
+                            ...
+                        ]
+                    }
+                }
+            }
+        }
+        每行内容含义: 时间 价格 累计成交量 累计成交额
+        """
+        # 生成带市场前缀的代码
+        if clean_code.startswith('6'):
+            symbol = f"sh{clean_code}"
+        else:
+            symbol = f"sz{clean_code}"
+
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
+
+        try:
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            j = resp.json()
+        except Exception as e:
+            logger.debug(f"腾讯财经 A股 分时请求失败 {symbol}: {e}")
+            return None
+
+        try:
+            node = j.get('data', {}).get(symbol, {}).get('data', {})
+            lines = node.get('data', [])
+            if not lines:
+                return None
+
+            prices = []
+            volumes = []
+            amounts = []
+            for line in lines:
+                parts = str(line).strip().split()
+                if len(parts) < 4:
+                    continue
+                _, p, v, a = parts[:4]
+                try:
+                    prices.append(float(p))
+                    volumes.append(float(v))
+                    amounts.append(float(a))
+                except Exception:
+                    continue
+
+            if not prices:
+                return None
+
+            # 当日聚合K线: 使用分钟数据推导 open/high/low/close/volume/amount
+            open_price = prices[0]
+            high = max(prices)
+            low = min(prices)
+            close_price = prices[-1]
+            volume = volumes[-1] if volumes else None
+            amount = amounts[-1] if amounts else None
+
+            return self._build_realtime_dict(
+                code=display_code,
+                name=None,
+                price=close_price,
+                open_price=open_price,
+                high=high,
+                low=low,
+                last_close=None,
+                volume=volume,
+                amount=amount,
+                pct_change=None,
+                change=None,
+            )
+        except Exception as e:
+            logger.debug(f"腾讯财经 A股 分时解析失败 {symbol}: {e}")
+            return None
+
+    def _get_realtime_hk_from_sina(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从新浪财经获取港股实时行情（ak.stock_hk_spot）
+        """
+        if not hasattr(self, 'ak'):
+            return None
+
+        df = self.ak.stock_hk_spot()
+        if df is None or len(df) == 0:
+            return None
+
+        # 代码列可能是 '代码' 或 'symbol'
+        code_col = None
+        if '代码' in df.columns:
+            code_col = '代码'
+        elif 'symbol' in df.columns:
+            code_col = 'symbol'
+        else:
+            return None
+
+        stock_data = df[df[code_col].astype(str).str.zfill(5) == clean_code]
+        if len(stock_data) == 0:
+            return None
+
+        row = stock_data.iloc[0]
+        return self._build_realtime_dict(
+            code=display_code,
+            name=row.get('名称', row.get('name', display_code)),
+            price=row.get('最新价'),
+            open_price=row.get('今开', row.get('open')),
+            high=row.get('最高', row.get('high')),
+            low=row.get('最低', row.get('low')),
+            last_close=row.get('昨收', row.get('preclose')),
+            volume=row.get('成交量', row.get('volume')),
+            amount=row.get('成交额', row.get('amount')),
+            pct_change=row.get('涨跌幅'),
+            change=row.get('涨跌额'),
+        )
+
+    def _get_realtime_hk_from_em(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从东方财富获取港股实时行情
+
+        实现说明：
+        - 早期使用 ak.stock_hk_spot_em，但在当前环境下不稳定
+        - 改为使用 ak.stock_hk_hist_min_em 获取 1 分钟级别分时数据
+        - 取最新一条分钟数据，作为实时行情近似
+        """
+        if not hasattr(self, 'ak'):
+            return None
+
+        # 使用 1 分钟周期的分时数据
+        df = self.ak.stock_hk_hist_min_em(
+            symbol=clean_code,
+            period='1',
+            adjust='qfq'
+        )
+        if df is None or len(df) == 0:
+            return None
+
+        # 必要列检查
+        required_cols = ['时间', '开盘', '收盘', '最高', '最低', '成交量', '成交额', '最新价']
+        if not all(col in df.columns for col in required_cols):
+            return None
+
+        # 按时间排序，取最新一条作为当前实时近似
+        df = df.sort_values('时间')
+        row = df.iloc[-1]
+
+        return self._build_realtime_dict(
+            code=display_code,
+            name=None,  # 分时接口不提供名称，这里留空交给上层兜底
+            price=row.get('最新价', row.get('收盘')),
+            open_price=row.get('开盘'),
+            high=row.get('最高', row.get('high')),
+            low=row.get('最低', row.get('low')),
+            last_close=None,  # 分时数据不直接包含昨收
+            volume=row.get('成交量', row.get('volume')),
+            amount=row.get('成交额', row.get('amount')),
+            pct_change=None,
+            change=None,
+        )
+
+    def _get_realtime_hk_from_tx_minute(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从腾讯财经获取港股分钟级实时行情
+
+        使用接口:
+        https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=hk00700
+        数据格式与 A 股类似:
+        "0930 628.000 541115 340725435.900"
+        对应: 时间 价格 累计成交量 累计成交额
+        """
+        symbol = f"hk{clean_code.zfill(5)}"
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}"
+
+        try:
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            j = resp.json()
+        except Exception as e:
+            logger.debug(f"腾讯财经 港股 分时请求失败 {symbol}: {e}")
+            return None
+
+        try:
+            node = j.get('data', {}).get(symbol, {}).get('data', {})
+            lines = node.get('data', [])
+            if not lines:
+                return None
+
+            prices = []
+            volumes = []
+            amounts = []
+            for line in lines:
+                parts = str(line).strip().split()
+                if len(parts) < 4:
+                    continue
+                _, p, v, a = parts[:4]
+                try:
+                    prices.append(float(p))
+                    volumes.append(float(v))
+                    amounts.append(float(a))
+                except Exception:
+                    continue
+
+            if not prices:
+                return None
+
+            open_price = prices[0]
+            high = max(prices)
+            low = min(prices)
+            close_price = prices[-1]
+            volume = volumes[-1] if volumes else None
+            amount = amounts[-1] if amounts else None
+
+            return self._build_realtime_dict(
+                code=display_code,
+                name=None,
+                price=close_price,
+                open_price=open_price,
+                high=high,
+                low=low,
+                last_close=None,
+                volume=volume,
+                amount=amount,
+                pct_change=None,
+                change=None,
+            )
+        except Exception as e:
+            logger.debug(f"腾讯财经 港股 分时解析失败 {symbol}: {e}")
+            return None
+
+    def _get_realtime_hk_from_yahoo(self, clean_code: str, display_code: str) -> Optional[dict]:
+        """
+        从 Yahoo Finance 获取港股实时行情（1 分钟级别）
+        """
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.debug("yfinance 未安装，跳过 Yahoo 港股实时行情")
+            return None
+
+        # 确定 yfinance 使用的代码格式
+        # 注意：Yahoo 港股代码一般为 4 位数字，不带多余前导 0，例如：
+        #  - 腾讯控股: 0700.HK （本地代码通常写作 00700）
+        #  - 阿里巴巴: 9988.HK （本地代码通常写作 09988）
+        # 使用统一的转换函数，避免 09988.HK 这种形式导致 404 或空数据
+        yf_code = self._to_yahoo_hk_symbol(display_code or clean_code)
+
+        try:
+            ticker = yf.Ticker(yf_code)
+            df = ticker.history(period='1d', interval='1m')
+            if df is None or len(df) == 0:
+                df = ticker.history(period='1d', interval='1d')
+
+            if df is None or len(df) == 0:
+                return None
+
+            last = df.iloc[-1]
+            price = last.get('Close')
+            open_price = last.get('Open')
+            high = last.get('High')
+            low = last.get('Low')
+            volume = last.get('Volume')
+
+            return self._build_realtime_dict(
+                code=display_code,
+                name=None,
+                price=price,
+                open_price=open_price,
+                high=high,
+                low=low,
+                last_close=None,
+                volume=volume,
+                amount=None,
+                pct_change=None,
+                change=None,
+            )
+        except Exception as e:
+            logger.debug(f"Yahoo 港股实时行情获取失败: {e}")
             return None
 
     def get_stock_info(self, code: str) -> Optional[dict]:
@@ -1081,11 +1937,10 @@ class DataFetcher:
         """
         获取港股基本信息
 
-        策略（与 _get_cn_stock_info 保持同样结构）：
-        1. 定义多个数据源（实时接口 / 本地名称缓存）
-        2. 随机打乱数据源顺序，避免单一网站访问过量
-        3. 依次尝试，成功即返回
-        4. 所有数据源失败时，用代码本身兜底
+        策略（简化版）：
+        1. 只使用本地名称缓存（_get_hk_name_from_cache）
+        2. 缓存中不存在时，直接使用代码本身作为名称
+        3. 不再发起任何网络请求获取名称信息
         """
         # 格式化港股代码：去掉 .HK 后缀，并补齐为 5 位数字
         if code.endswith('.HK'):
@@ -1095,36 +1950,13 @@ class DataFetcher:
 
         clean_code = code
 
-        # 定义多个数据源，随机选择以分散负载
-        data_sources = [
-            ('东方财富港股实时行情', lambda: self._get_hk_info_from_em(clean_code)),
-            ('港股名称缓存',         lambda: self._get_hk_name_from_cache(clean_code)),
-        ]
+        # 只从本地缓存获取，不再访问网络
+        info = self._get_hk_name_from_cache(clean_code)
+        if info is not None and len(info) > 0:
+            return info
 
-        # 随机打乱数据源顺序，避免单一网站访问过量
-        random.shuffle(data_sources)
-
-        last_error = None
-        for source_name, fetch_func in data_sources:
-            try:
-                logger.info(f"尝试从 {source_name} 获取港股 {clean_code} 信息...")
-                info = fetch_func()
-
-                if info is not None and len(info) > 0:
-                    logger.info(f"✓ 成功从 {source_name} 获取港股 {clean_code} 信息")
-                    return info
-
-            except Exception as e:
-                last_error = e
-                error_msg = str(e)
-                if 'RemoteDisconnected' in error_msg or 'Connection' in error_msg:
-                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
-                else:
-                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
-                continue
-
-        # 所有数据源都失败，返回最基本的信息
-        logger.warning(f"所有港股信息数据源均失败，使用默认信息: {clean_code}")
+        # 缓存中没有，使用代码本身作为名称
+        logger.debug(f"港股 {clean_code} 不在名称缓存中，使用代码作为名称")
         return {'股票简称': clean_code, '股票代码': clean_code}
 
     def _get_hk_info_from_em(self, code: str) -> Optional[dict]:
@@ -1187,44 +2019,21 @@ class DataFetcher:
         return None
 
     def _get_cn_stock_info(self, code: str) -> Optional[dict]:
-        """获取A股基本信息"""
+        """
+        获取A股基本信息（名称）
+
+        简化策略：
+        1. 只使用本地名称缓存（_get_stock_name_from_cache）
+        2. 缓存中不存在时，直接使用代码本身作为名称
+        3. 不再发起任何网络请求获取名称信息
+        """
         # 格式化代码（去掉前缀）
         clean_code = code
         if code.startswith(('sh', 'sz')):
             clean_code = code[2:]
 
-        # 定义多个数据源，随机选择以分散负载
-        data_sources = [
-            ('东方财富个股信息', lambda: self._get_stock_info_em(clean_code)),
-            ('东方财富实时行情', lambda: self._get_stock_info_from_spot(clean_code)),
-            ('股票名称缓存', lambda: self._get_stock_name_from_cache(clean_code)),
-        ]
-
-        # 随机打乱数据源顺序，避免单一网站访问过量
-        random.shuffle(data_sources)
-
-        last_error = None
-        for source_name, fetch_func in data_sources:
-            try:
-                logger.info(f"尝试从 {source_name} 获取股票 {clean_code} 信息...")
-                info = fetch_func()
-
-                if info is not None and len(info) > 0:
-                    logger.info(f"✓ 成功从 {source_name} 获取股票 {clean_code} 信息")
-                    return info
-
-            except Exception as e:
-                last_error = e
-                error_msg = str(e)
-                if 'RemoteDisconnected' in error_msg or 'Connection' in error_msg:
-                    logger.warning(f"✗ {source_name} 连接失败: {error_msg[:100]}")
-                else:
-                    logger.warning(f"✗ {source_name} 获取失败: {error_msg[:100]}")
-                continue
-
-        # 所有数据源都失败，返回最基本的信息
-        logger.warning(f"所有数据源均失败，使用默认信息: {clean_code}")
-        return {'股票简称': clean_code, '股票代码': clean_code}
+        # 只从本地缓存/静态映射获取名称
+        return self._get_stock_name_from_cache(clean_code)
 
     def _get_stock_info_em(self, code: str) -> Optional[dict]:
         """从东方财富获取个股详细信息"""

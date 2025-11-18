@@ -440,10 +440,18 @@ class MixedStrategy:
             position_scores.append((i, current_date, score))
 
         # 检测算法发现的震荡期间（用于补充）
-        high_score_positions = [(i, date, score) for i, date, score in position_scores if score >= algorithm_score_threshold]
+        high_score_positions = [
+            (i, date, score)
+            for i, date, score in position_scores
+            if score >= algorithm_score_threshold
+        ]
 
         if high_score_positions:
-            logger.info(f"🔍 算法找到 {len(high_score_positions)} 个补充位置（阈值≥{algorithm_score_threshold}）")
+            # 只在调试模式下输出详细位置日志
+            logger.debug(
+                f"震荡检测算法命中 {len(high_score_positions)} 个候选位置"
+                f"（阈值≥{algorithm_score_threshold}）"
+            )
 
             # 合并相邻位置
             current_period_start = high_score_positions[0][0]
@@ -469,7 +477,10 @@ class MixedStrategy:
                                 date_info = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
                             else:
                                 date_info = f"{start_date} ~ {end_date}"
-                            logger.info(f"🔍 算法检测到补充震荡期间: {date_info} ({period_duration}天, 得分{avg_score:.1f})")
+                            logger.debug(
+                                f"补充震荡期间: {date_info} "
+                                f"({period_duration}天, 得分{avg_score:.1f})"
+                            )
 
                     # 开始新期间
                     current_period_start = i
@@ -489,14 +500,15 @@ class MixedStrategy:
                         date_info = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
                     else:
                         date_info = f"{start_date} ~ {end_date}"
-                    logger.info(f"🔍 算法检测到补充震荡期间: {date_info} ({period_duration}天, 得分{avg_score:.1f})")
+                    logger.debug(
+                        f"补充震荡期间: {date_info} "
+                        f"({period_duration}天, 得分{avg_score:.1f})"
+                    )
 
         # 合并所有检测到的期间
         periods = known_oscillation_periods
 
-        logger.info(f"🔍 总共确定 {len(periods)} 个震荡下行期间 (包含{len(known_oscillation_periods) - len([p for p in periods if p[4] < 8.0])}个已知期间)")
-
-        # 保存到缓存
+        # 不在这里打印详细信息，统一在过滤阶段输出一条汇总日志
         self._oscillation_periods_cache = periods
         self._oscillation_cache_key = cache_key
 
@@ -527,6 +539,7 @@ class MixedStrategy:
 
         total_signals = (df['buy_signal'] == 1).sum()
         filtered_count = 0
+        period_ranges = []  # 收集每个期间的时间区间（用于统一打印）
 
         for period_start_idx, period_end_idx, period_start_date, period_end_date, avg_score in oscillation_periods:
             # 根据日期过滤（如果有日期列）
@@ -551,12 +564,23 @@ class MixedStrategy:
             if period_signals > 0:
                 df.loc[period_mask, 'buy_signal'] = 0
                 filtered_count += period_signals
+                # 记录本区间的时间范围，稍后统一打印
                 if should_log:
-                    logger.info(f"🚫 震荡下行期间过滤: {date_info}, 过滤{period_signals}个信号")
+                    period_ranges.append(date_info)
 
         remaining_signals = (df['buy_signal'] == 1).sum()
         if should_log:
-            logger.info(f"📊 震荡下行过滤完成: 原始{total_signals}个 -> 过滤{filtered_count}个 -> 保留{remaining_signals}个")
+            # 仅输出一条精简日志，包含所有区间列表和总体统计
+            if period_ranges:
+                # 形如：[2021-08-03 ~ 2022-04-07, 2022-07-21 ~ 2023-01-05, ...]
+                periods_str = ", ".join(period_ranges)
+            else:
+                periods_str = ""
+
+            logger.info(
+                f"震荡下行过滤:\n"
+                f"[{periods_str}]"
+            )
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
         """
@@ -738,22 +762,32 @@ class MixedStrategy:
                     self._oscillation_outer_upper = 0.80
                     self._oscillation_inner_upper = 0.50
                     self.selected_oscillation_version = 'V4'
-                    logger.info(f"选择V4参数（收益更高: +{diff:.1f}%: {return_v4:.1f}% vs {return_v1:.1f}%, "
-                              f"V1: {trades_v1}笔 vs V4: {trades_v4}笔）")
+                    logger.info(
+                        "在 V1 参数 和 V4 参数 之间选择了 V4，原因是："
+                        f"V4 收益更高 +{diff:.1f}%（V1: {return_v1:.1f}%/{trades_v1}笔，"
+                        f"V4: {return_v4:.1f}%/{trades_v4}笔）"
+                    )
                 # 规则2: V1交易次数比V4多50%以上（过度交易）
                 elif trades_v4 > 0 and trades_v1 > trades_v4 * 1.5:
                     increase_pct = ((trades_v1 - trades_v4) / trades_v4 * 100)
                     self._oscillation_outer_upper = 0.80
                     self._oscillation_inner_upper = 0.50
                     self.selected_oscillation_version = 'V4'
-                    logger.info(f"选择V4参数（V1交易过频: V1 {trades_v1}笔 vs V4 {trades_v4}笔, +{increase_pct:.0f}%）")
+                    logger.info(
+                        "在 V1 参数 和 V4 参数 之间选择了 V4，原因是："
+                        f"V1 交易过于频繁（V1: {trades_v1}笔，V4: {trades_v4}笔，"
+                        f"交易增长约 {increase_pct:.0f}%）"
+                    )
                 # 规则3: 默认V1
                 else:
                     self._oscillation_outer_upper = 0.60
                     self._oscillation_inner_upper = 0.30
                     self.selected_oscillation_version = 'V1'
-                    logger.info(f"选择V1参数（默认选择: {return_v1:.1f}% vs {return_v4:.1f}%, "
-                              f"V1: {trades_v1}笔 vs V4: {trades_v4}笔）")
+                    logger.info(
+                        "在 V1 参数 和 V4 参数 之间选择了 V1，原因是："
+                        f"V4 相比 V1 提升不明显（V1: {return_v1:.1f}%/{trades_v1}笔，"
+                        f"V4: {return_v4:.1f}%/{trades_v4}笔）"
+                    )
             else:
                 # 回测失败，使用默认V1
                 self._oscillation_outer_upper = 0.60
@@ -763,7 +797,10 @@ class MixedStrategy:
 
         # === 步骤1: 选择卖出策略 ===
         if self.sell_strategy == 'auto':
-            logger.info("自适应模式：正在评估最优卖出策略...")
+            logger.info(
+                "自适应模式：正在评估最优卖出策略 "
+                "（在原始策略 original 与渐进式策略 gradual 之间自动选择）..."
+            )
 
             # 使用high_frequency顺序测试两种卖出策略
             df_test_orig = df.copy()
@@ -788,19 +825,28 @@ class MixedStrategy:
                     improvement = (backtest_grad['capital'] - backtest_orig['capital']) / backtest_orig['capital']
                     if improvement > 0.30:  # 提升超过30%
                         self.optimal_strategy = 'gradual'
-                        logger.info(f"选择渐进式策略（资金提升{improvement*100:.1f}%: "
-                                  f"¥{backtest_orig['capital']:,.2f} → ¥{backtest_grad['capital']:,.2f}, "
-                                  f"收益率{return_orig:.1f}% → {return_grad:.1f}%）")
+                        logger.info(
+                            "在 原始策略(original) 和 渐进式策略(gradual) 之间选择了 渐进式策略，原因是："
+                            f"资金提升{improvement*100:.1f}%（原始: ¥{backtest_orig['capital']:,.2f}"
+                            f"[{return_orig:.1f}%] → 渐进式: ¥{backtest_grad['capital']:,.2f}"
+                            f"[{return_grad:.1f}%]）"
+                        )
                     else:
                         self.optimal_strategy = 'original'
-                        logger.info(f"选择原始策略（渐进式提升不足30%: {improvement*100:.1f}%, "
-                                  f"¥{backtest_orig['capital']:,.2f} vs ¥{backtest_grad['capital']:,.2f}）")
+                        logger.info(
+                            "在 原始策略(original) 和 渐进式策略(gradual) 之间选择了 原始策略，原因是："
+                            f"渐进式提升不足30%（提升{improvement*100:.1f}%："
+                            f"原始 ¥{backtest_orig['capital']:,.2f} vs 渐进式 ¥{backtest_grad['capital']:,.2f}）"
+                        )
                 else:
                     # 其他情况默认使用原始策略
                     self.optimal_strategy = 'original'
-                    logger.info(f"选择原始策略（默认选择: "
-                              f"¥{backtest_orig['capital']:,.2f}[{return_orig:.1f}%] vs "
-                              f"¥{backtest_grad['capital']:,.2f}[{return_grad:.1f}%]）")
+                    logger.info(
+                        "在 原始策略(original) 和 渐进式策略(gradual) 之间选择了 原始策略，原因是："
+                        f"渐进式最终资金不优于原始（原始: ¥{backtest_orig['capital']:,.2f}"
+                        f"[{return_orig:.1f}%]，渐进式: ¥{backtest_grad['capital']:,.2f}"
+                        f"[{return_grad:.1f}%]）"
+                    )
             else:
                 self.optimal_strategy = 'original'
                 logger.warning("回测失败，默认使用原始策略")
@@ -811,7 +857,7 @@ class MixedStrategy:
         # === 步骤2: 选择执行顺序 ===
         if self.order_mode == 'auto':
             # 自适应选择执行顺序：在选定的策略基础上，比较high_frequency和high_quality
-            logger.info(f"自适应模式：正在评估{self.optimal_strategy}策略的最优执行顺序...")
+            logger.info(f"自适应模式：已确定卖出策略为 {self.optimal_strategy}")
 
             df_test_new = df.copy()
             self._apply_combination(df_test_new, self.optimal_strategy, 'high_frequency', bottom_index, top_index)
@@ -832,7 +878,10 @@ class MixedStrategy:
                     # HIGH_FREQUENCY显著更优（>20%），直接使用HIGH_FREQUENCY
                     self.optimal_order = 'high_frequency'
                     improvement = (capital_new - capital_old) / capital_old * 100
-                    logger.info(f"✓ 高频率模式收益显著更高（+{improvement:.1f}%），直接选择高频率模式")
+                    logger.info(
+                        "在 高频率模式(high_frequency) 和 高质量模式(high_quality) 之间选择了 高频率模式，原因是："
+                        f"高频率模式收益显著更高（+{improvement:.1f}%）"
+                    )
                 else:
                     # HIGH_FREQUENCY优势不显著或HIGH_QUALITY更优，进行智能评分比较
                     self.optimal_order = self._select_better_order(backtest_new, backtest_old)
@@ -956,18 +1005,26 @@ class MixedStrategy:
 
             # 如果交易次数增长显著高于收益增长（效率损失>10%），选择高质量模式
             if efficiency_gap > 0.1:  # 10%的效率损失阈值
-                logger.info(f"  ⚠️ 交易次数增长{(trades_ratio-1)*100:.1f}%，"
-                           f"但收益仅增长{(capital_ratio-1)*100:.1f}%")
-                logger.info(f"  → 效率损失: {efficiency_gap*100:.1f}%，选择高质量模式")
+                logger.info(
+                    "在 高频率模式(high_frequency) 和 高质量模式(high_quality) 之间选择了 高质量模式，原因是："
+                    f"交易次数增长{(trades_ratio-1)*100:.1f}%，但收益仅增长{(capital_ratio-1)*100:.1f}%，"
+                    f"效率损失约 {efficiency_gap*100:.1f}%"
+                )
                 return 'high_quality'
 
         # 否则，选择收益更高的模式
         if capital_old > capital_new:
             improvement = (capital_old - capital_new) / capital_new * 100
-            logger.info(f"✓ 选择高质量模式（收益更高，+{improvement:.1f}%）")
+            logger.info(
+                "在 高频率模式(high_frequency) 和 高质量模式(high_quality) 之间选择了 高质量模式，原因是："
+                f"高质量模式最终资金更高（+{improvement:.1f}%）"
+            )
             return 'high_quality'
         else:
-            logger.info(f"✓ 选择高频率模式（收益更高或相同）")
+            logger.info(
+                "在 高频率模式(high_frequency) 和 高质量模式(high_quality) 之间选择了 高频率模式，原因是："
+                "高频率模式收益更高或至少不低于高质量模式"
+            )
             return 'high_frequency'
 
     def _apply_combination(self, df: pd.DataFrame, strategy: str, order: str, bottom_index: list, top_index: list) -> None:

@@ -44,12 +44,18 @@ def setup_logging(config: dict):
 
 
 def load_config(config_path: str = 'config/config.yaml') -> dict:
-    """加载配置文件"""
+    """
+    加载配置文件
+
+    说明：
+    - 如果配置文件不存在或读取失败，静默返回空配置 {}
+    - 调用方会使用 config.py 中的默认参数作为系统默认配置
+    """
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
-    except Exception as e:
-        print(f"加载配置文件失败: {e}")
+    except Exception:
+        # 不打印错误信息，直接使用系统默认配置（config.py）
         return {}
 
 

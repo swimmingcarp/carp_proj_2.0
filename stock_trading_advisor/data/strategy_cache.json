@@ -1,0 +1,18 @@
+{
+  "300274": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "300293": {
+    "sell_strategy": "original",
+    "order": "high_frequency"
+  },
+  "300750": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "06682": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  }
+}

@@ -99,6 +99,9 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279
 
 # 不显示回测结果
 source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --no-backtest
+
+# 回测模式下使用固定策略组合（基于历史自适应结果缓存）
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293 --fixed-strategy
 ```
 
 **输出示例**：

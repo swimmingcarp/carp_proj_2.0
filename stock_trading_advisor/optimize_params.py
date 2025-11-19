@@ -17,6 +17,7 @@ import glob
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 from src.strategy import MixedStrategy
+from src.indicators import calculate_all_indicators
 import config as app_config
 
 # 配置日志
@@ -26,8 +27,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 读取 MixedStrategy 的默认指标配置，确保与主策略保持一致
+_default_strategy = MixedStrategy(validate_indicators=False)
+_default_cfg = _default_strategy._default_config()
+DEFAULT_INIT_K = _default_cfg['init_k']
+DEFAULT_INIT_D = _default_cfg['init_d']
+DEFAULT_INIT_DATE = _default_cfg['init_date']
+DEFAULT_RSI_FAST = _default_cfg.get('rsi_fast_period', 5)
+DEFAULT_RSI_SLOW = _default_cfg.get('rsi_slow_period', 10)
 
-def load_cached_stocks() -> List[str]:
+
+def load_cached_stocks() -> List[pd.DataFrame]:
     """
     从缓存目录加载所有股票数据
 
@@ -42,18 +52,28 @@ def load_cached_stocks() -> List[str]:
         print("请先运行 main.py 分析一些股票以生成缓存")
         return []
 
-    stocks_data = []
+    stocks_data: List[pd.DataFrame] = []
     print(f"\n找到 {len(cache_files)} 个缓存文件")
 
     for cache_file in cache_files:
         try:
-            df = pd.read_csv(cache_file)
-            if len(df) > 0:
+            df_raw = pd.read_csv(cache_file)
+            if len(df_raw) > 0:
                 # 从文件名提取股票代码
                 stock_code = cache_file.stem.split('_')[0]
-                df['stock_code'] = stock_code
-                stocks_data.append(df)
-                print(f"✓ 加载 {stock_code}: {len(df)} 条数据")
+
+                # 预先计算技术指标，避免在参数循环中重复计算
+                df_ind = calculate_all_indicators(
+                    df_raw,
+                    DEFAULT_INIT_K,
+                    DEFAULT_INIT_D,
+                    DEFAULT_INIT_DATE,
+                    rsi_fast_period=DEFAULT_RSI_FAST,
+                    rsi_slow_period=DEFAULT_RSI_SLOW
+                )
+                df_ind['stock_code'] = stock_code
+                stocks_data.append(df_ind)
+                print(f"✓ 加载并预计算指标 {stock_code}: {len(df_ind)} 条数据")
         except Exception as e:
             logger.warning(f"加载 {cache_file} 失败: {e}")
             continue
@@ -74,23 +94,29 @@ def backtest_with_params(df: pd.DataFrame, lookback_days: int,
     Returns:
         回测结果字典
     """
-    # 创建配置
+    # 创建配置（与 MixedStrategy 默认参数保持一致，仅覆盖 lookback_days）
     config = {
-        'init_k': 50.0,
-        'init_d': 50.0,
-        'init_date': '2018-01-02',
+        'init_k': DEFAULT_INIT_K,
+        'init_d': DEFAULT_INIT_D,
+        'init_date': DEFAULT_INIT_DATE,
         'short_ma': 16,
         'mid_ma': 45,
         'k_threshold': 45,
         'stop_loss': -15.0,
         'lookback_days': lookback_days,  # 使用指定的参数
+        'rsi_fast_period': DEFAULT_RSI_FAST,
+        'rsi_slow_period': DEFAULT_RSI_SLOW,
     }
 
-    # 初始化策略
-    strategy = MixedStrategy(config=config, validate_indicators=False)
+    # 初始化策略（预先计算好指标，避免在 analyze 中重复计算）
+    strategy = MixedStrategy(
+        config=config,
+        validate_indicators=False,
+        precomputed_indicators=True
+    )
 
     try:
-        # 执行策略分析
+        # 执行策略分析（df 已包含技术指标，仅生成信号等衍生列）
         df_analyzed, _ = strategy.analyze(df.copy())
 
         if df_analyzed is None:

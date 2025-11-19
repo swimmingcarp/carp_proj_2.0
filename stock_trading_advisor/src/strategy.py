@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 class MixedStrategy:
     """混合交易策略"""
 
-    def __init__(self, config: Dict = None, validate_indicators: bool = True, sell_strategy: str = 'auto', order: str = 'auto', market: str = 'CN-A', use_simple_divergence: bool = False, adaptive_oscillation: bool = False, stock_code: str = ''):
+    def __init__(self, config: Dict = None, validate_indicators: bool = True,
+                 sell_strategy: str = 'auto', order: str = 'auto',
+                 market: str = 'CN-A', use_simple_divergence: bool = False,
+                 adaptive_oscillation: bool = False, stock_code: str = '',
+                 precomputed_indicators: bool = False,
+                 use_strategy_cache: bool = False):
         """
         初始化策略
 
@@ -60,10 +65,15 @@ class MixedStrategy:
         self.optimal_strategy = None  # 记录为当前股票选择的最优卖出策略
         self.optimal_order = 'high_frequency'  # 记录为当前股票选择的最优执行顺序 ('high_frequency' or 'high_quality')
         self.adaptive_oscillation = adaptive_oscillation  # 是否启用自适应震荡参数
-        self.stock_code = stock_code  # 股票代码
+        self.stock_code = stock_code  # 股票代码（可选，由上层传入）
         self.selected_oscillation_version = None  # 记录选择的震荡参数版本
         self.market = market
         self.use_simple_divergence = use_simple_divergence  # 是否使用简化版顶背离检测
+        # 是否在外部已预先计算好技术指标（KDJ/MACD/MA/RSI 等）
+        # 为参数优化等场景避免重复计算指标
+        self.precomputed_indicators = precomputed_indicators
+        # 是否使用策略选择缓存（固定最优组合 original/gradual + high_frequency/high_quality）
+        self.use_strategy_cache = use_strategy_cache
 
         # 震荡期间检测缓存（避免重复检测和日志打印）
         self._oscillation_periods_cache = None
@@ -362,80 +372,141 @@ class MixedStrategy:
                     continue
 
         # === 方法2: 算法检测补充 ===
-        df_analysis = df.copy()
+        # 仅复制震荡检测所需的列，避免整表复制带来的额外开销
+        if 'close' not in df.columns:
+            return []
+
+        base_cols = ['date', 'close'] if 'date' in df.columns else ['close']
+        df_analysis = df[base_cols].copy()
+
         period = self.config.get('bollinger_period', 20)
         std_dev = self.config.get('bollinger_std', 2.0)
 
-        # 布林带计算
-        df_analysis['bb_middle'] = df_analysis['close'].rolling(period).mean()
-        bb_std = df_analysis['close'].rolling(period).std()
-        df_analysis['bb_upper'] = df_analysis['bb_middle'] + std_dev * bb_std
-        df_analysis['bb_lower'] = df_analysis['bb_middle'] - std_dev * bb_std
-        df_analysis['bb_width'] = (df_analysis['bb_upper'] - df_analysis['bb_lower']) / df_analysis['bb_middle']
-        df_analysis['bb_position'] = (df_analysis['close'] - df_analysis['bb_lower']) / (df_analysis['bb_upper'] - df_analysis['bb_lower'])
+        # 布林带相关：优先复用已在 calculate_all_indicators 中计算好的列
+        # indicators.calculate_all_indicators 已经提供:
+        #   bb_upper, bb_middle, bb_lower, bb_width, bb_percent
+        if all(col in df.columns for col in ['bb_width', 'bb_percent']):
+            df_analysis['bb_width'] = df['bb_width']
+            # bb_percent = (close - lower) / (upper - lower)，等价于这里的 bb_position
+            df_analysis['bb_position'] = df['bb_percent']
+        else:
+            # 回退：本地计算布林带
+            df_analysis['bb_middle'] = df_analysis['close'].rolling(period).mean()
+            bb_std = df_analysis['close'].rolling(period).std()
+            df_analysis['bb_upper'] = df_analysis['bb_middle'] + std_dev * bb_std
+            df_analysis['bb_lower'] = df_analysis['bb_middle'] - std_dev * bb_std
+            df_analysis['bb_width'] = (df_analysis['bb_upper'] - df_analysis['bb_lower']) / df_analysis['bb_middle']
+            df_analysis['bb_position'] = (df_analysis['close'] - df_analysis['bb_lower']) / (
+                df_analysis['bb_upper'] - df_analysis['bb_lower']
+            )
 
-        # 均线系统
+        # 均线系统：优先复用现有的 MA 列，否则回退计算
         for ma_period in [5, 10, 20, 30]:
-            df_analysis[f'ma_{ma_period}'] = df_analysis['close'].rolling(ma_period).mean()
+            ma_col = f'{ma_period}_ma'
+            if ma_col in df.columns:
+                df_analysis[f'ma_{ma_period}'] = df[ma_col]
+            else:
+                df_analysis[f'ma_{ma_period}'] = df_analysis['close'].rolling(ma_period).mean()
 
         # 算法检测震荡期间（补充检测，降低阈值）
         window_size = 20
         algorithm_score_threshold = 4.0  # 大幅降低算法检测阈值，作为补充
         min_period = self.config.get('oscillation_min_period', 30)
 
+        # 为评分循环准备 numpy 数组，避免频繁的 iloc/window 切片
+        n = len(df_analysis)
+        if n <= 2 * window_size:
+            # 数据太少，无需进行算法补充检测
+            self._oscillation_periods_cache = known_oscillation_periods
+            self._oscillation_cache_key = cache_key
+            return known_oscillation_periods
+
+        close_arr = df_analysis['close'].to_numpy()
+        width_arr = df_analysis['bb_width'].to_numpy()
+        pos_arr = df_analysis['bb_position'].to_numpy()
+        if 'date' in df_analysis.columns:
+            date_arr = df_analysis['date'].to_numpy()
+        else:
+            date_arr = df_analysis.index.to_numpy()
+
+        ma_arrays = {}
+        for p in [5, 10, 20, 30]:
+            col = f'ma_{p}'
+            if col in df_analysis.columns:
+                ma_arrays[p] = df_analysis[col].to_numpy()
+
+        # 价格震荡部分恢复为「逐窗口扫描」版本，避免 rolling max/min 带来的细微行为差异
+
         position_scores = []
-        for i in range(window_size, len(df_analysis) - window_size):
-            current_date = df_analysis.iloc[i]['date'] if 'date' in df_analysis.columns else df_analysis.index[i]
+        # 保持原始窗口边界：range(window_size, n - window_size)
+        for i in range(window_size, n - window_size):
+            current_date = date_arr[i]
             score = 0.0
 
             # 1. 布林带分析 (0-2分)
-            bb_width_current = df_analysis['bb_width'].iloc[i]
-            bb_position_current = df_analysis['bb_position'].iloc[i]
+            bb_width_current = width_arr[i]
+            bb_position_current = pos_arr[i]
 
-            if pd.notna(bb_width_current):
+            if not np.isnan(bb_width_current):
                 if bb_width_current < 0.25:  # 进一步放宽布林带收敛要求
                     score += 1
                     if bb_width_current < 0.15:
                         score += 1
-                if pd.notna(bb_position_current) and 0.1 <= bb_position_current <= 0.9:  # 价格在布林带内震荡
+                if not np.isnan(bb_position_current) and 0.1 <= bb_position_current <= 0.9:  # 价格在布林带内震荡
                     score += 0.5
 
             # 2. 均线纠缠分析 (0-2分)
-            mas = [df_analysis[f'ma_{p}'].iloc[i] for p in [5, 10, 20, 30] if f'ma_{p}' in df_analysis.columns]
-            if len(mas) >= 3 and all(pd.notna(ma) for ma in mas):
-                ma_range = (max(mas) - min(mas)) / mas[-1]
-                if ma_range < 0.15:  # 进一步放宽均线纠缠要求
-                    score += 1
-                    if ma_range < 0.08:
+            mas = []
+            for p in [5, 10, 20, 30]:
+                arr = ma_arrays.get(p)
+                if arr is not None:
+                    mas.append(arr[i])
+            if len(mas) >= 3 and all(not np.isnan(ma) for ma in mas):
+                ma_max = max(mas)
+                ma_min = min(mas)
+                ma_last = mas[-1]
+                # 避免除零
+                if ma_last != 0:
+                    ma_range = (ma_max - ma_min) / ma_last
+                    if ma_range < 0.15:  # 进一步放宽均线纠缠要求
                         score += 1
+                        if ma_range < 0.08:
+                            score += 1
 
             # 3. 趋势强度分析 (0-2分)
             window_start = max(0, i - 15)
-            window_end = min(len(df_analysis), i + 15)
-            window_data = df_analysis.iloc[window_start:window_end]
+            window_end = min(n, i + 15)  # 注意：end 为切片上界（不包含）
+            window_len = window_end - window_start
 
-            if len(window_data) > 10:
-                trend_strength = abs((window_data['close'].iloc[-1] / window_data['close'].iloc[0]) - 1)
-                if trend_strength < 0.20:  # 大幅放宽趋势强度要求
-                    score += 1
-                    if trend_strength < 0.08:
+            if window_len > 10:
+                first_close = close_arr[window_start]
+                last_close = close_arr[window_end - 1]
+                if first_close != 0:
+                    trend_strength = abs((last_close / first_close) - 1)
+                    if trend_strength < 0.20:  # 大幅放宽趋势强度要求
                         score += 1
+                        if trend_strength < 0.08:
+                            score += 1
 
             # 4. 价格震荡模式 (0-2分)
-            if len(window_data) > 10:
-                window_high = window_data['close'].max()
-                window_low = window_data['close'].min()
-                window_current = df_analysis['close'].iloc[i]
-                price_range_pct = (window_high - window_low) / window_current
+            if window_len > 10:
+                # 使用局部窗口切片计算高低点（与历史实现保持一致）
+                segment = close_arr[window_start:window_end]
+                window_high = segment.max()
+                window_low = segment.min()
 
-                # 使用自适应选择的参数（外层和内层范围）
-                outer_upper = getattr(self, '_oscillation_outer_upper', 0.30)
-                inner_upper = getattr(self, '_oscillation_inner_upper', 0.20)
+                window_current = close_arr[i]
+                if window_current != 0:
+                    price_range_pct = (window_high - window_low) / window_current
 
-                if 0.05 < price_range_pct < outer_upper:  # 震荡范围（外层）
-                    score += 1
-                    if 0.10 < price_range_pct < inner_upper:  # 内层范围
+                    # 使用自适应选择的参数（外层和内层范围）
+                    outer_upper = getattr(self, '_oscillation_outer_upper', 0.30)
+                    inner_upper = getattr(self, '_oscillation_inner_upper', 0.20)
+
+                    if 0.05 < price_range_pct < outer_upper:  # 震荡范围（外层）
                         score += 1
+                        if 0.10 < price_range_pct < inner_upper:  # 内层范围
+                            score += 1
 
             position_scores.append((i, current_date, score))
 
@@ -632,41 +703,53 @@ class MixedStrategy:
             elif '.HK' in stock_code.upper():
                 is_hk_stock = True
 
+        # 更新实例内的股票代码（供后续策略缓存使用）
+        if stock_code and not self.stock_code:
+            self.stock_code = stock_code
+
         logger.info(f"[跌停检查] 股票代码: {stock_code}, is_hk_stock={is_hk_stock}")
 
         # 只对A股执行跌停检查
         if not is_hk_stock:
-            df_temp = df.copy()
-            df_temp['p_change_temp'] = df_temp['close'].pct_change() * 100
+            # 仅基于 close 计算最近30天的跌幅，无需整表复制
+            p_change_temp = df['close'].pct_change() * 100
 
             # 只检查最近30天的数据
-            recent_data = df_temp.tail(30) if len(df_temp) > 30 else df_temp
+            if len(df) > 30:
+                recent_idx = df.index[-30:]
+            else:
+                recent_idx = df.index
 
-            if (recent_data['p_change_temp'] <= self.config['stop_loss']).any():
-                # 找出最近的跌停日期
-                drop_dates = recent_data[recent_data['p_change_temp'] <= self.config['stop_loss']]
-                latest_drop = drop_dates.iloc[-1] if len(drop_dates) > 0 else None
+            recent_p_change = p_change_temp.loc[recent_idx]
 
-                if latest_drop is not None:
-                    logger.warning(
-                        f"近期存在跌停风险: {latest_drop['date']}, "
-                        f"跌幅: {latest_drop['p_change_temp']:.2f}%, 跳过该股票"
-                    )
-                    return None, None
+            # 是否存在跌停风险
+            mask = recent_p_change <= self.config['stop_loss']
+            if mask.any():
+                # 找出最近的跌停日期（保持与原逻辑一致）
+                latest_idx = recent_p_change[mask].index[-1]
+                latest_date = df.loc[latest_idx, 'date'] if 'date' in df.columns else latest_idx
+                latest_drop_val = recent_p_change.loc[latest_idx]
 
-        # 2. 计算所有技术指标
-        try:
-            df = calculate_all_indicators(
-                df,
-                self.config['init_k'],
-                self.config['init_d'],
-                self.config['init_date'],
-                rsi_fast_period=self.config.get('rsi_fast_period', 5),
-                rsi_slow_period=self.config.get('rsi_slow_period', 10)
-            )
-        except Exception as e:
-            logger.error(f"计算技术指标失败: {e}")
-            return None, None
+                logger.warning(
+                    f"近期存在跌停风险: {latest_date}, "
+                    f"跌幅: {latest_drop_val:.2f}%, 跳过该股票"
+                )
+                return None, None
+
+        # 2. 计算所有技术指标（如未预先计算）
+        if not getattr(self, 'precomputed_indicators', False):
+            try:
+                df = calculate_all_indicators(
+                    df,
+                    self.config['init_k'],
+                    self.config['init_d'],
+                    self.config['init_date'],
+                    rsi_fast_period=self.config.get('rsi_fast_period', 5),
+                    rsi_slow_period=self.config.get('rsi_slow_period', 10)
+                )
+            except Exception as e:
+                logger.error(f"计算技术指标失败: {e}")
+                return None, None
 
         if len(df) == 0:
             logger.warning("指标计算后数据为空")
@@ -721,6 +804,34 @@ class MixedStrategy:
         # 步骤0: 选择震荡参数 (V1 vs V4)
         # 步骤1: 选择卖出策略 (original vs gradual)
         # 步骤2: 选择执行顺序 (high_frequency vs high_quality)
+
+        # 如果启用了策略缓存，且 sell_strategy/order 均为 auto，则优先尝试读取缓存
+        used_cached_strategy = False
+        stock_code_for_cache = self.stock_code or stock_code
+        if (
+            self.use_strategy_cache
+            and stock_code_for_cache
+            and self.sell_strategy == 'auto'
+            and self.order_mode == 'auto'
+        ):
+            try:
+                from . import strategy_cache
+                cached = strategy_cache.get_strategy_choice(stock_code_for_cache)
+                if cached:
+                    cached_sell = cached.get('sell_strategy')
+                    cached_order = cached.get('order')
+                    if cached_sell in ('original', 'gradual'):
+                        self.optimal_strategy = cached_sell
+                    if cached_order in ('high_frequency', 'high_quality'):
+                        self.optimal_order = cached_order
+                    if self.optimal_strategy and self.optimal_order:
+                        used_cached_strategy = True
+                        logger.info(
+                            f"使用策略缓存: 股票 {stock_code_for_cache}, "
+                            f"卖出策略={self.optimal_strategy}, 执行顺序={self.optimal_order}"
+                        )
+            except Exception as e:
+                logger.warning(f"读取策略缓存失败: {e}")
 
         # === 步骤0: 选择震荡参数（如果启用） ===
         if not self.adaptive_oscillation:
@@ -796,7 +907,7 @@ class MixedStrategy:
                 logger.warning("震荡参数回测失败，使用默认V1参数")
 
         # === 步骤1: 选择卖出策略 ===
-        if self.sell_strategy == 'auto':
+        if self.sell_strategy == 'auto' and not used_cached_strategy:
             logger.info(
                 "自适应模式：正在评估最优卖出策略 "
                 "（在原始策略 original 与渐进式策略 gradual 之间自动选择）..."
@@ -851,11 +962,12 @@ class MixedStrategy:
                 self.optimal_strategy = 'original'
                 logger.warning("回测失败，默认使用原始策略")
         else:
-            # 使用指定的策略
-            self.optimal_strategy = self.sell_strategy
+            # 使用指定的策略或已从缓存加载的策略
+            if not self.optimal_strategy:
+                self.optimal_strategy = self.sell_strategy
 
         # === 步骤2: 选择执行顺序 ===
-        if self.order_mode == 'auto':
+        if self.order_mode == 'auto' and not used_cached_strategy:
             # 自适应选择执行顺序：在选定的策略基础上，比较high_frequency和high_quality
             logger.info(f"自适应模式：已确定卖出策略为 {self.optimal_strategy}")
 
@@ -889,14 +1001,27 @@ class MixedStrategy:
                 self.optimal_order = 'high_frequency'
                 logger.warning("执行顺序回测失败，默认使用高频率模式")
         else:
-            # 使用指定的执行顺序（固定模式）
-            self.optimal_order = self.order_mode
+            # 使用指定的执行顺序（固定模式）或已从缓存加载的执行顺序
+            if not self.optimal_order:
+                self.optimal_order = self.order_mode
             logger.info(f"使用固定执行顺序: {self.optimal_order}")
 
-        # 6. 应用选定的策略和执行顺序组合
+        # 6. 在自适应模式下，将最新选择写入策略缓存
+        if stock_code_for_cache and (self.sell_strategy == 'auto' or self.order_mode == 'auto'):
+            try:
+                from . import strategy_cache
+                strategy_cache.save_strategy_choice(
+                    stock_code_for_cache,
+                    self.optimal_strategy,
+                    self.optimal_order,
+                )
+            except Exception as e:
+                logger.warning(f"写入策略缓存失败: {e}")
+
+        # 7. 应用选定的策略和执行顺序组合
         self._apply_combination(df, self.optimal_strategy, self.optimal_order, bottom_index, top_index)
 
-        # 7. 计算持仓状态
+        # 8. 计算持仓状态
         df['position'] = df['buy_signal'].shift(1)
         df['position'] = df['position'].ffill()
         df.loc[:self.config['init_date'], 'position'] = 0
@@ -1328,37 +1453,52 @@ class MixedStrategy:
         # 初始化RSI买入类型标记列
         df['rsi_buy_type'] = ''
 
+        n = len(df)
+        if n < 2:
+            return
+
+        # 使用 numpy 数组以减少逐行 DataFrame 访问开销
+        rsi_arr = df['rsi'].to_numpy()
+        rsi6_arr = df['rsi_6'].to_numpy()
+        close_arr = df['close'].to_numpy()
+        ma16_arr = df[f"{self.config['short_ma']}_ma"].to_numpy()
+        pchg_arr = df['p_change'].to_numpy()
+        macd_arr = df['macd'].to_numpy()
+        date_arr = df['date'].to_numpy() if 'date' in df.columns else df.index.to_numpy()
+
+        buy_signal_arr = df['buy_signal'].to_numpy()
+        rsi_type_arr = df['rsi_buy_type'].to_numpy()
+
+        # 将保护期转换为集合以加速 membership 判断
+        protection_set = set(protection_periods) if protection_periods else None
+
         last_rsi_buy_idx = -999  # 上次RSI买入的位置
 
-        for i in range(1, len(df)):
-            idx = df.index[i]
-            prev_idx = df.index[i-1]
-
+        for i in range(1, n):
             # 检查是否距离上次RSI买入太近
             if i - last_rsi_buy_idx < rsi_min_gap:
                 continue  # 跳过，避免频繁交易
 
-            rsi = df.loc[idx, 'rsi']
-            rsi_6 = df.loc[idx, 'rsi_6']
-            prev_rsi_6 = df.loc[prev_idx, 'rsi_6']
-            prev_rsi = df.loc[prev_idx, 'rsi']
-            close = df.loc[idx, 'close']
-            ma_16 = df.loc[idx, f"{self.config['short_ma']}_ma"]
-            p_change = df.loc[idx, 'p_change']
-            macd = df.loc[idx, 'macd']
+            rsi = rsi_arr[i]
+            rsi_6 = rsi6_arr[i]
+            prev_rsi_6 = rsi6_arr[i-1]
+            prev_rsi = rsi_arr[i-1]
+            close = close_arr[i]
+            ma_16 = ma16_arr[i]
+            p_change = pchg_arr[i]
+            macd = macd_arr[i]
+            current_date = date_arr[i]
 
             # 规则1：RSI极度超卖（< 18），接近均线，且不在跌停
             if rsi < rsi_oversold and close >= ma_16 * rsi_ma_ratio and p_change > -8:
-                # 检查是否在主升浪保护期内
-                current_date = df.loc[idx, 'date']
-                if protection_periods is None or current_date not in protection_periods:
-                    df.loc[idx, 'buy_signal'] = 1
-                    df.loc[idx, 'rsi_buy_type'] = 'RSI超卖'
+                if protection_set is None or current_date not in protection_set:
+                    buy_signal_arr[i] = 1
+                    rsi_type_arr[i] = 'RSI超卖'
                     last_rsi_buy_idx = i
                     logger.debug(f"RSI超卖买入: {current_date}, RSI={rsi:.1f}")
                 else:
                     logger.debug(f"RSI超卖买入被主升浪保护期阻止: {current_date}")
-                logger.debug(f"RSI超卖买入: {df.loc[idx, 'date']}, RSI={rsi:.1f}")
+                logger.debug(f"RSI超卖买入: {current_date}, RSI={rsi:.1f}")
 
             # 规则2：RSI短期金叉，且在极低位，并满足更严格的确认条件
             elif rsi_6 > rsi and prev_rsi_6 <= prev_rsi and rsi < rsi_threshold:
@@ -1368,32 +1508,34 @@ class MixedStrategy:
                     # 条件A：MACD > 0.1（趋势明显向上，不是弱势多头）
                     if macd > 0.1:
                         confirmed = True
-                        logger.debug(f"RSI金叉+强MACD: {df.loc[idx, 'date']}")
+                        logger.debug(f"RSI金叉+强MACD: {current_date}")
 
                     # 条件B：价格强势反弹 > 3%（改进：从2%提高到3%）
                     elif p_change > 3:
                         confirmed = True
-                        logger.debug(f"RSI金叉+强反弹: {df.loc[idx, 'date']}, 涨幅={p_change:.1f}%")
+                        logger.debug(f"RSI金叉+强反弹: {current_date}, 涨幅={p_change:.1f}%")
 
                     # 条件C：接近均线且RSI < 35（极低位金叉，从40降到35）
                     elif close >= ma_16 * 0.98 and rsi < 35:
                         confirmed = True
-                        logger.debug(f"RSI极低位金叉: {df.loc[idx, 'date']}, RSI={rsi:.1f}")
+                        logger.debug(f"RSI极低位金叉: {current_date}, RSI={rsi:.1f}")
                 else:
                     if close >= ma_16 * 0.98:
                         confirmed = True
 
                 if confirmed:
-                    # 检查是否在主升浪保护期内
-                    current_date = df.loc[idx, 'date']
-                    if protection_periods is None or current_date not in protection_periods:
-                        df.loc[idx, 'buy_signal'] = 1
-                        df.loc[idx, 'rsi_buy_type'] = 'RSI金叉'
+                    if protection_set is None or current_date not in protection_set:
+                        buy_signal_arr[i] = 1
+                        rsi_type_arr[i] = 'RSI金叉'
                         last_rsi_buy_idx = i
                         logger.debug(f"RSI金叉买入: {current_date}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
                     else:
                         logger.debug(f"RSI金叉买入被主升浪保护期阻止: {current_date}")
-                    logger.debug(f"RSI金叉买入: {df.loc[idx, 'date']}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
+                    logger.debug(f"RSI金叉买入: {current_date}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
+
+        # 回写修改后的列
+        df['buy_signal'] = buy_signal_arr
+        df['rsi_buy_type'] = rsi_type_arr
 
     def _apply_signals_order(self, df: pd.DataFrame, order: str, bottom_index: list, top_index: list) -> None:
         """
@@ -1593,12 +1735,23 @@ class MixedStrategy:
         if df is None or 'buy_signal' not in df.columns:
             return None
 
-        # 检测买入信号点
-        buy_signal_dates = df[df['buy_signal'] == 1].index
+        # 创建一个新列记录每日的资金（含手续费）
+        n = len(df)
+        if n == 0:
+            return None
 
-        # 创建一个新列记录每日的资金
+        # 为加速，使用 numpy 数组而不是逐行 DataFrame 访问
+        close_arr = df['close'].to_numpy()
+        signal_arr = df['buy_signal'].to_numpy()
+        if 'date' in df.columns:
+            # 统一转换为字符串，便于打印和比较（YYYY-MM-DD）
+            date_arr = df['date'].astype(str).to_numpy()
+        else:
+            # 若不存在 date 列，则使用索引字符串作为日期占位
+            date_arr = df.index.astype(str).to_numpy()
+
         capital = initial_capital
-        capital_list = []
+        capital_list = np.empty(n, dtype=float)
         trades = []
         holding = False
         buy_price = 0
@@ -1606,13 +1759,23 @@ class MixedStrategy:
         shares = 0  # 持有股数
         total_commission = 0.0  # 累计手续费
 
-        for i in range(len(df)):
-            row = df.iloc[i]
+        # 同步维护一套「不含手续费」的资金轨迹，用于计算 gross_return
+        # 为保持与历史实现一致，这里复用 _quick_backtest 中的初始资金 10000.0
+        gross_capital = 10000.0
+        gross_holding = False
+        gross_buy_price = 0.0
+        gross_shares = 0.0
 
+        for i in range(n):
+            curr_signal = signal_arr[i]
+            curr_price = close_arr[i]
+            curr_date = date_arr[i]
+
+            # === 含手续费资金轨迹 ===
             # 当日有买入信号，当日收盘买入
-            if row['buy_signal'] == 1 and not holding:
-                buy_price = row['close']
-                buy_date = row['date']
+            if curr_signal == 1 and not holding:
+                buy_price = curr_price
+                buy_date = curr_date
 
                 # 计算可买股数
                 shares = capital / buy_price
@@ -1624,11 +1787,11 @@ class MixedStrategy:
                 total_commission += buy_commission
 
                 holding = True
-                logger.debug(f"买入: {row['date']}, 价格: {buy_price:.2f}, 股数: {shares:.2f}, 手续费: {buy_commission:.2f}")
+                logger.debug(f"买入: {buy_date}, 价格: {buy_price:.2f}, 股数: {shares:.2f}, 手续费: {buy_commission:.2f}")
 
             # 当日有卖出信号（buy_signal=0），当日收盘卖出
-            elif row['buy_signal'] == 0 and holding:
-                sell_price = row['close']
+            elif curr_signal == 0 and holding:
+                sell_price = curr_price
                 transaction_amount = shares * sell_price
 
                 # 计算并扣除卖出手续费
@@ -1646,7 +1809,7 @@ class MixedStrategy:
                 trades.append({
                     'buy_date': buy_date,
                     'buy_price': buy_price,
-                    'sell_date': row['date'],
+                    'sell_date': curr_date,
                     'sell_price': sell_price,
                     'profit_rate': profit_rate,
                     'capital': capital,
@@ -1657,14 +1820,29 @@ class MixedStrategy:
 
                 holding = False
                 shares = 0
-                logger.debug(f"卖出: {row['date']}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%, 手续费: {sell_commission:.2f}")
+                logger.debug(f"卖出: {curr_date}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%, 手续费: {sell_commission:.2f}")
 
-            capital_list.append(capital)
+            # === 不含手续费的「毛收益」资金轨迹 ===
+            # 逻辑与 _quick_backtest 保持一致，但不再单独遍历 df
+            if curr_signal == 1 and not gross_holding:
+                # 使用当前 gross_capital 计算可买股数
+                gross_buy_price = curr_price
+                gross_shares = gross_capital / gross_buy_price
+                gross_holding = True
+
+            elif curr_signal == 0 and gross_holding:
+                # 卖出全部持仓，不扣手续费
+                sell_price_gross = curr_price
+                transaction_amount_gross = gross_shares * sell_price_gross
+                gross_capital = transaction_amount_gross
+                gross_holding = False
+                gross_shares = 0.0
+
+            capital_list[i] = capital
 
         # 如果最后还持仓，用最后一天的收盘价计算
         if holding:
-            last_row = df.iloc[-1]
-            sell_price = last_row['close']
+            sell_price = close_arr[-1]
             transaction_amount = shares * sell_price
 
             # 计算卖出手续费（用于净值计算）
@@ -1682,7 +1860,7 @@ class MixedStrategy:
             trades.append({
                 'buy_date': buy_date,
                 'buy_price': buy_price,
-                'sell_date': last_row['date'],
+                'sell_date': date_arr[-1],
                 'sell_price': sell_price,
                 'profit_rate': profit_rate,
                 'capital': capital,
@@ -1694,27 +1872,24 @@ class MixedStrategy:
             # 更新最后一天的资金
             capital_list[-1] = capital
 
+        # 不含手续费路径：如果仍在持仓，按最后一天收盘价平仓（与 _quick_backtest 一致）
+        if gross_holding:
+            last_row_gross = df.iloc[-1]
+            sell_price_gross = last_row_gross['close']
+            transaction_amount_gross = gross_shares * sell_price_gross
+            gross_capital = transaction_amount_gross
+            gross_holding = False
+            gross_shares = 0.0
+
+        # 写回资金曲线
         df['capital'] = capital_list
-
-        # 计算毛收益率（不扣手续费的理论收益）
-        # 需要重新运行一次回测，但关闭手续费
-        commission_enabled_backup = self.config.get('commission_enabled', True)
-        self.config['commission_enabled'] = False  # 临时关闭手续费
-
-        # 运行不含手续费的回测
-        backtest_no_fee = self._quick_backtest(df)
-        if backtest_no_fee is not None and isinstance(backtest_no_fee, dict):
-            gross_capital = backtest_no_fee['capital']
-            gross_return = (gross_capital - initial_capital) / initial_capital * 100
-        else:
-            gross_return = total_return
-
-        # 恢复手续费设置
-        self.config['commission_enabled'] = commission_enabled_backup
 
         # 计算指标
         final_capital = capital
         total_return = (final_capital - initial_capital) / initial_capital * 100
+
+        # 毛收益率（不含手续费），保持与历史实现相同的基准计算方式
+        gross_return = (gross_capital - initial_capital) / initial_capital * 100
 
         # 最大回撤
         capital_series = pd.Series(capital_list)
@@ -1771,6 +1946,161 @@ class MixedStrategy:
             'trades': trades,  # 保存交易明细
         }
 
+    def backtest_legacy(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Dict:
+        """
+        旧版回测实现（包含内部调用 _quick_backtest 计算 gross_return）
+
+        用于对比重构前后的结果是否一致，不在正常流程中使用。
+        """
+        if df is None or 'buy_signal' not in df.columns:
+            return None
+
+        capital = initial_capital
+        capital_list = []
+        trades = []
+        holding = False
+        buy_price = 0
+        buy_date = None
+        shares = 0
+        total_commission = 0.0
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+
+            if row['buy_signal'] == 1 and not holding:
+                buy_price = row['close']
+                buy_date = row['date']
+                shares = capital / buy_price
+                transaction_amount = shares * buy_price
+                buy_commission = self._calculate_commission(transaction_amount, is_buy=True)
+                capital -= buy_commission
+                total_commission += buy_commission
+                holding = True
+
+            elif row['buy_signal'] == 0 and holding:
+                sell_price = row['close']
+                transaction_amount = shares * sell_price
+                sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+                total_commission += sell_commission
+                capital = transaction_amount - sell_commission
+                initial_investment = shares * buy_price
+                profit = capital - (initial_capital - initial_investment + buy_commission)
+                profit_rate = profit / initial_investment if initial_investment > 0 else 0
+
+                trades.append({
+                    'buy_date': buy_date,
+                    'buy_price': buy_price,
+                    'sell_date': row['date'],
+                    'sell_price': sell_price,
+                    'profit_rate': profit_rate,
+                    'capital': capital,
+                    'commission': buy_commission + sell_commission,
+                    'buy_commission': buy_commission,
+                    'sell_commission': sell_commission,
+                })
+
+                holding = False
+                shares = 0
+
+            capital_list.append(capital)
+
+        if holding:
+            last_row = df.iloc[-1]
+            sell_price = last_row['close']
+            transaction_amount = shares * sell_price
+
+            sell_commission = self._calculate_commission(transaction_amount, is_buy=False)
+            total_commission += sell_commission
+
+            capital = transaction_amount - sell_commission
+
+            initial_investment = shares * buy_price
+            profit = capital - (initial_capital - initial_investment)
+            profit_rate = profit / initial_investment if initial_investment > 0 else 0
+
+            trades.append({
+                'buy_date': buy_date,
+                'buy_price': buy_price,
+                'sell_date': last_row['date'],
+                'sell_price': sell_price,
+                'profit_rate': profit_rate,
+                'capital': capital,
+                'commission': sell_commission,
+                'buy_commission': 0,
+                'sell_commission': sell_commission,
+            })
+
+            capital_list[-1] = capital
+
+        df = df.copy()
+        df['capital'] = capital_list
+
+        # 旧实现：通过 _quick_backtest 计算无手续费的毛收益率
+        commission_backup = self.config.get('commission_enabled', True)
+        self.config['commission_enabled'] = False
+        try:
+            backtest_no_fee = self._quick_backtest(df)
+            if backtest_no_fee is not None and isinstance(backtest_no_fee, dict):
+                gross_capital = backtest_no_fee['capital']
+                gross_return = (gross_capital - initial_capital) / initial_capital * 100
+            else:
+                gross_return = 0.0
+        finally:
+            self.config['commission_enabled'] = commission_backup
+
+        final_capital = capital
+        total_return = (final_capital - initial_capital) / initial_capital * 100
+
+        capital_series = pd.Series(capital_list)
+        running_max = capital_series.expanding().max()
+        drawdown = (capital_series - running_max) / running_max
+        max_drawdown = drawdown.min() * 100 if len(drawdown) > 0 else 0
+
+        if len(trades) > 0:
+            trade_returns = [t['profit_rate'] for t in trades]
+            trade_returns_series = pd.Series(trade_returns)
+            sharpe = trade_returns_series.mean() / trade_returns_series.std() * np.sqrt(252) if trade_returns_series.std() > 0 else 0
+        else:
+            sharpe = 0
+
+        winning_trades = sum(1 for t in trades if t['profit_rate'] > 0)
+        win_rate = (winning_trades / len(trades) * 100) if len(trades) > 0 else 0
+
+        sample_interval = max(1, len(df) // 10)
+        capital_curve = []
+
+        for i in range(0, len(df), sample_interval):
+            row = df.iloc[i]
+            capital_curve.append({
+                'date': row['date'],
+                'capital': capital_list[i],
+                'return_pct': (capital_list[i] / initial_capital - 1) * 100
+            })
+
+        if len(df) > 0 and (len(df) - 1) % sample_interval != 0:
+            last_row = df.iloc[-1]
+            capital_curve.append({
+                'date': last_row['date'],
+                'capital': capital_list[-1],
+                'return_pct': (capital_list[-1] / initial_capital - 1) * 100
+            })
+
+        return {
+            'initial_capital': initial_capital,
+            'final_capital': final_capital,
+            'total_return': total_return,
+            'gross_return': gross_return,
+            'total_commission': total_commission,
+            'commission_rate': (total_commission / initial_capital * 100),
+            'max_drawdown': max_drawdown,
+            'sharpe_ratio': sharpe,
+            'total_trades': len(trades),
+            'win_rate': win_rate,
+            'trading_days': len(df),
+            'capital_curve': capital_curve,
+            'trades': trades,
+        }
+
     def get_trading_signals(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Dict:
         """
         获取历史买卖点信号
@@ -1795,6 +2125,14 @@ class MixedStrategy:
         buy_points = []
         sell_points = []
 
+        # 为日期匹配准备字符串视图，避免 dtype 差异导致比较失败
+        if 'date' in df.columns:
+            date_str_series = df['date'].astype(str)
+            last_date_str = str(df.iloc[-1]['date'])
+        else:
+            date_str_series = df.index.astype(str)
+            last_date_str = str(df.index[-1])
+
         # 从trades中提取买卖点信息
         for i, trade in enumerate(trades):
             buy_date = trade['buy_date']
@@ -1807,16 +2145,29 @@ class MixedStrategy:
             # - 如果有卖出信号，说明已经在当日收盘卖出了
             # - 如果没有卖出信号，说明是持仓到最后一天（未平仓）
             is_last_open = False
-            if i == len(trades) - 1 and sell_date == df.iloc[-1]['date']:
-                # 检查最后一天是否有真正的卖出信号
-                last_day_signal = df.iloc[-1]['buy_signal']
-                # 如果最后一天 buy_signal=1，说明是持仓状态（未卖出）
-                # 如果最后一天 buy_signal=0，说明当天已经卖出了
-                is_last_open = (last_day_signal == 1)
+            if i == len(trades) - 1:
+                sell_date_str = str(sell_date)
+                if sell_date_str.split()[0] == last_date_str.split()[0]:
+                    # 检查最后一天是否有真正的卖出信号
+                    last_day_signal = df.iloc[-1]['buy_signal']
+                    # 如果最后一天 buy_signal=1，说明是持仓状态（未卖出）
+                    # 如果最后一天 buy_signal=0，说明当天已经卖出了
+                    is_last_open = (last_day_signal == 1)
 
-            # 获取买入日期的行信息（用于显示技术指标）
-            buy_row = df[df['date'] == buy_date].iloc[0] if len(df[df['date'] == buy_date]) > 0 else None
-            sell_row = df[df['date'] == sell_date].iloc[0] if len(df[df['date'] == sell_date]) > 0 else None
+            # 获取买入/卖出日期对应的行信息（用于显示技术指标）
+            buy_row = None
+            sell_row = None
+
+            buy_date_str = str(buy_date).split()[0]
+            sell_date_str = str(sell_date).split()[0]
+
+            buy_mask = (date_str_series.str.split().str[0] == buy_date_str)
+            if buy_mask.any():
+                buy_row = df.loc[buy_mask].iloc[0]
+
+            sell_mask = (date_str_series.str.split().str[0] == sell_date_str)
+            if sell_mask.any():
+                sell_row = df.loc[sell_mask].iloc[0]
 
             if buy_row is not None:
                 # 构建买入理由

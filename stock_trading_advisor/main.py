@@ -59,7 +59,8 @@ def load_config(config_path: str = 'config/config.yaml') -> dict:
         return {}
 
 
-def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True):
+def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
+                  use_fixed_strategy: bool = False):
     """
     分析单只股票
 
@@ -87,7 +88,12 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True):
     # 检测市场类型（用于设置正确的手续费率）
     market = fetcher._detect_market(stock_code)
 
-    strategy = MixedStrategy(config=strategy_config, market=market)
+    strategy = MixedStrategy(
+        config=strategy_config,
+        market=market,
+        stock_code=stock_code,
+        use_strategy_cache=show_backtest and use_fixed_strategy
+    )
     analyzer = SignalAnalyzer()
 
     # 2. 获取数据
@@ -298,6 +304,9 @@ def main():
     parser.add_argument('-s', '--stock', type=str, help='单只股票代码')
     parser.add_argument('-b', '--batch', nargs='+', help='批量股票代码列表')
     parser.add_argument('-c', '--config', type=str, default='config/config.yaml', help='配置文件路径')
+    parser.add_argument('--fixed-strategy', action='store_true',
+                        help='回测模式下使用缓存的最优组合（原始/渐进 + 高频/高质量），'
+                             '若无缓存则自动评估并写入缓存')
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
 
     args = parser.parse_args()
@@ -308,7 +317,12 @@ def main():
 
     # 执行分析
     if args.stock:
-        analyze_stock(args.stock, config, show_backtest=not args.no_backtest)
+        analyze_stock(
+            args.stock,
+            config,
+            show_backtest=not args.no_backtest,
+            use_fixed_strategy=args.fixed_strategy
+        )
     elif args.batch:
         batch_analyze(args.batch, config)
     else:

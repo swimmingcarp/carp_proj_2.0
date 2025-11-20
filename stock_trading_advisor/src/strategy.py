@@ -1757,6 +1757,7 @@ class MixedStrategy:
         buy_price = 0
         buy_date = None
         shares = 0  # 持有股数
+        buy_commission = 0.0  # 当前持仓对应的买入手续费
         total_commission = 0.0  # 累计手续费
 
         # 同步维护一套「不含手续费」的资金轨迹，用于计算 gross_return
@@ -1803,7 +1804,7 @@ class MixedStrategy:
 
                 # 计算收益率（基于初始买入资金）
                 initial_investment = shares * buy_price
-                profit = capital - (initial_capital - initial_investment + buy_commission)
+                profit = (sell_price - buy_price) * shares - (buy_commission + sell_commission)
                 profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
                 trades.append({
@@ -1820,6 +1821,7 @@ class MixedStrategy:
 
                 holding = False
                 shares = 0
+                buy_commission = 0.0
                 logger.debug(f"卖出: {curr_date}, 价格: {sell_price:.2f}, 收益率: {profit_rate*100:.2f}%, 手续费: {sell_commission:.2f}")
 
             # === 不含手续费的「毛收益」资金轨迹 ===
@@ -1854,7 +1856,7 @@ class MixedStrategy:
 
             # 计算收益率
             initial_investment = shares * buy_price
-            profit = capital - (initial_capital - initial_investment)
+            profit = (sell_price - buy_price) * shares - (buy_commission + sell_commission)
             profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
             trades.append({
@@ -1864,8 +1866,8 @@ class MixedStrategy:
                 'sell_price': sell_price,
                 'profit_rate': profit_rate,
                 'capital': capital,
-                'commission': sell_commission,  # 未平仓只计算卖出手续费
-                'buy_commission': 0,  # 未平仓暂无买入手续费记录
+                'commission': buy_commission + sell_commission,  # 未平仓记录买入和卖出手续费
+                'buy_commission': buy_commission,  # 记录买入手续费
                 'sell_commission': sell_commission,  # 卖出手续费
             })
 
@@ -1962,6 +1964,7 @@ class MixedStrategy:
         buy_price = 0
         buy_date = None
         shares = 0
+        buy_commission = 0.0
         total_commission = 0.0
 
         for i in range(len(df)):
@@ -1984,7 +1987,7 @@ class MixedStrategy:
                 total_commission += sell_commission
                 capital = transaction_amount - sell_commission
                 initial_investment = shares * buy_price
-                profit = capital - (initial_capital - initial_investment + buy_commission)
+                profit = (sell_price - buy_price) * shares - (buy_commission + sell_commission)
                 profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
                 trades.append({
@@ -2001,6 +2004,7 @@ class MixedStrategy:
 
                 holding = False
                 shares = 0
+                buy_commission = 0.0
 
             capital_list.append(capital)
 
@@ -2015,7 +2019,7 @@ class MixedStrategy:
             capital = transaction_amount - sell_commission
 
             initial_investment = shares * buy_price
-            profit = capital - (initial_capital - initial_investment)
+            profit = (sell_price - buy_price) * shares - (buy_commission + sell_commission)
             profit_rate = profit / initial_investment if initial_investment > 0 else 0
 
             trades.append({
@@ -2025,8 +2029,8 @@ class MixedStrategy:
                 'sell_price': sell_price,
                 'profit_rate': profit_rate,
                 'capital': capital,
-                'commission': sell_commission,
-                'buy_commission': 0,
+                'commission': buy_commission + sell_commission,
+                'buy_commission': buy_commission,
                 'sell_commission': sell_commission,
             })
 

@@ -9,7 +9,12 @@ import argparse
 import sys
 import yaml
 import logging
+from datetime import datetime
+from itertools import zip_longest
 from pathlib import Path
+from typing import Dict, List, Optional
+
+import pandas as pd
 
 # 添加 src 目录到路径
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
@@ -59,8 +64,50 @@ def load_config(config_path: str = 'config/config.yaml') -> dict:
         return {}
 
 
+def detect_market_from_code(stock_code: str) -> str:
+    """
+    根据股票代码推断市场类型，用于确定手续费率
+    """
+    if not stock_code:
+        return 'CN-A'
+
+    code_clean = stock_code.strip()
+    if '.' in code_clean:
+        code_clean = code_clean.split('.')[0]
+
+    if code_clean.isdigit():
+        if len(code_clean) == 5:
+            return 'HK'
+        if len(code_clean) == 6:
+            return 'CN-A'
+
+    if stock_code.endswith(('.HK', '.hk')):
+        return 'HK'
+
+    if stock_code.startswith(('sh', 'sz', 'SH', 'SZ')) or stock_code.endswith(('.SH', '.SZ')):
+        return 'CN-A'
+
+    if stock_code and stock_code[0].isalpha():
+        return 'US'
+
+    return 'CN-A'
+
+
+def normalize_stock_code(code: str) -> str:
+    """标准化股票代码以匹配缓存文件"""
+    if not code:
+        return code
+    code = code.strip()
+    if '.' in code:
+        code = code.split('.')[0]
+    if len(code) > 2 and code[:2].lower() in ('sh', 'sz', 'hk'):
+        code = code[2:]
+    return code.upper()
+
+
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
-                  use_fixed_strategy: bool = False):
+                  use_fixed_strategy: bool = False, df_override: Optional[pd.DataFrame] = None,
+                  quiet: bool = False) -> Optional[Dict]:
     """
     分析单只股票
 
@@ -70,23 +117,51 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         show_backtest: 是否显示回测结果
     """
     logger = logging.getLogger(__name__)
-    logger.info(f"开始分析股票: {stock_code}")
+    log_func = logger.info if not quiet else logger.debug
+    log_func(f"开始分析股票: {stock_code}")
+
+    def echo(message: str):
+        if not quiet:
+            print(message)
 
     # 1. 初始化组件
     data_config = config.get('data_source', {})
     strategy_config = config.get('strategy', {})
     backtest_config = config.get('backtest', {})
 
-    fetcher = DataFetcher(
-        source=data_config.get('provider', app_config.DATA_SOURCE),
-        cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
-        max_retries=app_config.MAX_RETRIES,
-        retry_delay=app_config.RETRY_DELAY,
-        is_backtest_mode=show_backtest  # 传递回测模式标志
-    )
+    fetcher = None
+    validation_report = None
 
-    # 检测市场类型（用于设置正确的手续费率）
-    market = fetcher._detect_market(stock_code)
+    if df_override is None:
+        fetcher = DataFetcher(
+            source=data_config.get('provider', app_config.DATA_SOURCE),
+            cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
+            max_retries=app_config.MAX_RETRIES,
+            retry_delay=app_config.RETRY_DELAY,
+            is_backtest_mode=show_backtest
+        )
+
+        echo(f"\n正在获取股票 {stock_code} 的数据...")
+        try:
+            result = fetcher.get_k_data(
+                code=stock_code,
+                start_date=backtest_config.get('start_date', '2020-01-01'),
+                end_date=backtest_config.get('end_date')
+            )
+
+            if isinstance(result, tuple):
+                df, validation_report = result
+            else:
+                df = result
+        except Exception as e:
+            logger.error(f"获取数据失败: {e}")
+            echo(f"❌ 获取数据失败: {e}")
+            return None
+
+        market = fetcher._detect_market(stock_code)
+    else:
+        df = df_override.copy()
+        market = detect_market_from_code(stock_code)
 
     strategy = MixedStrategy(
         config=strategy_config,
@@ -96,96 +171,70 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
     )
     analyzer = SignalAnalyzer()
 
-    # 2. 获取数据
-    print(f"\n正在获取股票 {stock_code} 的数据...")
-    try:
-        result = fetcher.get_k_data(
-            code=stock_code,
-            start_date=backtest_config.get('start_date', '2020-01-01'),
-            end_date=backtest_config.get('end_date')
-        )
-
-        # 解包结果
-        if isinstance(result, tuple):
-            df, validation_report = result
-        else:
-            df = result
-            validation_report = None
-
-    except Exception as e:
-        logger.error(f"获取数据失败: {e}")
-        print(f"❌ 获取数据失败: {e}")
-        return
-
-    # 显示数据验证报告
     if validation_report:
         if validation_report.get('status') == 'FAILED':
-            print(fetcher.validator.format_report(validation_report))
-            print(f"❌ 数据验证失败，无法继续分析")
-            return
+            if fetcher and fetcher.validator:
+                echo(fetcher.validator.format_report(validation_report))
+            echo("❌ 数据验证失败，无法继续分析")
+            return None
         elif validation_report.get('status') == 'WARNING':
-            print(fetcher.validator.format_report(validation_report))
-            print("⚠️  存在数据质量问题，建议谨慎使用分析结果")
+            if fetcher and fetcher.validator:
+                echo(fetcher.validator.format_report(validation_report))
+            echo("⚠️  存在数据质量问题，建议谨慎使用分析结果")
         else:
-            print(f"✓ 数据验证通过 (质量评分: {validation_report.get('data_quality_score', 0):.1f}/100)")
+            echo(f"✓ 数据验证通过 (质量评分: {validation_report.get('data_quality_score', 0):.1f}/100)")
 
     if df is None or len(df) == 0:
-        print(f"❌ 股票 {stock_code} 无数据")
-        return
+        echo(f"❌ 股票 {stock_code} 无数据")
+        return None
 
-    print(f"✓ 成功获取 {len(df)} 条数据")
+    echo(f"✓ 成功获取 {len(df)} 条数据")
 
-    # 3. 执行策略分析
-    print("正在分析...")
+    echo("正在分析...")
     try:
         result = strategy.analyze(df)
-
-        # 解包结果
         if isinstance(result, tuple):
             df_analyzed, indicator_report = result
         else:
             df_analyzed = result
             indicator_report = None
-
     except Exception as e:
         logger.error(f"策略分析失败: {e}", exc_info=True)
-        print(f"❌ 分析失败: {e}")
-        return
+        echo(f"❌ 分析失败: {e}")
+        return None
 
-    # 显示指标验证报告
     if indicator_report:
         if indicator_report.get('status') == 'FAILED':
-            print(strategy.indicator_validator.format_report(indicator_report))
-            print("⚠️  技术指标存在异常，建议谨慎使用分析结果")
+            echo(strategy.indicator_validator.format_report(indicator_report))
+            echo("⚠️  技术指标存在异常，建议谨慎使用分析结果")
         elif indicator_report.get('status') == 'WARNING':
-            print(strategy.indicator_validator.format_report(indicator_report))
+            echo(strategy.indicator_validator.format_report(indicator_report))
         else:
             indicators_str = ', '.join(indicator_report.get('indicators_checked', []))
-            print(f"✓ 技术指标验证通过 ({indicators_str})")
+            echo(f"✓ 技术指标验证通过 ({indicators_str})")
 
     if df_analyzed is None:
-        print(f"❌ 分析失败（可能触发跌停保护）")
-        return
+        echo("❌ 分析失败（可能触发跌停保护）")
+        return None
 
-    print("✓ 分析完成")
+    echo("✓ 分析完成")
 
-    # 4. 获取最新信号
     signal_data = strategy.get_latest_signal(df_analyzed)
 
-    # 5. 获取股票基本信息（回测模式下跳过以避免网络请求）
     stock_info = None
-    if not show_backtest:  # 只在非回测模式下获取股票信息
+    if not show_backtest and fetcher:
         stock_info = fetcher.get_stock_info(stock_code)
         if stock_info:
             signal_data['code'] = stock_code
             signal_data['name'] = stock_info.get('总股本', stock_code)
 
-    # 6. 显示信号
-    print(analyzer.format_signal(signal_data, {'code': stock_code, 'name': stock_info.get('股票简称', '') if stock_info else ''}))
+    if not quiet:
+        echo(analyzer.format_signal(signal_data, {'code': stock_code, 'name': stock_info.get('股票简称', '') if stock_info else ''}))
 
-    # 7. 回测
+    backtest_result = None
+    trading_signals = None
     if show_backtest:
-        print("正在回测...")
+        echo("正在回测...")
         initial_capital = backtest_config.get('initial_capital', 10000)
         backtest_result = strategy.backtest(
             df_analyzed,
@@ -193,20 +242,27 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         )
 
         if backtest_result:
-            print(analyzer.format_backtest_result(backtest_result))
+            trading_signals = strategy.get_trading_signals(
+                df_analyzed,
+                initial_capital=initial_capital
+            )
 
-            # 显示历史买卖点
-            trading_signals = strategy.get_trading_signals(df_analyzed, initial_capital=initial_capital)
-            if trading_signals['total_trades'] > 0:
-                print(analyzer.format_trading_signals(trading_signals))
+            if not quiet:
+                echo(analyzer.format_backtest_result(backtest_result))
+                if trading_signals and trading_signals.get('total_trades', 0) > 0:
+                    echo(analyzer.format_trading_signals(trading_signals))
+                echo(analyzer.generate_recommendation(signal_data, backtest_result))
+        elif not quiet:
+            echo(analyzer.generate_recommendation(signal_data))
+    elif not quiet:
+        echo(analyzer.generate_recommendation(signal_data))
 
-            print(analyzer.generate_recommendation(signal_data, backtest_result))
-        else:
-            print(analyzer.generate_recommendation(signal_data))
-    else:
-        print(analyzer.generate_recommendation(signal_data))
-
-    logger.info(f"完成分析股票: {stock_code}")
+    log_func(f"完成分析股票: {stock_code}")
+    return {
+        'signal': signal_data,
+        'backtest': backtest_result,
+        'trading_signals': trading_signals,
+    }
 
 
 def batch_analyze(stock_codes: list, config: dict):
@@ -280,6 +336,311 @@ def batch_analyze(stock_codes: list, config: dict):
     logger.info("完成批量分析")
 
 
+def format_stock_report(stock_code: str, current_price: float, signal_data: Optional[Dict],
+                        backtest_result: Dict, trading_signals: Optional[Dict]) -> str:
+    """格式化单只股票的交易明细报告"""
+    lines = []
+    lines.append(f"股票代码: {stock_code}")
+    lines.append(f"当前价格: {current_price:.2f}")
+    lines.append("=" * 60)
+    lines.append("━━━ 交易对收益分析 ━━━")
+    lines.append("说明: 买入价和卖出价均为次日开盘价")
+    lines.append("      剩余本金已扣除交易手续费和印花税")
+
+    header = "{:<6} {:<15} {:>12} {:<15} {:>10} {:>12} {:>15}".format(
+        "序号", "买入日期", "买入价", "卖出日期", "卖出价", "收益率", "剩余本金"
+    )
+    lines.append(header)
+    lines.append("-" * 100)
+
+    buy_points = trading_signals.get('buy_points', []) if trading_signals else []
+    sell_points = trading_signals.get('sell_points', []) if trading_signals else []
+    trades = trading_signals.get('trades', []) if trading_signals else []
+    initial_capital = backtest_result.get('initial_capital', 10000.0)
+
+    def _format_date(value):
+        if value is None:
+            return "--"
+        return str(value).split()[0]
+
+    for idx, (buy, sell) in enumerate(zip_longest(buy_points, sell_points, fillvalue=None), 1):
+        buy_price = buy.get('price') if buy else None
+        sell_price = sell.get('price') if sell else None
+        profit_rate = None
+        if buy_price and sell_price:
+            profit_rate = (sell_price - buy_price) / buy_price * 100
+
+        trade_entry = trades[idx - 1] if idx - 1 < len(trades) else None
+        capital_after = trade_entry.get('capital') if trade_entry else None
+
+        is_open = bool(sell and sell.get('is_open'))
+
+        buy_date_str = _format_date(buy.get('date')) if buy else "--"
+        buy_price_str = f"{buy_price:,.2f}" if buy_price is not None else "--"
+
+        if is_open:
+            sell_date_str = "持仓中"
+            sell_price_display = "--"
+        else:
+            sell_date_str = _format_date(sell.get('date')) if sell else "--"
+            sell_price_display = f"{sell_price:,.2f}" if sell_price is not None else "--"
+
+        if profit_rate is not None:
+            profit_suffix = " (浮盈)" if is_open else ""
+            profit_display = f"{profit_rate:+.2f}%{profit_suffix}"
+        else:
+            profit_display = "--"
+
+        capital_display = f"¥{capital_after:,.2f}" if capital_after is not None else "--"
+
+        lines.append(
+            "{:<6} {:<15} {:>12} {:<15} {:>10} {:>12} {:>15}".format(
+                idx,
+                buy_date_str,
+                buy_price_str,
+                sell_date_str,
+                sell_price_display,
+                profit_display,
+                capital_display
+            )
+        )
+
+    lines.append("-" * 100)
+
+    final_capital = backtest_result.get('final_capital', initial_capital)
+    total_return = backtest_result.get('total_return', 0.0)
+    total_commission = backtest_result.get('total_commission', 0.0)
+    gross_return = backtest_result.get('gross_return', total_return)
+    trades_list = trades if trades else []
+    if trades_list:
+        avg_profit = sum(t.get('profit_rate', 0) for t in trades_list) / len(trades_list) * 100
+    else:
+        avg_profit = 0.0
+
+    lines.append(f"初始资金: ¥{initial_capital:,.2f}")
+    lines.append(f"最终资金: ¥{final_capital:,.2f} (已完成交易)")
+    if signal_data and signal_data.get('signal') == 'HOLD_BUY':
+        lines.append("当前持仓浮盈未计入最终资金")
+    lines.append(f"累计收益率: {total_return:+.2f}%")
+    lines.append(f"累计手续费: ¥{total_commission:,.2f}")
+    lines.append(f"毛收益率: {gross_return:.2f}% (扣费前)")
+    lines.append(f"平均单次收益: {avg_profit:+.2f}%")
+    lines.append(f"盈利交易占比: {backtest_result.get('win_rate', 0):.1f}%")
+    lines.append("=" * 80)
+
+    return "\n".join(lines)
+
+
+def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = False,
+                                   stock_codes: Optional[List[str]] = None):
+    """
+    对缓存中的所有股票执行回测并生成汇总报告
+    """
+    logger = logging.getLogger(__name__)
+    cache_dir = Path(__file__).parent / 'data' / 'cache'
+
+    if not cache_dir.exists():
+        print(f"✗ 未找到缓存目录: {cache_dir}")
+        return
+
+    cache_files = sorted(cache_dir.glob('*.csv'))
+    if not cache_files:
+        print(f"✗ 缓存目录 {cache_dir} 为空，无法生成回测报告")
+        return
+
+    cache_map = {}
+    for file in cache_files:
+        code = file.stem.split('_')[0]
+        cache_map[code] = file
+
+    if stock_codes:
+        normalized_codes = [normalize_stock_code(code) for code in stock_codes]
+        target_files = []
+        for raw, norm in zip(stock_codes, normalized_codes):
+            target = cache_map.get(norm)
+            if not target:
+                print(f"✗ 未找到股票 {raw} 的缓存文件，已跳过")
+                continue
+            target_files.append((norm, target))
+        if not target_files:
+            print("✗ 未找到任何匹配的缓存文件，无法生成报告")
+            return
+    else:
+        target_files = [(file.stem.split('_')[0], file) for file in cache_files]
+
+    backtest_config = config.get('backtest', {})
+    initial_capital = backtest_config.get('initial_capital', 10000)
+
+    total = len(target_files)
+    if stock_codes:
+        print(f"对指定的 {total} 只股票生成回测报告（需存在缓存）...")
+    else:
+        print(f"在缓存目录中找到 {total} 只股票，开始单线程离线回测...")
+
+    summary = []
+    failures = []
+    stock_reports: Dict[str, str] = {}
+
+    for idx, (stock_code, cache_file) in enumerate(target_files, 1):
+        print(f"\n[{idx}/{total}] 回测 {stock_code} ...")
+
+        try:
+            df_raw = pd.read_csv(cache_file)
+        except Exception as exc:
+            logger.error(f"读取缓存 {cache_file} 失败: {exc}")
+            print(f"✗ 读取缓存失败: {exc}")
+            failures.append(stock_code)
+            continue
+
+        if df_raw.empty:
+            print("✗ 缓存数据为空，跳过")
+            failures.append(stock_code)
+            continue
+
+        analysis = analyze_stock(
+            stock_code,
+            config,
+            show_backtest=True,
+            use_fixed_strategy=use_fixed_strategy,
+            df_override=df_raw,
+            quiet=True
+        )
+
+        if not analysis:
+            print("✗ 分析失败，跳过")
+            failures.append(stock_code)
+            continue
+
+        backtest_result = analysis.get('backtest')
+        if not backtest_result:
+            print("✗ 回测失败，跳过")
+            failures.append(stock_code)
+            continue
+
+        current_price = float(df_raw['close'].iloc[-1])
+        stock_reports[stock_code] = format_stock_report(
+            stock_code,
+            current_price,
+            analysis.get('signal'),
+            backtest_result,
+            analysis.get('trading_signals')
+        )
+
+        summary.append({
+            'code': stock_code,
+            'total_return': backtest_result.get('total_return', 0.0),
+            'max_drawdown': backtest_result.get('max_drawdown', 0.0),
+            'win_rate': backtest_result.get('win_rate', 0.0),
+            'total_trades': backtest_result.get('total_trades', 0),
+            'final_capital': backtest_result.get('final_capital', initial_capital),
+        })
+
+        print(
+            f"✓ {stock_code} 完成 - 收益 {backtest_result.get('total_return', 0.0):.2f}% | "
+            f"最大回撤 {backtest_result.get('max_drawdown', 0.0):.2f}% | "
+            f"胜率 {backtest_result.get('win_rate', 0.0):.2f}% | "
+            f"交易 {backtest_result.get('total_trades', 0)}"
+        )
+
+    success_count = len(summary)
+    if success_count == 0:
+        print("\n✗ 回测失败，未生成任何有效结果")
+        return
+
+    summary.sort(key=lambda x: x['total_return'], reverse=True)
+
+    header = "{:<8}{:>10}{:>16}{:>10}{:>12}{:>12}".format(
+        "代码", "收益%", "最大回撤%", "胜率%", "交易数", "最终资金"
+    )
+    summary_header = "{:<8}{:>10}{:>12}{:>8}{:>10}{:>10}".format(
+        "股票数量", "平均收益%", "平均最大回撤%", "平均胜率%", "平均交易数", "最终资金"
+    )
+    separator_line = "=" * 82
+    dash_line = "-" * len(separator_line)
+
+    print("\n" + separator_line)
+    print("📊 缓存回测报告（按收益率排序）")
+    print(separator_line)
+    table_lines = [header, dash_line]
+
+    for row in summary:
+        line = (
+            "{:<10}{:>14.2f}{:>16.2f}{:>12.2f}{:>12d}{:>18,.2f}".format(
+                row['code'],
+                row['total_return'],
+                row['max_drawdown'],
+                row['win_rate'],
+                row['total_trades'],
+                row['final_capital'],
+            )
+        )
+        table_lines.append(line)
+
+    avg_total_return = sum(row['total_return'] for row in summary) / success_count
+    avg_max_drawdown = sum(row['max_drawdown'] for row in summary) / success_count
+    avg_win_rate = sum(row['win_rate'] for row in summary) / success_count
+    avg_trades = sum(row['total_trades'] for row in summary) / success_count
+    avg_final_capital = sum(row['final_capital'] for row in summary) / success_count
+
+    summary_line = "{:<10}{:>14.2f}{:>16.2f}{:>12.2f}{:>12.2f}{:>18,.2f}".format(
+        success_count,
+        avg_total_return,
+        avg_max_drawdown,
+        avg_win_rate,
+        avg_trades,
+        avg_final_capital,
+    )
+
+    table_lines.append("")
+    table_lines.append(summary_header)
+    table_lines.append(dash_line)
+    table_lines.append(summary_line)
+
+    for line in table_lines:
+        print(line)
+    print(separator_line)
+
+    print("\n处理完成！")
+    print(f"成功: {success_count} 只，失败: {total - success_count} 只")
+    if failures:
+        failed_preview = ", ".join(failures[:10])
+        suffix = "..." if len(failures) > 10 else ""
+        print(f"失败列表（最多显示10只）: {failed_preview}{suffix}")
+
+    # 写入报告文件
+    now = datetime.now()
+    timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+    timestamp_slug = now.strftime('%Y%m%d_%H%M%S')
+    report_lines = [
+        f"缓存回测报告 - 生成时间: {timestamp}",
+        separator_line,
+        "按收益率排序："
+    ]
+    report_lines.extend(table_lines)
+    report_lines.append(separator_line)
+    report_lines.append("")
+    report_lines.append(f"成功: {success_count} 只，失败: {total - success_count} 只")
+    if failures:
+        failed_preview = ", ".join(failures[:10])
+        suffix = "..." if len(failures) > 10 else ""
+        report_lines.append(f"失败列表（最多显示10只）: {failed_preview}{suffix}")
+    report_lines.append("\n=== 个股详细报告 ===")
+
+    for row in summary:
+        section = stock_reports.get(row['code'])
+        if section:
+            report_lines.append(section)
+            report_lines.append("")
+
+    report_dir = Path(__file__).parent / 'reports'
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_file = report_dir / f'cache_backtest_report_{timestamp_slug}.txt'
+    with open(report_file, 'w', encoding='utf-8') as f:
+        f.write("\n".join(report_lines).strip() + "\n")
+
+    print(f"\n报告已保存到: {report_file}")
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -308,6 +669,8 @@ def main():
                         help='回测模式下使用缓存的最优组合（原始/渐进 + 高频/高质量），'
                              '若无缓存则自动评估并写入缓存')
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
+    parser.add_argument('--report', action='store_true',
+                        help='离线模式：对缓存中所有或指定股票（-s/-b）进行回测并输出报告')
 
     args = parser.parse_args()
 
@@ -316,7 +679,24 @@ def main():
     setup_logging(config)
 
     # 执行分析
-    if args.stock:
+    if args.report:
+        if args.no_backtest:
+            print("⚠️ --report 模式默认执行回测，将忽略 --no-backtest")
+        report_codes = []
+        if args.stock:
+            report_codes.append(args.stock)
+        if args.batch:
+            report_codes.extend(args.batch)
+        if report_codes:
+            print(f"仅对指定股票生成离线报告: {', '.join(report_codes)}")
+        else:
+            print("未指定股票，将对缓存中所有股票生成离线报告")
+        generate_cache_backtest_report(
+            config,
+            use_fixed_strategy=args.fixed_strategy,
+            stock_codes=report_codes if report_codes else None
+        )
+    elif args.stock:
         analyze_stock(
             args.stock,
             config,

@@ -54,5 +54,273 @@
   "002063": {
     "sell_strategy": "original",
     "order": "high_quality"
+  },
+  "605117": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002142": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002167": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002179": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002245": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002407": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "002428": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002460": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002466": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002467": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002555": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002594": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002624": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002812": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002851": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "002916": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "002920": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "00388": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "00700": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "01347": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "01810": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "02015": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "02158": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "02367": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "02533": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "03690": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "09868": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "09988": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300034": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300059": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300275": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "300279": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "300316": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "300450": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300476": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "300590": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300618": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "300676": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300703": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "300757": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "300763": {
+    "sell_strategy": "gradual",
+    "order": "high_frequency"
+  },
+  "301308": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600000": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600015": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600016": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600036": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600259": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
+  },
+  "600519": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600600": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600775": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600884": {
+    "sell_strategy": "original",
+    "order": "high_frequency"
+  },
+  "600885": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "600900": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601012": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601166": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601169": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601288": {
+    "sell_strategy": "original",
+    "order": "high_frequency"
+  },
+  "601318": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601328": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601398": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601818": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "601939": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "603063": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "603236": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "688001": {
+    "sell_strategy": "original",
+    "order": "high_frequency"
+  },
+  "688155": {
+    "sell_strategy": "original",
+    "order": "high_quality"
+  },
+  "920982": {
+    "sell_strategy": "gradual",
+    "order": "high_quality"
   }
 }

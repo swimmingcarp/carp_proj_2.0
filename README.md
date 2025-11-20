@@ -102,7 +102,18 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --no
 
 # 回测模式下使用固定策略组合（基于历史自适应结果缓存）
 source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293 --fixed-strategy
+
+# 对缓存中的所有股票进行离线回测并输出报告（不联网、单线程）
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report
+
+# 只对指定股票生成离线报告（需已有缓存）
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report -b 300293 300274 300750 605117
+
+# 使用策略缓存生成固定组合的批量报告
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report --fixed-strategy
 ```
+
+使用 `--report` 时，系统会将完整的批量回测明细保存到 `stock_trading_advisor/reports/cache_backtest_report_YYYYMMDD_HHMMSS.txt`（按时间戳命名），每只股票都会包含最新价格、历史交易对收益表以及交易统计，方便留档和复盘。
 
 **输出示例**：
 ```

@@ -19,5 +19,5 @@ colorama>=0.4.6
 schedule>=1.2.0
 
 # 可选：可视化
-# matplotlib>=3.6.0
-# mplfinance>=0.12.0
+matplotlib
+mplfinance

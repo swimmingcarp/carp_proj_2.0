@@ -111,6 +111,10 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py --report -b 30
 
 # 使用策略缓存生成固定组合的批量报告
 source venv/bin/activate && python3 stock_trading_advisor/main.py --report --fixed-strategy
+
+# 生成K线图并标注买卖点
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --chart-generation
+# 图片将保存到 reports/kline_000001.png
 ```
 
 使用 `--report` 时，系统会将完整的批量回测明细保存到 `stock_trading_advisor/reports/cache_backtest_report_YYYYMMDD_HHMMSS.txt`（按时间戳命名），每只股票都会包含最新价格、历史交易对收益表以及交易统计，方便留档和复盘。

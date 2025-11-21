@@ -1,9 +1,53 @@
 """
 优化后的技术指标计算模块
 - 使用 Pandas 向量化操作，性能提升 300+ 倍
-- 使用 Numba 加速递推计算
-- 统一返回 Series 格式
 """
+import pandas as pd
+import numpy as np
+import numba
+
+# 新增：ATR（平均真实波动幅度）
+def atr_indicator(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    ATR (Average True Range) - 波动率指标
+    Args:
+        df: 必须包含 'high', 'low', 'close'
+        period: 计算周期
+    Returns:
+        ATR 序列
+    """
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+    return atr
+
+# 新增：OBV（能量潮指标）
+def obv_indicator(df: pd.DataFrame) -> pd.Series:
+    """
+    OBV (On-Balance Volume) - 量价关系指标
+    Args:
+        df: 必须包含 'close', 'volume'
+    Returns:
+        OBV 序列
+    """
+    obv = [0]
+    close = df['close']
+    volume = df['volume']
+    for i in range(1, len(df)):
+        if close.iloc[i] > close.iloc[i-1]:
+            obv.append(obv[-1] + volume.iloc[i])
+        elif close.iloc[i] < close.iloc[i-1]:
+            obv.append(obv[-1] - volume.iloc[i])
+        else:
+            obv.append(obv[-1])
+    return pd.Series(obv, index=df.index)
 
 import pandas as pd
 import numpy as np
@@ -356,7 +400,13 @@ def calculate_all_indicators(df: pd.DataFrame, init_k: float = None,
     # 7. 布林线指标
     df['bb_upper'], df['bb_middle'], df['bb_lower'], df['bb_width'], df['bb_percent'] = bollinger_bands(df['close'])
 
-    # 8. 从起始日期截断
+    # 8. ATR 指标
+    df['atr'] = atr_indicator(df)
+
+    # 9. OBV 指标
+    df['obv'] = obv_indicator(df)
+
+    # 10. 从起始日期截断
     df = df.loc[df['date'] >= init_date].copy()
 
     return df

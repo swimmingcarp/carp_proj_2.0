@@ -6,7 +6,7 @@ Mixed Strategy - 核心交易策略
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     from .indicators import calculate_all_indicators
@@ -652,6 +652,29 @@ class MixedStrategy:
                 f"震荡下行过滤:\n"
                 f"[{periods_str}]"
             )
+
+    def get_detected_oscillation_periods(self, df: Optional[pd.DataFrame] = None) -> List[Tuple]:
+        """
+        返回最近一次检测到的震荡区间列表
+
+        Args:
+            df: 可选的 DataFrame，仅在确实需要重新检测时传入；
+                一般情况下直接使用缓存即可
+
+        Returns:
+            list: 形如 (start_idx, end_idx, start_date, end_date, avg_score) 的元组列表
+        """
+        try:
+            if df is not None:
+                return list(self._detect_oscillation_decline_periods(df))
+        except Exception:
+            logger.warning("获取震荡检测结果失败，将返回缓存结果", exc_info=True)
+            return []
+
+        if self._oscillation_periods_cache is None:
+            return []
+
+        return list(self._oscillation_periods_cache)
 
     def analyze(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
         """

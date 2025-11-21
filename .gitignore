@@ -78,6 +78,7 @@ data/cache/
 .serena/
 stock_trading_advisor/data/strategy_cache.json
 stock_trading_advisor/reports/
+reports/
 
 # Temporary files
 *.tmp

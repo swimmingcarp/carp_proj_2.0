@@ -13,6 +13,7 @@ from datetime import datetime
 from itertools import zip_longest
 from pathlib import Path
 from typing import Dict, List, Optional
+from numbers import Integral
 
 import pandas as pd
 
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 from src.data_fetcher import DataFetcher
 from src.strategy import MixedStrategy
 from src.analyzer import SignalAnalyzer
+from src.plotter import plot_kline_with_signals
 import config as app_config  # 导入应用配置
 
 
@@ -107,7 +109,7 @@ def normalize_stock_code(code: str) -> str:
 
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                   use_fixed_strategy: bool = False, df_override: Optional[pd.DataFrame] = None,
-                  quiet: bool = False) -> Optional[Dict]:
+                  quiet: bool = False, chart_generation: bool = False) -> Optional[Dict]:
     """
     分析单只股票
 
@@ -115,6 +117,7 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         stock_code: 股票代码
         config: 配置字典
         show_backtest: 是否显示回测结果
+        chart_generation: 是否生成K线图
     """
     logger = logging.getLogger(__name__)
     log_func = logger.info if not quiet else logger.debug
@@ -256,6 +259,91 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
             echo(analyzer.generate_recommendation(signal_data))
     elif not quiet:
         echo(analyzer.generate_recommendation(signal_data))
+
+    # K线图生成逻辑
+    if chart_generation and show_backtest and trading_signals:
+        def extract_dates(points):
+            # points可能为dict列表、日期列表、索引列表
+            if isinstance(points, dict):
+                return []
+            if isinstance(points, list):
+                # dict列表（如交易明细）
+                if points and isinstance(points[0], dict):
+                    return [d.get('date') for d in points if 'date' in d]
+                # 日期字符串或索引
+                return [d for d in points if isinstance(d, (str, int))]
+            return []
+        buy_idx = extract_dates(trading_signals.get('buy_indices', []))
+        sell_idx = extract_dates(trading_signals.get('sell_indices', []))
+        if not buy_idx and 'buy_points' in trading_signals:
+            buy_idx = extract_dates(trading_signals['buy_points'])
+        if not sell_idx and 'sell_points' in trading_signals:
+            sell_idx = extract_dates(trading_signals['sell_points'])
+
+        oscillation_periods_for_plot = []
+        raw_periods = strategy.get_detected_oscillation_periods()
+
+        if raw_periods:
+            def _ensure_timestamp(value):
+                if value is None:
+                    return None
+                try:
+                    return pd.to_datetime(value)
+                except Exception:
+                    return None
+
+            total_len = len(df_analyzed)
+            has_date_col = 'date' in df_analyzed.columns
+
+            for period in raw_periods:
+                if not isinstance(period, (list, tuple)) or len(period) < 5:
+                    continue
+                start_idx, end_idx, start_date, end_date, avg_score = period[:5]
+                start_ts = _ensure_timestamp(start_date)
+                end_ts = _ensure_timestamp(end_date)
+
+                if has_date_col:
+                    if start_ts is None and isinstance(start_idx, Integral):
+                        safe_start = max(0, min(total_len - 1, start_idx))
+                        start_ts = _ensure_timestamp(df_analyzed.iloc[safe_start]['date'])
+                    if end_ts is None and isinstance(end_idx, Integral):
+                        safe_end = max(0, min(total_len - 1, end_idx))
+                        end_ts = _ensure_timestamp(df_analyzed.iloc[safe_end]['date'])
+                else:
+                    if start_ts is None and isinstance(start_idx, Integral):
+                        safe_start = max(0, min(total_len - 1, start_idx))
+                        start_ts = _ensure_timestamp(df_analyzed.index[safe_start])
+                    if end_ts is None and isinstance(end_idx, Integral):
+                        safe_end = max(0, min(total_len - 1, end_idx))
+                        end_ts = _ensure_timestamp(df_analyzed.index[safe_end])
+
+                if start_ts is None or end_ts is None:
+                    continue
+
+                try:
+                    score_val = float(avg_score) if avg_score is not None else None
+                except Exception:
+                    score_val = None
+
+                oscillation_periods_for_plot.append({
+                    'start': start_ts,
+                    'end': end_ts,
+                    'score': score_val,
+                    'start_idx': start_idx,
+                    'end_idx': end_idx,
+                })
+
+        try:
+            out_path = plot_kline_with_signals(
+                df_analyzed,
+                buy_idx,
+                sell_idx,
+                stock_code,
+                oscillation_periods=oscillation_periods_for_plot
+            )
+            echo(f"K线图已保存到: {out_path}")
+        except Exception as e:
+            echo(f"K线图生成失败: {e}")
 
     log_func(f"完成分析股票: {stock_code}")
     return {
@@ -671,6 +759,8 @@ def main():
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
     parser.add_argument('--report', action='store_true',
                         help='离线模式：对缓存中所有或指定股票（-s/-b）进行回测并输出报告')
+    parser.add_argument('--chart-generation', action='store_true',
+                        help='回测后自动生成K线图并标注买卖点，图片保存到reports/')
 
     args = parser.parse_args()
 
@@ -701,7 +791,10 @@ def main():
             args.stock,
             config,
             show_backtest=not args.no_backtest,
-            use_fixed_strategy=args.fixed_strategy
+            use_fixed_strategy=args.fixed_strategy,
+            quiet=False,
+            df_override=None,
+            chart_generation=args.chart_generation if hasattr(args, 'chart_generation') else False
         )
     elif args.batch:
         batch_analyze(args.batch, config)

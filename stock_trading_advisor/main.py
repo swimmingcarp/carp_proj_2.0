@@ -6,6 +6,7 @@ Stock Trading Advisor - 主程序
 """
 
 import argparse
+import os
 import sys
 import yaml
 import logging
@@ -14,6 +15,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Dict, List, Optional
 from numbers import Integral
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
@@ -559,31 +561,38 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
     backtest_config = config.get('backtest', {})
     initial_capital = backtest_config.get('initial_capital', 10000)
 
+    report_config = config.get('report', {})
+    max_workers_config = report_config.get('max_workers')
+    if isinstance(max_workers_config, Integral) and max_workers_config > 0:
+        max_workers = int(max_workers_config)
+    else:
+        cpu_count = os.cpu_count() or 1
+        max_workers = cpu_count
+
     total = len(target_files)
+    max_workers = max(1, min(max_workers, total))
+
     if stock_codes:
         print(f"对指定的 {total} 只股票生成回测报告（需存在缓存）...")
     else:
-        print(f"在缓存目录中找到 {total} 只股票，开始单线程离线回测...")
+        mode_label = "多线程" if max_workers > 1 else "单线程"
+        print(f"在缓存目录中找到 {total} 只股票，开始{mode_label}离线回测...")
+    if max_workers > 1:
+        print(f"本次将使用 {max_workers} 个线程并行处理缓存文件")
 
     summary = []
     failures = []
     stock_reports: Dict[str, str] = {}
 
-    for idx, (stock_code, cache_file) in enumerate(target_files, 1):
-        print(f"\n[{idx}/{total}] 回测 {stock_code} ...")
-
+    def run_single_backtest(stock_code: str, cache_file: Path) -> Dict:
         try:
             df_raw = pd.read_csv(cache_file)
         except Exception as exc:
             logger.error(f"读取缓存 {cache_file} 失败: {exc}")
-            print(f"✗ 读取缓存失败: {exc}")
-            failures.append(stock_code)
-            continue
+            return {'success': False, 'code': stock_code, 'error': f"读取缓存失败: {exc}"}
 
         if df_raw.empty:
-            print("✗ 缓存数据为空，跳过")
-            failures.append(stock_code)
-            continue
+            return {'success': False, 'code': stock_code, 'error': "缓存数据为空，跳过"}
 
         analysis = analyze_stock(
             stock_code,
@@ -595,18 +604,14 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
         )
 
         if not analysis:
-            print("✗ 分析失败，跳过")
-            failures.append(stock_code)
-            continue
+            return {'success': False, 'code': stock_code, 'error': "分析失败，跳过"}
 
         backtest_result = analysis.get('backtest')
         if not backtest_result:
-            print("✗ 回测失败，跳过")
-            failures.append(stock_code)
-            continue
+            return {'success': False, 'code': stock_code, 'error': "回测失败，跳过"}
 
         current_price = float(df_raw['close'].iloc[-1])
-        stock_reports[stock_code] = format_stock_report(
+        stock_report = format_stock_report(
             stock_code,
             current_price,
             analysis.get('signal'),
@@ -614,21 +619,54 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
             analysis.get('trading_signals')
         )
 
-        summary.append({
+        summary_entry = {
             'code': stock_code,
             'total_return': backtest_result.get('total_return', 0.0),
             'max_drawdown': backtest_result.get('max_drawdown', 0.0),
             'win_rate': backtest_result.get('win_rate', 0.0),
             'total_trades': backtest_result.get('total_trades', 0),
             'final_capital': backtest_result.get('final_capital', initial_capital),
-        })
+        }
 
-        print(
+        log_message = (
             f"✓ {stock_code} 完成 - 收益 {backtest_result.get('total_return', 0.0):.2f}% | "
             f"最大回撤 {backtest_result.get('max_drawdown', 0.0):.2f}% | "
             f"胜率 {backtest_result.get('win_rate', 0.0):.2f}% | "
             f"交易 {backtest_result.get('total_trades', 0)}"
         )
+
+        return {
+            'success': True,
+            'code': stock_code,
+            'report': stock_report,
+            'summary': summary_entry,
+            'log': log_message,
+        }
+
+    futures_map = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for idx, (stock_code, cache_file) in enumerate(target_files, 1):
+            print(f"\n[{idx}/{total}] 回测 {stock_code} ...")
+            future = executor.submit(run_single_backtest, stock_code, cache_file)
+            futures_map[future] = stock_code
+
+        for future in as_completed(futures_map):
+            stock_code = futures_map[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                logger.error(f"处理 {stock_code} 时出现未捕获异常: {exc}", exc_info=True)
+                print(f"✗ {stock_code} 执行异常: {exc}")
+                failures.append(stock_code)
+                continue
+
+            if result.get('success'):
+                summary.append(result['summary'])
+                stock_reports[stock_code] = result['report']
+                print(result.get('log', f"✓ {stock_code} 完成"))
+            else:
+                failures.append(stock_code)
+                print(f"✗ {stock_code} {result.get('error', '未知错误')}")
 
     success_count = len(summary)
     if success_count == 0:

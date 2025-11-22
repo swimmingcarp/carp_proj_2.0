@@ -49,3 +49,7 @@ analysis:
   show_backtest: true    # 是否显示回测结果
   save_charts: false     # 是否保存图表
   chart_dir: 'data/charts'  # 图表保存目录
+
+# 报告生成配置
+report:
+  max_workers: null      # 多线程回测线程数（null 自动使用CPU核心数）

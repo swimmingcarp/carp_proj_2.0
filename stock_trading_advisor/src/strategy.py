@@ -408,14 +408,16 @@ class MixedStrategy:
             else:
                 df_analysis[f'ma_{ma_period}'] = df_analysis['close'].rolling(ma_period).mean()
 
-        # 算法检测震荡期间（补充检测，降低阈值）
-        window_size = 20
-        algorithm_score_threshold = 4.0  # 大幅降低算法检测阈值，作为补充
+        # 算法检测震荡期间（补充检测，且仅依赖历史数据）
+        window_size = max(20, self.config.get('oscillation_window_size', 30))
+        algorithm_score_threshold = 4.0  # 作为启动判定的基准得分
         min_period = self.config.get('oscillation_min_period', 30)
+        confirm_days = max(2, self.config.get('oscillation_confirm_days', 5))
+        release_days = max(3, confirm_days)
 
         # 为评分循环准备 numpy 数组，避免频繁的 iloc/window 切片
         n = len(df_analysis)
-        if n <= 2 * window_size:
+        if n < window_size + confirm_days:
             # 数据太少，无需进行算法补充检测
             self._oscillation_periods_cache = known_oscillation_periods
             self._oscillation_cache_key = cache_key
@@ -424,10 +426,6 @@ class MixedStrategy:
         close_arr = df_analysis['close'].to_numpy()
         width_arr = df_analysis['bb_width'].to_numpy()
         pos_arr = df_analysis['bb_position'].to_numpy()
-        if 'date' in df_analysis.columns:
-            date_arr = df_analysis['date'].to_numpy()
-        else:
-            date_arr = df_analysis.index.to_numpy()
 
         ma_arrays = {}
         for p in [5, 10, 20, 30]:
@@ -435,24 +433,59 @@ class MixedStrategy:
             if col in df_analysis.columns:
                 ma_arrays[p] = df_analysis[col].to_numpy()
 
-        # 价格震荡部分恢复为「逐窗口扫描」版本，避免 rolling max/min 带来的细微行为差异
+        def _finalize_period_state(period_state, end_idx):
+            """结束当前震荡段并写入结果列表。"""
+            if period_state is None:
+                return
+            history = [(idx, score) for idx, score in period_state['history'] if idx <= end_idx]
+            if not history:
+                return
+            start_idx = history[0][0]
+            if end_idx - start_idx + 1 < min_period:
+                return
+            if 'date' in df_analysis.columns:
+                start_date = df_analysis.iloc[start_idx]['date']
+                end_date = df_analysis.iloc[end_idx]['date']
+            else:
+                start_date = df_analysis.index[start_idx]
+                end_date = df_analysis.index[end_idx]
+            avg_score = float(np.mean([score for _, score in history]))
+            known_oscillation_periods.append((start_idx, end_idx, start_date, end_date, avg_score))
+            if hasattr(start_date, 'strftime'):
+                date_info = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
+            else:
+                date_info = f"{start_date} ~ {end_date}"
+            logger.debug(
+                f"补充震荡期间: {date_info} "
+                f"({end_idx - start_idx + 1}天, 得分{avg_score:.1f})"
+            )
 
-        position_scores = []
-        # 保持原始窗口边界：range(window_size, n - window_size)
-        for i in range(window_size, n - window_size):
-            current_date = date_arr[i]
+        outer_upper = getattr(self, '_oscillation_outer_upper', 0.30)
+        inner_upper = getattr(self, '_oscillation_inner_upper', 0.20)
+
+        pending_high_scores = []
+        active_period = None
+        below_counter = 0
+
+        for idx in range(window_size - 1, n):
+            # 使用只包含历史数据的窗口
+            window_start = idx - window_size + 1
+            segment = close_arr[window_start:idx + 1]
+            window_len = len(segment)
+            if window_len < max(window_size // 2, confirm_days):
+                continue
+
             score = 0.0
 
             # 1. 布林带分析 (0-2分)
-            bb_width_current = width_arr[i]
-            bb_position_current = pos_arr[i]
-
+            bb_width_current = width_arr[idx]
+            bb_position_current = pos_arr[idx]
             if not np.isnan(bb_width_current):
-                if bb_width_current < 0.25:  # 进一步放宽布林带收敛要求
+                if bb_width_current < 0.25:
                     score += 1
                     if bb_width_current < 0.15:
                         score += 1
-                if not np.isnan(bb_position_current) and 0.1 <= bb_position_current <= 0.9:  # 价格在布林带内震荡
+                if not np.isnan(bb_position_current) and 0.1 <= bb_position_current <= 0.9:
                     score += 0.5
 
             # 2. 均线纠缠分析 (0-2分)
@@ -460,121 +493,82 @@ class MixedStrategy:
             for p in [5, 10, 20, 30]:
                 arr = ma_arrays.get(p)
                 if arr is not None:
-                    mas.append(arr[i])
+                    mas.append(arr[idx])
             if len(mas) >= 3 and all(not np.isnan(ma) for ma in mas):
                 ma_max = max(mas)
                 ma_min = min(mas)
                 ma_last = mas[-1]
-                # 避免除零
                 if ma_last != 0:
                     ma_range = (ma_max - ma_min) / ma_last
-                    if ma_range < 0.15:  # 进一步放宽均线纠缠要求
+                    if ma_range < 0.15:
                         score += 1
                         if ma_range < 0.08:
                             score += 1
 
-            # 3. 趋势强度分析 (0-2分)
-            window_start = max(0, i - 15)
-            window_end = min(n, i + 15)  # 注意：end 为切片上界（不包含）
-            window_len = window_end - window_start
-
-            if window_len > 10:
-                first_close = close_arr[window_start]
-                last_close = close_arr[window_end - 1]
-                if first_close != 0:
-                    trend_strength = abs((last_close / first_close) - 1)
-                    if trend_strength < 0.20:  # 大幅放宽趋势强度要求
+            # 3. 趋势强度分析 (0-2分) - 仅依赖回溯窗口
+            first_close = segment[0]
+            last_close = segment[-1]
+            if first_close != 0:
+                trend_strength = abs((last_close / first_close) - 1)
+                if trend_strength < 0.20:
+                    score += 1
+                    if trend_strength < 0.08:
                         score += 1
-                        if trend_strength < 0.08:
-                            score += 1
 
-            # 4. 价格震荡模式 (0-2分)
-            if window_len > 10:
-                # 使用局部窗口切片计算高低点（与历史实现保持一致）
-                segment = close_arr[window_start:window_end]
-                window_high = segment.max()
-                window_low = segment.min()
-
-                window_current = close_arr[i]
-                if window_current != 0:
-                    price_range_pct = (window_high - window_low) / window_current
-
-                    # 使用自适应选择的参数（外层和内层范围）
-                    outer_upper = getattr(self, '_oscillation_outer_upper', 0.30)
-                    inner_upper = getattr(self, '_oscillation_inner_upper', 0.20)
-
-                    if 0.05 < price_range_pct < outer_upper:  # 震荡范围（外层）
+            # 4. 价格震荡范围 (0-2分)
+            window_high = segment.max()
+            window_low = segment.min()
+            window_current = segment[-1]
+            if window_current != 0:
+                price_range_pct = (window_high - window_low) / window_current
+                if 0.05 < price_range_pct < outer_upper:
+                    score += 1
+                    if 0.10 < price_range_pct < inner_upper:
                         score += 1
-                        if 0.10 < price_range_pct < inner_upper:  # 内层范围
-                            score += 1
 
-            position_scores.append((i, current_date, score))
+            is_high_score = score >= algorithm_score_threshold
+            if is_high_score:
+                pending_high_scores.append((idx, score))
+                if len(pending_high_scores) > confirm_days:
+                    pending_high_scores = pending_high_scores[-confirm_days:]
+            else:
+                pending_high_scores.clear()
 
-        # 检测算法发现的震荡期间（用于补充）
-        high_score_positions = [
-            (i, date, score)
-            for i, date, score in position_scores
-            if score >= algorithm_score_threshold
-        ]
+            newly_activated = False
+            if active_period is None and len(pending_high_scores) >= confirm_days:
+                active_period = {
+                    'history': pending_high_scores.copy(),
+                    'start_idx': pending_high_scores[0][0],
+                    'last_idx': pending_high_scores[-1][0],
+                }
+                below_counter = 0
+                newly_activated = True
 
-        if high_score_positions:
-            # 只在调试模式下输出详细位置日志
-            logger.debug(
-                f"震荡检测算法命中 {len(high_score_positions)} 个候选位置"
-                f"（阈值≥{algorithm_score_threshold}）"
-            )
+            if active_period is None:
+                continue
 
-            # 合并相邻位置
-            current_period_start = high_score_positions[0][0]
-            current_period_end = high_score_positions[0][0]
-            current_period_scores = [high_score_positions[0][2]]
+            if newly_activated:
+                # 刚触发的当天已计入 history，无需重复处理
+                continue
 
-            for i, date, score in high_score_positions[1:]:
-                if i <= current_period_end + 15:  # 15天内视为连续
-                    current_period_end = i
-                    current_period_scores.append(score)
-                else:
-                    # 结束当前期间
-                    period_duration = current_period_end - current_period_start + 1
-                    if period_duration >= min_period:
-                        start_date = df_analysis.iloc[current_period_start]['date'] if 'date' in df_analysis.columns else df_analysis.index[current_period_start]
-                        end_date = df_analysis.iloc[current_period_end]['date'] if 'date' in df_analysis.columns else df_analysis.index[current_period_end]
-                        avg_score = np.mean(current_period_scores)
+            active_period['history'].append((idx, score))
+            active_period['last_idx'] = idx
 
-                        # 只有当算法得分足够高时才添加
-                        if avg_score >= 5.0:
-                            known_oscillation_periods.append((current_period_start, current_period_end, start_date, end_date, avg_score))
-                            if hasattr(start_date, 'strftime'):
-                                date_info = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
-                            else:
-                                date_info = f"{start_date} ~ {end_date}"
-                            logger.debug(
-                                f"补充震荡期间: {date_info} "
-                                f"({period_duration}天, 得分{avg_score:.1f})"
-                            )
+            if is_high_score:
+                below_counter = 0
+            else:
+                below_counter += 1
+                if below_counter >= release_days:
+                    end_idx = idx - release_days
+                    if end_idx < active_period['start_idx']:
+                        end_idx = active_period['start_idx']
+                    _finalize_period_state(active_period, end_idx)
+                    active_period = None
+                    below_counter = 0
+                    pending_high_scores.clear()
 
-                    # 开始新期间
-                    current_period_start = i
-                    current_period_end = i
-                    current_period_scores = [score]
-
-            # 处理最后一个期间
-            period_duration = current_period_end - current_period_start + 1
-            if period_duration >= min_period:
-                start_date = df_analysis.iloc[current_period_start]['date'] if 'date' in df_analysis.columns else df_analysis.index[current_period_start]
-                end_date = df_analysis.iloc[current_period_end]['date'] if 'date' in df_analysis.columns else df_analysis.index[current_period_end]
-                avg_score = np.mean(current_period_scores)
-
-                if avg_score >= 5.0:
-                    known_oscillation_periods.append((current_period_start, current_period_end, start_date, end_date, avg_score))
-                    if hasattr(start_date, 'strftime'):
-                        date_info = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
-                    else:
-                        date_info = f"{start_date} ~ {end_date}"
-                    logger.debug(
-                        f"补充震荡期间: {date_info} "
-                        f"({period_duration}天, 得分{avg_score:.1f})"
-                    )
+        if active_period is not None:
+            _finalize_period_state(active_period, active_period['last_idx'])
 
         # 合并所有检测到的期间
         periods = known_oscillation_periods

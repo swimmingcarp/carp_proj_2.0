@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 from src.data_fetcher import DataFetcher
 from src.strategy import MixedStrategy
+from src.oscillation_strategy import OscillationStrategy
 from src.analyzer import SignalAnalyzer
 from src.plotter import plot_kline_with_signals
 import config as app_config  # 导入应用配置
@@ -111,7 +112,8 @@ def normalize_stock_code(code: str) -> str:
 
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                   use_fixed_strategy: bool = False, df_override: Optional[pd.DataFrame] = None,
-                  quiet: bool = False, chart_generation: bool = False) -> Optional[Dict]:
+                  quiet: bool = False, chart_generation: bool = False,
+                  oscillation_driven: bool = False) -> Optional[Dict]:
     """
     分析单只股票
 
@@ -168,12 +170,21 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         df = df_override.copy()
         market = detect_market_from_code(stock_code)
 
-    strategy = MixedStrategy(
-        config=strategy_config,
-        market=market,
-        stock_code=stock_code,
-        use_strategy_cache=show_backtest and use_fixed_strategy
-    )
+    # 根据参数选择策略类型
+    if oscillation_driven:
+        echo("使用震荡间隔交易策略 (OscillationStrategy)")
+        strategy = OscillationStrategy(
+            config=strategy_config,
+            market=market
+        )
+    else:
+        strategy = MixedStrategy(
+            config=strategy_config,
+            market=market,
+            stock_code=stock_code,
+            use_strategy_cache=show_backtest and use_fixed_strategy,
+            oscillation_driven=False
+        )
     analyzer = SignalAnalyzer()
 
     if validation_report:
@@ -280,10 +291,15 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         if not buy_idx and 'buy_points' in trading_signals:
             buy_idx = extract_dates(trading_signals['buy_points'])
         if not sell_idx and 'sell_points' in trading_signals:
-            sell_idx = extract_dates(trading_signals['sell_points'])
+            sell_points_for_plot = [
+                point for point in trading_signals['sell_points']
+                if not (isinstance(point, dict) and point.get('is_open', False))
+            ]
+            sell_idx = extract_dates(sell_points_for_plot)
 
         oscillation_periods_for_plot = []
-        raw_periods = strategy.get_detected_oscillation_periods()
+        # 使用震荡确认时间（逐日判断的结果，无前瞻性偏差）
+        raw_periods = strategy.get_oscillation_confirmed_periods()
 
         if raw_periods:
             def _ensure_timestamp(value):
@@ -298,22 +314,25 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
             has_date_col = 'date' in df_analyzed.columns
 
             for period in raw_periods:
-                if not isinstance(period, (list, tuple)) or len(period) < 5:
+                # 震荡确认时间格式: (confirmed_idx, end_idx, confirmed_date, end_date)
+                if not isinstance(period, (list, tuple)) or len(period) < 4:
                     continue
-                start_idx, end_idx, start_date, end_date, avg_score = period[:5]
-                start_ts = _ensure_timestamp(start_date)
+
+                confirmed_idx, end_idx, confirmed_date, end_date = period[:4]
+                # 使用确认时间作为起始点（而不是回溯的起始时间）
+                start_ts = _ensure_timestamp(confirmed_date)
                 end_ts = _ensure_timestamp(end_date)
 
                 if has_date_col:
-                    if start_ts is None and isinstance(start_idx, Integral):
-                        safe_start = max(0, min(total_len - 1, start_idx))
+                    if start_ts is None and isinstance(confirmed_idx, Integral):
+                        safe_start = max(0, min(total_len - 1, confirmed_idx))
                         start_ts = _ensure_timestamp(df_analyzed.iloc[safe_start]['date'])
                     if end_ts is None and isinstance(end_idx, Integral):
                         safe_end = max(0, min(total_len - 1, end_idx))
                         end_ts = _ensure_timestamp(df_analyzed.iloc[safe_end]['date'])
                 else:
-                    if start_ts is None and isinstance(start_idx, Integral):
-                        safe_start = max(0, min(total_len - 1, start_idx))
+                    if start_ts is None and isinstance(confirmed_idx, Integral):
+                        safe_start = max(0, min(total_len - 1, confirmed_idx))
                         start_ts = _ensure_timestamp(df_analyzed.index[safe_start])
                     if end_ts is None and isinstance(end_idx, Integral):
                         safe_end = max(0, min(total_len - 1, end_idx))
@@ -322,17 +341,35 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                 if start_ts is None or end_ts is None:
                     continue
 
-                try:
-                    score_val = float(avg_score) if avg_score is not None else None
-                except Exception:
-                    score_val = None
+                # 计算趋势方向：确认点到结束点的价格变化
+                trend = 'range'
+                start_idx_for_trend = confirmed_idx if isinstance(confirmed_idx, Integral) else None
+                end_idx_for_trend = end_idx if isinstance(end_idx, Integral) else None
+                if (
+                    'close' in df_analyzed.columns
+                    and start_idx_for_trend is not None
+                    and end_idx_for_trend is not None
+                ):
+                    try:
+                        safe_start = max(0, min(total_len - 1, start_idx_for_trend))
+                        safe_end = max(0, min(total_len - 1, end_idx_for_trend))
+                        start_price = df_analyzed.iloc[safe_start]['close']
+                        end_price = df_analyzed.iloc[safe_end]['close']
+                        if start_price:
+                            pct_change = (end_price - start_price) / start_price
+                            if pct_change <= -0.02:
+                                trend = 'decline'
+                    except Exception:
+                        pass
 
                 oscillation_periods_for_plot.append({
-                    'start': start_ts,
-                    'end': end_ts,
-                    'score': score_val,
-                    'start_idx': start_idx,
+                    'start': start_ts,  # 震荡确认时间
+                    'end': end_ts,      # 震荡结束时间
+                    'score': None,
+                    'start_idx': confirmed_idx,
                     'end_idx': end_idx,
+                    'trend': trend,
+                    'type': 'confirmed'  # 标记为确认时间
                 })
 
         try:
@@ -522,7 +559,8 @@ def format_stock_report(stock_code: str, current_price: float, signal_data: Opti
 
 
 def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = False,
-                                   stock_codes: Optional[List[str]] = None):
+                                   stock_codes: Optional[List[str]] = None,
+                                   oscillation_driven: bool = False):
     """
     对缓存中的所有股票执行回测并生成汇总报告
     """
@@ -600,7 +638,8 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
             show_backtest=True,
             use_fixed_strategy=use_fixed_strategy,
             df_override=df_raw,
-            quiet=True
+            quiet=True,
+            oscillation_driven=oscillation_driven
         )
 
         if not analysis:
@@ -794,6 +833,8 @@ def main():
     parser.add_argument('--fixed-strategy', action='store_true',
                         help='回测模式下使用缓存的最优组合（原始/渐进 + 高频/高质量），'
                              '若无缓存则自动评估并写入缓存')
+    parser.add_argument('--oscillation-driven', action='store_true',
+                        help='使用震荡间隔交易策略（只在震荡区间外的正常行情中交易一笔）')
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
     parser.add_argument('--report', action='store_true',
                         help='离线模式：对缓存中所有或指定股票（-s/-b）进行回测并输出报告')
@@ -822,7 +863,8 @@ def main():
         generate_cache_backtest_report(
             config,
             use_fixed_strategy=args.fixed_strategy,
-            stock_codes=report_codes if report_codes else None
+            stock_codes=report_codes if report_codes else None,
+            oscillation_driven=args.oscillation_driven
         )
     elif args.stock:
         analyze_stock(
@@ -832,7 +874,8 @@ def main():
             use_fixed_strategy=args.fixed_strategy,
             quiet=False,
             df_override=None,
-            chart_generation=args.chart_generation if hasattr(args, 'chart_generation') else False
+            chart_generation=args.chart_generation if hasattr(args, 'chart_generation') else False,
+            oscillation_driven=args.oscillation_driven if hasattr(args, 'oscillation_driven') else False
         )
     elif args.batch:
         batch_analyze(args.batch, config)

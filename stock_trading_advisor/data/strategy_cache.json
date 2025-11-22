@@ -72,7 +72,7 @@
     "order": "high_quality"
   },
   "002245": {
-    "sell_strategy": "original",
+    "sell_strategy": "gradual",
     "order": "high_frequency"
   },
   "002407": {
@@ -153,7 +153,7 @@
   },
   "02533": {
     "sell_strategy": "original",
-    "order": "high_frequency"
+    "order": "high_quality"
   },
   "03690": {
     "sell_strategy": "gradual",
@@ -181,7 +181,7 @@
   },
   "300279": {
     "sell_strategy": "gradual",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "300316": {
     "sell_strategy": "gradual",

@@ -105,6 +105,7 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293 --fi
 
 # 对缓存中的所有股票进行离线回测并输出报告（不联网、单线程）
 source venv/bin/activate && python3 stock_trading_advisor/main.py --report
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report --oscillation-driven
 
 # 只对指定股票生成离线报告（需已有缓存）
 source venv/bin/activate && python3 stock_trading_advisor/main.py --report -b 300293 300274 300750 605117

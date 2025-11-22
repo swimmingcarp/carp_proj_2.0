@@ -206,13 +206,21 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
                 continue
             start_pos = resolve_position(start_ts, raw_start_idx)
             end_pos = resolve_position(end_ts, raw_end_idx)
-            parsed_oscillation_periods.append({
+            # 保留原始period中的trend信息
+            parsed_period = {
                 'start_ts': start_ts,
                 'end_ts': end_ts,
                 'score': score,
                 'start_pos': start_pos,
                 'end_pos': end_pos
-            })
+            }
+            # 复制trend/category字段（如果存在）
+            if isinstance(period, dict):
+                if 'trend' in period:
+                    parsed_period['trend'] = period['trend']
+                if 'category' in period:
+                    parsed_period['category'] = period['category']
+            parsed_oscillation_periods.append(parsed_period)
 
     def resolve_indices(indices, df_index):
         import pandas as pd
@@ -234,6 +242,7 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
                     continue
             return dt_indices
         return []
+    
     buy_idx = resolve_indices(buy_signals, df_plot.index)
     sell_idx = resolve_indices(sell_signals, df_plot.index)
 
@@ -682,10 +691,11 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
             start_label = _format_ts(start_ts)
             end_label = _format_ts(end_ts)
             y_text = level + osc_text_offset * 0.4
-            # 同时展示“起始/终止”文字和具体日期，便于用户识别
+            # 同时展示"确认时间/终止时间"文字和具体日期
+            # 注意：这里的start_ts是震荡确认时间（逐日判断确认的时间点），不是回溯的起始时间
             if start_label:
                 start_x = float(start_pos)
-                start_text = f"起始时间\n{start_label}"
+                start_text = f"震荡确认\n{start_label}"
                 ax.text(
                     start_x,
                     y_text,
@@ -699,7 +709,7 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
                 )
             if end_label:
                 end_x = float(end_pos)
-                end_text = f"终止时间\n{end_label}"
+                end_text = f"震荡结束\n{end_label}"
                 ax.text(
                     end_x,
                     y_text,

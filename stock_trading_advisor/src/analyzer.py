@@ -111,13 +111,23 @@ class SignalAnalyzer:
 
         # 资金指标
         initial_capital = result.get('initial_capital', 0)
+        # final_capital: 优先显示这个值（OscillationStrategy中已经是包含持仓的）
+        # final_capital_closed: 已完成交易的资金（不含持仓）
         final_capital = result.get('final_capital', 0)
+        final_capital_closed = result.get('final_capital_closed', final_capital)
+        has_open_position = result.get('has_open_position', False)
+        
+        # total_return: 优先显示这个值（OscillationStrategy中已经是包含持仓的）
         total_return = result.get('total_return', 0)
         profit_amount = final_capital - initial_capital
 
         output.append(f"\n💰 资金变化:")
         output.append(f"  初始资金: ¥{initial_capital:,.2f}")
-        output.append(f"  最终资金: ¥{final_capital:,.2f}")
+        if has_open_position:
+            output.append(f"  最终资金: ¥{final_capital:,.2f} (含持仓)")
+            output.append(f"  已完成交易资金: ¥{final_capital_closed:,.2f}")
+        else:
+            output.append(f"  最终资金: ¥{final_capital:,.2f}")
 
         # 盈亏显示
         if profit_amount > 0:
@@ -350,13 +360,15 @@ class SignalAnalyzer:
         sell_points = signals_data.get('sell_points', [])
         total_trades = signals_data.get('total_trades', 0)
 
-        # 分离未平仓和已平仓的卖出点
-        open_positions = [sp for sp in sell_points if sp.get('is_open', False)]
+        # 过滤掉未平仓的卖出点（is_open=True）
         closed_sells = [sp for sp in sell_points if not sp.get('is_open', False)]
+        
+        # 计算当前持仓：买入点多于已完成卖出点说明有持仓
+        current_holdings = len(buy_points) - len(closed_sells)
 
         output.append(f"\n总交易次数: {total_trades}")
         output.append(f"已完成交易: {len(closed_sells)}")
-        output.append(f"当前持仓: {len(open_positions)}")
+        output.append(f"当前持仓: {current_holdings}")
 
         # 买入点详情
         if buy_points:
@@ -408,31 +420,7 @@ class SignalAnalyzer:
                     f"      {reason}"
                 )
 
-        # 当前持仓详情（单独显示）
-        if open_positions:
-            output.append(f"\n{Fore.YELLOW}━━━ 当前持仓状态 ━━━{Style.RESET_ALL}")
-            output.append(f"{'序号':<6} {'日期':<12} {'价格':<10} {'K值':<8} {'MACD':<10} {'状态说明'}")
-            output.append("-" * 80)
-
-            for i, point in enumerate(open_positions, 1):
-                k_color = Fore.CYAN if point['k'] < 45 else ''
-                macd_color = Fore.GREEN if point['macd'] > 0 else Fore.RED
-
-                seq = f"{i:<6}"
-                date_str = f"{point['date']:<12}"
-                price_str = f"{point['price']:<10.2f}"
-                k_str = f"{point['k']:<8.1f}"
-                macd_str = f"{point['macd']:<10.4f}"
-                reason = point['reason']
-
-                output.append(
-                    f"{seq}"
-                    f"{date_str}"
-                    f"{price_str}"
-                    f"{k_color}{k_str}{Style.RESET_ALL}"
-                    f"{macd_color}{macd_str}{Style.RESET_ALL}"
-                    f"{reason}"
-                )
+        # 当前持仓详情在后面单独显示，这里不再重复
 
         # 计算交易对收益
         if buy_points and sell_points:
@@ -565,13 +553,21 @@ class SignalAnalyzer:
             output.append("-" * 100)
             output.append(f"初始资金: ¥{initial_capital:,.2f}")
             output.append(f"最终资金: {final_color}¥{final_capital:,.2f}{Style.RESET_ALL} (已完成交易)")
-            if len(open_positions) > 0:
+            if current_holdings > 0:
                 output.append(f"{Fore.YELLOW}当前持仓浮盈未计入最终资金{Style.RESET_ALL}")
             output.append(f"累计收益率: {final_color}{final_return:+.2f}%{Style.RESET_ALL}")
             output.append(f"累计手续费: {Fore.YELLOW}¥{cumulative_commission:,.2f}{Style.RESET_ALL}")
             output.append(f"毛收益率: {Fore.GREEN}{gross_return:.2f}%{Style.RESET_ALL} (扣费前)")
             output.append(f"平均单次收益: {avg_color}{avg_profit:.2f}%{Style.RESET_ALL}")
             output.append(f"盈利交易占比: {win_rate:.1f}%")
+            
+        # 检查是否有当前持仓（基于买卖点数量不匹配）
+        if len(buy_points) > len(sell_points):
+            last_buy = buy_points[-1]
+            output.append(f"\n{Fore.YELLOW}━━━ 当前持仓 ━━━{Style.RESET_ALL}")
+            output.append(f"{Fore.YELLOW}买入日期: {last_buy['date']}")
+            output.append(f"买入价格: ¥{last_buy['price']:.2f}")
+            output.append(f"持仓状态: 未平仓（数据结束，实际应继续持有）{Style.RESET_ALL}")
 
         output.append("=" * 80 + "\n")
 

@@ -35,7 +35,8 @@ class MixedStrategy:
                  market: str = 'CN-A', use_simple_divergence: bool = False,
                  adaptive_oscillation: bool = False, stock_code: str = '',
                  precomputed_indicators: bool = False,
-                 use_strategy_cache: bool = False):
+                 use_strategy_cache: bool = False,
+                 oscillation_driven: bool = False):
         """
         初始化策略
 
@@ -54,6 +55,7 @@ class MixedStrategy:
             use_simple_divergence: 是否使用简化版顶背离检测(get_peak_divergence_delayed)
             adaptive_oscillation: 是否启用自适应震荡参数选择
             stock_code: 股票代码（当adaptive_oscillation=True时使用）
+            oscillation_driven: 是否启用震荡周期驱动策略（只在震荡结束后交易一笔）
         """
         self.config = self._default_config()
         if config:
@@ -74,11 +76,14 @@ class MixedStrategy:
         self.precomputed_indicators = precomputed_indicators
         # 是否使用策略选择缓存（固定最优组合 original/gradual + high_frequency/high_quality）
         self.use_strategy_cache = use_strategy_cache
+        # 是否启用震荡周期驱动策略（只在震荡结束后交易）
+        self.oscillation_driven = oscillation_driven
 
         # 震荡期间检测缓存（避免重复检测和日志打印）
         self._oscillation_periods_cache = None
         self._oscillation_cache_key = None
         self._oscillation_log_printed = False  # 记录是否已打印过震荡检测日志
+        self._oscillation_confirmed_periods = []  # 震荡确认时间缓存（用于绘图）
 
         # 主升浪保护检测缓存
         self._main_wave_periods_cache = None
@@ -127,10 +132,16 @@ class MixedStrategy:
             'main_wave_min_pullback': -10.0, # 回撤幅度才开始保护期（%）
             # 震荡下行检测配置
             'oscillation_detection_enabled': True,   # 重新启用震荡检测
-            'oscillation_min_period': 30,           # 最短检测周期（天）- 提高要求
-            'oscillation_confirm_days': 5,          # 震荡确认天数
+            'oscillation_min_period': 30,           # 最短检测周期（天）
+            'oscillation_confirm_days': 20,          # 震荡确认天数
             'bollinger_period': 20,                 # 布林带周期
             'bollinger_std': 2.0,                   # 布林带标准差
+            'oscillation_use_timeseries': True,     # 是否使用时间序列分析法（True=改进新算法，False=旧算法）
+            'oscillation_window_size': 30,          # 震荡检测窗口大小
+            # 时间序列分析参数（新算法专用）
+            'ts_window': 20,                        # 时间序列分析窗口
+            'ts_adf_significance': 0.05,            # ADF检验显著性水平
+            'ts_acf_threshold': 0.20,               # 自相关系数阈值
         }
 
     def _calculate_commission(self, transaction_amount: float, is_buy: bool = True) -> float:
@@ -314,6 +325,288 @@ class MixedStrategy:
             if log_details:
                 logger.info(f"🛡️  主升浪保护: 在{len(protection_periods)}个交易日内禁止买入")
 
+    def _timeseries_oscillation_detection(self, price_series: pd.Series, 
+                                          window: int = 20,
+                                          adf_significance: float = 0.05,
+                                          acf_threshold: float = 0.20) -> dict:
+        """
+        基于时间序列分析的震荡检测（改进版）
+        
+        核心改进：
+        1. 软化统计检验：将p值连续化映射到分数，避免数字悬崖
+        2. 动态阈值：根据股票波动率自适应调整判断标准
+        3. 灰度区间：引入不确定区间，避免一刀切判断
+        4. 多维量化：增加方向一致性、线性趋势强度等连续指标
+        
+        Args:
+            price_series: 价格序列
+            window: 分析窗口大小（默认20天）
+            adf_significance: ADF检验显著性水平（默认0.05）
+            acf_threshold: 自相关系数阈值（默认0.20）
+            
+        Returns:
+            dict: {
+                'market_state': 'oscillation' | 'trending',
+                'confidence': float,  # 0-1之间的置信度
+                'trend_score': float,  # 趋势评分
+                'threshold': float,   # 动态阈值
+                'volatility': float,  # 波动率
+                'details': dict      # 详细信息
+            }
+        """
+        try:
+            from statsmodels.tsa.stattools import adfuller, acf
+            from statsmodels.stats.diagnostic import acorr_ljungbox
+            from scipy import stats
+        except ImportError:
+            logger.warning("statsmodels 或 scipy 未安装，时间序列分析法不可用")
+            return None
+        
+        if len(price_series) < window:
+            return None
+        
+        # 使用最近window期的数据
+        recent_data = price_series.iloc[-window:]
+        
+        # ========== 第一步：统计检验（软化版本） ==========
+        
+        # 1.1 ADF检验：检测平稳性（连续化处理）
+        try:
+            adf_result = adfuller(recent_data, autolag='AIC')
+            adf_pvalue = adf_result[1]
+            # 将p值映射到分数（0-0.7分）：p值越大越像趋势
+            adf_score = np.clip((adf_pvalue - 0.01) / 0.09, 0, 1.0) * 0.7
+        except Exception as e:
+            logger.debug(f"ADF检验失败: {e}")
+            adf_pvalue = 0.5
+            adf_score = 0.35
+        
+        # 1.2 自相关检验（连续化处理）
+        try:
+            acf_values = acf(recent_data, nlags=min(20, len(recent_data) - 1), fft=False)
+            max_acf = np.max(np.abs(acf_values[1:])) if len(acf_values) > 1 else 0
+            # 将ACF值映射到分数（0-0.4分）
+            acf_score = np.clip(max_acf / acf_threshold, 0, 1.0) * 0.4
+        except Exception as e:
+            logger.debug(f"ACF检验失败: {e}")
+            max_acf = 0
+            acf_score = 0
+        
+        # ========== 第二步：趋势评分累加 ==========
+        trend_score = adf_score + acf_score
+        
+        # 2.1 方向一致性（连续指标）
+        price_diff = recent_data.diff().dropna()
+        directional_consistency = 0
+        if len(price_diff) > 0:
+            positive_days = (price_diff > 0).sum()
+            negative_days = (price_diff < 0).sum()
+            directional_consistency = abs(positive_days - negative_days) / len(price_diff)
+            # 60%以上同向变化加分
+            if directional_consistency > 0.6:
+                trend_score += 0.4 * directional_consistency
+        
+        # 2.2 线性趋势强度（R²指标）
+        trend_strength = 0
+        try:
+            x = np.arange(len(recent_data))
+            _, _, r_value, _, _ = stats.linregress(x, recent_data.values)
+            trend_strength = abs(r_value)
+            # R²>0.7说明线性趋势明显
+            if trend_strength > 0.7:
+                trend_score += 0.5 * trend_strength
+        except:
+            pass
+        
+        # 2.3 价格单向变化幅度
+        price_change_ratio = abs(recent_data.iloc[-1] - recent_data.iloc[0]) / recent_data.iloc[0]
+        if price_change_ratio > 0.10:
+            # 变化越大分数越高，最多0.5分
+            trend_score += min(price_change_ratio * 3, 0.5)
+        
+        # ========== 第三步：计算动态阈值 ==========
+        volatility = recent_data.pct_change().std()
+        
+        # 根据波动率调整阈值
+        if volatility > 0.03:  # 高波动（日均>3%）
+            threshold = 1.5  # 更严格，避免误判
+        elif volatility > 0.02:  # 中等波动（2-3%）
+            threshold = 1.2
+        else:  # 低波动（<2%）
+            threshold = 1.0  # 更宽松
+        
+        # ========== 第四步：灰度判断 ==========
+        price_change = recent_data.iloc[-1] - recent_data.iloc[0]
+        trend_direction = 'up' if price_change > 0 else 'down'
+        
+        # 明确的趋势区间
+        if trend_score >= threshold + 0.4:
+            market_state = 'trending'
+            confidence = min(trend_score / (threshold + 0.5), 1.0)
+        
+        # 明确的震荡区间
+        elif trend_score <= threshold - 0.4:
+            market_state = 'oscillation'
+            confidence = max(0.5, 1.0 - trend_score / threshold)
+        
+        # 不确定区间：看价格突破情况
+        else:
+            recent_high = recent_data.rolling(min(10, len(recent_data))).max().iloc[-1]
+            recent_low = recent_data.rolling(min(10, len(recent_data))).min().iloc[-1]
+            current_price = recent_data.iloc[-1]
+            
+            # 接近或突破高低点倾向趋势
+            if current_price > recent_high * 0.98 or current_price < recent_low * 1.02:
+                market_state = 'trending'
+                confidence = 0.4
+            else:
+                market_state = 'oscillation'
+                confidence = 0.5
+        
+        return {
+            'market_state': market_state,
+            'trend_direction': trend_direction,
+            'confidence': confidence,
+            'trend_score': trend_score,
+            'threshold': threshold,
+            'volatility': volatility,
+            'details': {
+                'adf_pvalue': adf_pvalue,
+                'adf_score': adf_score,
+                'acf_score': acf_score,
+                'max_acf': max_acf,
+                'directional_consistency': directional_consistency,
+                'trend_strength': trend_strength,
+                'price_change_ratio': price_change_ratio
+            }
+        }
+
+    def _timeseries_detect_oscillation_periods(self, df: pd.DataFrame, known_periods: list) -> list:
+        """
+        使用时间序列分析法检测震荡期间
+        
+        Args:
+            df: 完整数据DataFrame
+            known_periods: 已知的震荡期间列表
+            
+        Returns:
+            list: 检测到的震荡期间 [(start_idx, end_idx, start_date, end_date, avg_score), ...]
+        """
+        if 'close' not in df.columns or len(df) < 50:
+            return known_periods
+        
+        periods = known_periods.copy()
+        
+        # 获取参数
+        window = self.config.get('ts_window', 20)
+        adf_significance = self.config.get('ts_adf_significance', 0.05)
+        acf_threshold = self.config.get('ts_acf_threshold', 0.20)
+        min_period = self.config.get('oscillation_min_period', 30)
+        confirm_days = max(2, self.config.get('oscillation_confirm_days', 5))
+        
+        # 逐点检测
+        n = len(df)
+        active_period = None
+        below_counter = 0
+        oscillation_threshold = 0.6  # 震荡判定的置信度阈值
+        
+        for idx in range(window, n):
+            # 使用截止到当前索引的历史数据
+            price_series = df['close'].iloc[:idx + 1]
+            
+            # 调用时间序列检测
+            result = self._timeseries_oscillation_detection(
+                price_series=price_series,
+                window=window,
+                adf_significance=adf_significance,
+                acf_threshold=acf_threshold
+            )
+            
+            if result is None:
+                continue
+            
+            # 修改判断逻辑：不仅检测震荡，还检测下跌趋势
+            # 1. 震荡状态（置信度>0.6）
+            # 2. 趋势状态但趋势向下（trend_direction=='down'）
+            is_oscillation = (result['market_state'] == 'oscillation' and 
+                            result['confidence'] >= oscillation_threshold)
+            is_downtrend = (result['market_state'] == 'trending' and 
+                          result.get('trend_direction') == 'down')
+            
+            # 任一条件满足都认为是"应该避免买入"的区间
+            should_avoid = is_oscillation or is_downtrend
+            
+            # 状态机：开始/继续/结束应避免区间（震荡或下跌）
+            # 逻辑：在idx天收盘后，用[0~idx]的数据检测
+            #      如果应避免，标记idx天在震荡区间内
+            #      清除idx天的买入信号 = 取消明天的买入计划
+            if should_avoid:
+                if active_period is None:
+                    # 开始新的震荡期间：从今天(idx)开始
+                    active_period = {
+                        'start_idx': idx,  # 从今天开始
+                        'confidences': [result['confidence']],
+                        'scores': [result['trend_score']]
+                    }
+                else:
+                    # 继续震荡期间
+                    active_period['confidences'].append(result['confidence'])
+                    active_period['scores'].append(result['trend_score'])
+                below_counter = 0
+            else:
+                # 不需要避免（可能是上涨或平稳）
+                if active_period is not None:
+                    below_counter += 1
+                    if below_counter >= confirm_days:
+                        # 震荡期间结束
+                        end_idx = idx - confirm_days
+                        if end_idx - active_period['start_idx'] >= min_period:
+                            # 满足最小期间要求，记录
+                            start_idx = active_period['start_idx']
+                            avg_confidence = np.mean(active_period['confidences'])
+                            avg_score = np.mean(active_period['scores'])
+                            
+                            if 'date' in df.columns:
+                                start_date = df.iloc[start_idx]['date']
+                                end_date = df.iloc[end_idx]['date']
+                            else:
+                                start_date = df.index[start_idx]
+                                end_date = df.index[end_idx]
+                            
+                            periods.append((start_idx, end_idx, start_date, end_date, avg_score))
+                            
+                            if hasattr(start_date, 'strftime'):
+                                date_info = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
+                            else:
+                                date_info = f"{start_date} ~ {end_date}"
+                            
+                            logger.debug(
+                                f"时间序列检测震荡期间: {date_info} "
+                                f"({end_idx - start_idx + 1}天, 平均置信度{avg_confidence:.2f}, 得分{avg_score:.1f})"
+                            )
+                        
+                        active_period = None
+                        below_counter = 0
+        
+        # 处理结尾的活跃期间
+        if active_period is not None:
+            end_idx = n - 1
+            start_idx = active_period['start_idx']
+            if end_idx - start_idx >= min_period:
+                avg_confidence = np.mean(active_period['confidences'])
+                avg_score = np.mean(active_period['scores'])
+                
+                if 'date' in df.columns:
+                    start_date = df.iloc[start_idx]['date']
+                    end_date = df.iloc[end_idx]['date']
+                else:
+                    start_date = df.index[start_idx]
+                    end_date = df.index[end_idx]
+                
+                periods.append((start_idx, end_idx, start_date, end_date, avg_score))
+        
+        return periods
+    
     def _detect_oscillation_decline_periods(self, df: pd.DataFrame) -> list:
         """
         🔍 检测震荡下行期间
@@ -372,6 +665,14 @@ class MixedStrategy:
                     continue
 
         # === 方法2: 算法检测补充 ===
+        # 检查是否使用新的时间序列分析法
+        use_timeseries = self.config.get('oscillation_use_timeseries', False)
+        
+        if use_timeseries:
+            # 使用改进的时间序列分析法
+            return self._timeseries_detect_oscillation_periods(df, known_oscillation_periods)
+        
+        # 否则使用旧的多指标融合法
         # 仅复制震荡检测所需的列，避免整表复制带来的额外开销
         if 'close' not in df.columns:
             return []
@@ -581,8 +882,11 @@ class MixedStrategy:
 
     def _apply_oscillation_decline_filter(self, df: pd.DataFrame, log_details: bool = True) -> None:
         """
-        应用震荡下行过滤
-        在检测到的震荡下行期间暂停买入信号
+        应用震荡下行过滤（逐日判断，避免前瞻性偏差）
+        
+        实现方式：
+        1. 使用逐日判断方式过滤买入信号（无前瞻性偏差）
+        2. 调用 _detect_oscillation_decline_periods() 获取震荡周期信息（仅用于展示/绘图）
 
         Args:
             df: 数据DataFrame
@@ -591,61 +895,327 @@ class MixedStrategy:
         if not self.config.get('oscillation_detection_enabled', True):
             return
 
-        # 检测震荡下行期间
-        oscillation_periods = self._detect_oscillation_decline_periods(df)
-
-        if not oscillation_periods:
+        # 添加震荡状态列（0=非震荡，1=震荡中）
+        df['oscillation_state'] = 0
+        
+        # 参数配置
+        window_size = max(20, self.config.get('oscillation_window_size', 30))
+        algorithm_score_threshold = 4.0
+        min_period = self.config.get('oscillation_min_period', 30)
+        confirm_days = max(2, self.config.get('oscillation_confirm_days', 5))
+        release_days = max(3, confirm_days)
+        
+        outer_upper = getattr(self, '_oscillation_outer_upper', 0.30)
+        inner_upper = getattr(self, '_oscillation_inner_upper', 0.20)
+        
+        n = len(df)
+        if n < window_size + confirm_days:
             return
-
-        # 第一次调用时打印详细日志，后续不打印
-        should_log = log_details and not self._oscillation_log_printed
-        if should_log:
-            self._oscillation_log_printed = True
-
-        total_signals = (df['buy_signal'] == 1).sum()
-        filtered_count = 0
-        period_ranges = []  # 收集每个期间的时间区间（用于统一打印）
-
-        for period_start_idx, period_end_idx, period_start_date, period_end_date, avg_score in oscillation_periods:
-            # 根据日期过滤（如果有日期列）
-            if 'date' in df.columns and hasattr(period_start_date, 'strftime'):
-                # 确保日期类型一致（df['date']可能是字符串）
-                if df['date'].dtype == 'object':
-                    # df['date'] 是字符串，需要转换为日期格式
-                    start_str = period_start_date.strftime('%Y-%m-%d')
-                    end_str = period_end_date.strftime('%Y-%m-%d')
-                    period_mask = (df['date'] >= start_str) & (df['date'] <= end_str)
+        
+        # 准备数据（只复制必要的列）
+        close_arr = df['close'].to_numpy()
+        width_arr = df['bb_width'].to_numpy() if 'bb_width' in df.columns else np.full(n, np.nan)
+        pos_arr = df['bb_percent'].to_numpy() if 'bb_percent' in df.columns else np.full(n, np.nan)
+        
+        ma_arrays = {}
+        for p in [5, 10, 20, 30]:
+            col = f'{p}_ma'
+            if col in df.columns:
+                ma_arrays[p] = df[col].to_numpy()
+        
+        # 第一步：完整检测所有震荡周期（不修改买入信号）
+        pending_high_scores = []
+        active_oscillation = False
+        below_counter = 0
+        oscillation_confirmed_periods = []  # 记录震荡确认时间（用于绘图和过滤）：[(confirmed_idx, end_idx, confirmed_date, end_date), ...]
+        period_start_idx = None
+        period_confirmed_idx = None  # 震荡被确认的时间点（连续confirm_days天高分后）
+        
+        for idx in range(window_size - 1, n):
+            # 关键：只使用idx之前的历史数据窗口
+            window_start = idx - window_size + 1
+            segment = close_arr[window_start:idx + 1]
+            window_len = len(segment)
+            
+            if window_len < max(window_size // 2, confirm_days):
+                continue
+            
+            # 计算当天的震荡得分
+            score = 0.0
+            
+            # 1. 布林带分析 (0-2分)
+            bb_width_current = width_arr[idx]
+            bb_position_current = pos_arr[idx]
+            if not np.isnan(bb_width_current):
+                if bb_width_current < 0.25:
+                    score += 1
+                    if bb_width_current < 0.15:
+                        score += 1
+                if not np.isnan(bb_position_current) and 0.1 <= bb_position_current <= 0.9:
+                    score += 0.5
+            
+            # 2. 均线纠缠分析 (0-2分)
+            mas = []
+            for p in [5, 10, 20, 30]:
+                arr = ma_arrays.get(p)
+                if arr is not None:
+                    mas.append(arr[idx])
+            if len(mas) >= 3 and all(not np.isnan(ma) for ma in mas):
+                ma_max = max(mas)
+                ma_min = min(mas)
+                ma_last = mas[-1]
+                if ma_last != 0:
+                    ma_range = (ma_max - ma_min) / ma_last
+                    if ma_range < 0.15:
+                        score += 1
+                        if ma_range < 0.08:
+                            score += 1
+            
+            # 3. 趋势强度分析 (0-2分) - 仅依赖回溯窗口
+            first_close = segment[0]
+            last_close = segment[-1]
+            if first_close != 0:
+                trend_strength = abs((last_close / first_close) - 1)
+                if trend_strength < 0.20:
+                    score += 1
+                    if trend_strength < 0.08:
+                        score += 1
+            
+            # 4. 价格震荡范围 (0-2分)
+            window_high = segment.max()
+            window_low = segment.min()
+            window_current = segment[-1]
+            if window_current != 0:
+                price_range_pct = (window_high - window_low) / window_current
+                if 0.05 < price_range_pct < outer_upper:
+                    score += 1
+                    if 0.10 < price_range_pct < inner_upper:
+                        score += 1
+            
+            is_high_score = score >= algorithm_score_threshold
+            
+            # 更新待确认的高分队列
+            if is_high_score:
+                pending_high_scores.append((idx, score))
+                if len(pending_high_scores) > confirm_days:
+                    pending_high_scores = pending_high_scores[-confirm_days:]
+            else:
+                pending_high_scores.clear()
+            
+            # 判断是否进入震荡状态（需要连续confirm_days天高分）
+            if not active_oscillation and len(pending_high_scores) >= confirm_days:
+                active_oscillation = True
+                period_start_idx = pending_high_scores[0][0]
+                period_confirmed_idx = idx  # 记录震荡被确认的时间点（当前时刻）
+                below_counter = 0
+                logger.debug(f"进入震荡状态: 确认时间idx={idx}, 起始idx={period_start_idx}")
+            
+            # 判断是否退出震荡状态（连续release_days天低分）
+            if active_oscillation:
+                if is_high_score:
+                    below_counter = 0
                 else:
-                    # df['date'] 是 Timestamp，直接比较
-                    period_mask = (df['date'] >= period_start_date) & (df['date'] <= period_end_date)
-                date_info = f"{period_start_date.strftime('%Y-%m-%d')} ~ {period_end_date.strftime('%Y-%m-%d')}"
+                    below_counter += 1
+                    if below_counter >= release_days:
+                        # 退出震荡状态
+                        period_end_idx = idx - release_days
+                        if period_end_idx >= period_start_idx and period_confirmed_idx is not None:
+                            # 记录震荡区间（用于日志和批量过滤）
+                            if 'date' in df.columns:
+                                start_date = df.iloc[period_start_idx]['date']
+                                end_date = df.iloc[period_end_idx]['date']
+                                confirmed_date = df.iloc[period_confirmed_idx]['date']
+                                oscillation_confirmed_periods.append((
+                                    period_confirmed_idx,
+                                    period_end_idx,
+                                    confirmed_date,
+                                    end_date
+                                ))
+                            else:
+                                oscillation_confirmed_periods.append((
+                                    period_confirmed_idx,
+                                    period_end_idx,
+                                    period_confirmed_idx,
+                                    period_end_idx
+                                ))
+                            logger.debug(f"退出震荡状态: idx {period_confirmed_idx} ~ {period_end_idx}")
+                        
+                        active_oscillation = False
+                        below_counter = 0
+                        pending_high_scores.clear()
+                        period_start_idx = None
+                        period_confirmed_idx = None
+        
+        # 处理最后仍处于震荡状态的情况
+        if active_oscillation and period_start_idx is not None and period_confirmed_idx is not None:
+            period_end_idx = n - 1
+            if 'date' in df.columns:
+                start_date = df.iloc[period_start_idx]['date']
+                end_date = df.iloc[period_end_idx]['date']
+                confirmed_date = df.iloc[period_confirmed_idx]['date']
+                oscillation_confirmed_periods.append((
+                    period_confirmed_idx,
+                    period_end_idx,
+                    confirmed_date,
+                    end_date
+                ))
             else:
-                # 根据索引过滤
-                period_mask = (df.index >= period_start_idx) & (df.index <= period_end_idx)
-                date_info = f"索引 {period_start_idx} ~ {period_end_idx}"
-
-            period_signals = df.loc[period_mask, 'buy_signal'].sum()
-
-            if period_signals > 0:
-                df.loc[period_mask, 'buy_signal'] = 0
-                filtered_count += period_signals
-                # 记录本区间的时间范围，稍后统一打印
-                if should_log:
-                    period_ranges.append(date_info)
-
-        remaining_signals = (df['buy_signal'] == 1).sum()
-        if should_log:
-            # 仅输出一条精简日志，包含所有区间列表和总体统计
-            if period_ranges:
-                # 形如：[2021-08-03 ~ 2022-04-07, 2022-07-21 ~ 2023-01-05, ...]
-                periods_str = ", ".join(period_ranges)
+                oscillation_confirmed_periods.append((
+                    period_confirmed_idx,
+                    period_end_idx,
+                    period_confirmed_idx,
+                    period_end_idx
+                ))
+        
+        # 第二步：批量标记震荡状态和过滤买入信号
+        filtered_count = 0
+        oscillation_periods_for_log = []
+        
+        for confirmed_idx, end_idx, confirmed_date, end_date in oscillation_confirmed_periods:
+            # 批量标记震荡状态（从确认日到结束日）
+            df.iloc[confirmed_idx:end_idx + 1, df.columns.get_loc('oscillation_state')] = 1
+            
+            # 批量过滤震荡期间的买入信号
+            for idx in range(confirmed_idx, end_idx + 1):
+                if df.iloc[idx]['buy_signal'] == 1:
+                    df.iloc[idx, df.columns.get_loc('buy_signal')] = 0
+                    filtered_count += 1
+            
+            # 记录日志信息
+            if 'date' in df.columns and hasattr(confirmed_date, 'strftime'):
+                date_info = f"{confirmed_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
             else:
-                periods_str = ""
-
+                date_info = f"{confirmed_date} ~ {end_date}"
+            oscillation_periods_for_log.append(date_info)
+        
+        # 日志输出
+        should_log = log_details and not self._oscillation_log_printed
+        if should_log and oscillation_periods_for_log:
+            self._oscillation_log_printed = True
+            periods_str = ", ".join(oscillation_periods_for_log)
             logger.info(
-                f"震荡下行过滤:\n"
-                f"[{periods_str}]"
+                f"震荡下行过滤（逐日判断，无前瞻性偏差）:\n"
+                f"[{periods_str}]\n"
+                f"共过滤 {filtered_count} 个买入信号"
             )
+        
+        # 保存震荡确认时间到缓存（供绘图使用）
+        self._oscillation_confirmed_periods = oscillation_confirmed_periods
+        
+        # 检测震荡周期（用于展示/绘图，不用于过滤信号）
+        # 这个函数返回的周期信息可以被 plotter.py 等模块使用
+        _ = self._detect_oscillation_decline_periods(df)
+
+    def get_oscillation_confirmed_periods(self) -> List[Tuple]:
+        """
+        返回震荡确认时间列表（逐日判断的结果，用于绘图）
+        
+        Returns:
+            list: [(confirmed_idx, end_idx, confirmed_date, end_date), ...]
+                  confirmed_idx/confirmed_date: 震荡被确认的时间点
+                  end_idx/end_date: 震荡结束的时间点
+        """
+        return self._oscillation_confirmed_periods
+
+    def _apply_oscillation_driven_trading_filter(self, df: pd.DataFrame) -> None:
+        """
+        应用震荡周期驱动的交易策略：
+        - 只在震荡周期结束后开启交易窗口
+        - 每个窗口只允许完成一笔交易（一买一卖）
+        - 完成交易后关闭窗口，等待下一个震荡周期结束
+        
+        Args:
+            df: 数据DataFrame（需要已经生成buy_signal）
+        """
+        if not self._oscillation_confirmed_periods:
+            logger.info("⚠️ 震荡驱动策略：未检测到震荡周期，禁止所有交易")
+            df['buy_signal'] = 0
+            return
+        
+        # 提取所有震荡结束时间点（交易窗口开启时刻）
+        oscillation_end_dates = []
+        for confirmed_idx, end_idx, confirmed_date, end_date in self._oscillation_confirmed_periods:
+            oscillation_end_dates.append((end_idx, end_date))
+        
+        # 按时间排序
+        oscillation_end_dates.sort(key=lambda x: x[0])
+        
+        logger.info(f"🔄 震荡驱动策略：检测到 {len(oscillation_end_dates)} 个震荡周期结束点")
+        
+        # 初始状态：所有信号都清零
+        df['buy_signal'] = 0
+        
+        # 标记交易窗口状态
+        df['trading_window'] = 0  # 0=禁止交易，1=允许交易
+        
+        # 遍历每个震荡结束点，开启交易窗口
+        total_trades = 0
+        for window_idx, (end_idx, end_date) in enumerate(oscillation_end_dates):
+            # 交易窗口从震荡结束的下一天开始
+            window_start_idx = end_idx + 1
+            
+            # 确定下一个震荡周期结束点（作为窗口的理论上限）
+            if window_idx + 1 < len(oscillation_end_dates):
+                next_end_idx = oscillation_end_dates[window_idx + 1][0]
+            else:
+                next_end_idx = len(df) - 1
+            
+            # 在这个窗口内查找第一笔完整交易
+            if window_start_idx >= len(df):
+                continue
+            
+            # 寻找买入信号（使用原始策略的买入信号）
+            buy_found = False
+            buy_idx = None
+            
+            # 重新生成这个窗口内的原始买入信号
+            for idx in range(window_start_idx, min(next_end_idx + 1, len(df))):
+                # 检查是否满足买入条件（close >= MA16）
+                if df.iloc[idx]['close'] >= df.iloc[idx][f"{self.config['short_ma']}_ma"]:
+                    buy_idx = idx
+                    buy_found = True
+                    break
+            
+            if not buy_found:
+                continue
+            
+            # 标记买入
+            df.iloc[buy_idx, df.columns.get_loc('buy_signal')] = 1
+            df.iloc[buy_idx, df.columns.get_loc('trading_window')] = 1
+            
+            # 寻找卖出信号（从买入后开始）
+            sell_found = False
+            for idx in range(buy_idx + 1, min(next_end_idx + 1, len(df))):
+                # 检查是否满足卖出条件（close < MA16 或 MACD < 0）
+                if (df.iloc[idx]['close'] < df.iloc[idx][f"{self.config['short_ma']}_ma"] or 
+                    df.iloc[idx]['macd'] < 0):
+                    # 完成一笔交易，关闭窗口
+                    df.iloc[idx, df.columns.get_loc('trading_window')] = 0
+                    sell_found = True
+                    total_trades += 1
+                    
+                    if 'date' in df.columns:
+                        buy_date = df.iloc[buy_idx]['date']
+                        sell_date = df.iloc[idx]['date']
+                        logger.info(
+                            f"  窗口{window_idx + 1}: 完成交易 "
+                            f"买入={buy_date} 卖出={sell_date}"
+                        )
+                    break
+                else:
+                    # 持续持仓
+                    df.iloc[idx, df.columns.get_loc('trading_window')] = 1
+            
+            # 如果没有找到卖出点，这笔交易将持续到窗口结束或数据末尾
+            if not sell_found:
+                if 'date' in df.columns:
+                    buy_date = df.iloc[buy_idx]['date']
+                    logger.info(
+                        f"  窗口{window_idx + 1}: 买入后未卖出 "
+                        f"买入={buy_date} (持仓至窗口结束)"
+                    )
+        
+        logger.info(f"✅ 震荡驱动策略：完成 {total_trades} 笔交易")
 
     def get_detected_oscillation_periods(self, df: Optional[pd.DataFrame] = None) -> List[Tuple]:
         """
@@ -1188,6 +1758,11 @@ class MixedStrategy:
 
         # 1. 应用震荡下行检测过滤
         self._apply_oscillation_decline_filter(df)
+        
+        # 1.5. 如果启用震荡驱动策略，使用完全不同的交易逻辑
+        if self.oscillation_driven:
+            self._apply_oscillation_driven_trading_filter(df)
+            return  # 震荡驱动策略不需要后续的常规过滤逻辑
 
         if order == 'high_frequency':
             # NEW顺序：卖出策略 → 底部背离 → 顶部背离阻止 → RSI
@@ -1454,12 +2029,14 @@ class MixedStrategy:
         2. RSI金叉要求更低位（<40而非<45，极低位）
         3. 增加交易间隔限制（至少间隔5天，避免频繁交易）
         4. 更严格的确认条件（MACD、价格反弹、涨幅）
+        5. 尊重震荡区间：震荡期间不添加RSI买入信号
 
         规则1: RSI极度超卖 (<18) + 接近均线 + 不在跌停 = 抄底买入
         规则2: RSI短期金叉 (6日突破14日) + RSI < 40 + (MACD>0.1 或 涨幅>3%) = 反转买入
 
         Args:
             df: 数据框（会直接修改）
+            protection_periods: 主升浪保护期列表（可选）
         """
         rsi_oversold = self.config.get('rsi_oversold', 18)
         rsi_threshold = self.config.get('rsi_threshold', 40)
@@ -1489,6 +2066,9 @@ class MixedStrategy:
         # 将保护期转换为集合以加速 membership 判断
         protection_set = set(protection_periods) if protection_periods else None
 
+        # 获取震荡状态数组（如果存在）
+        oscillation_arr = df['oscillation_state'].to_numpy() if 'oscillation_state' in df.columns else None
+
         last_rsi_buy_idx = -999  # 上次RSI买入的位置
 
         for i in range(1, n):
@@ -1508,6 +2088,11 @@ class MixedStrategy:
 
             # 规则1：RSI极度超卖（< 18），接近均线，且不在跌停
             if rsi < rsi_oversold and close >= ma_16 * rsi_ma_ratio and p_change > -8:
+                # 检查是否在震荡区间
+                if oscillation_arr is not None and oscillation_arr[i] == 1:
+                    logger.debug(f"RSI超卖买入被震荡过滤阻止: {current_date}, RSI={rsi:.1f}")
+                    continue
+                
                 if protection_set is None or current_date not in protection_set:
                     buy_signal_arr[i] = 1
                     rsi_type_arr[i] = 'RSI超卖'
@@ -1515,7 +2100,6 @@ class MixedStrategy:
                     logger.debug(f"RSI超卖买入: {current_date}, RSI={rsi:.1f}")
                 else:
                     logger.debug(f"RSI超卖买入被主升浪保护期阻止: {current_date}")
-                logger.debug(f"RSI超卖买入: {current_date}, RSI={rsi:.1f}")
 
             # 规则2：RSI短期金叉，且在极低位，并满足更严格的确认条件
             elif rsi_6 > rsi and prev_rsi_6 <= prev_rsi and rsi < rsi_threshold:
@@ -1541,6 +2125,11 @@ class MixedStrategy:
                         confirmed = True
 
                 if confirmed:
+                    # 检查是否在震荡区间
+                    if oscillation_arr is not None and oscillation_arr[i] == 1:
+                        logger.debug(f"RSI金叉买入被震荡过滤阻止: {current_date}, RSI_6={rsi_6:.1f}")
+                        continue
+                    
                     if protection_set is None or current_date not in protection_set:
                         buy_signal_arr[i] = 1
                         rsi_type_arr[i] = 'RSI金叉'
@@ -1548,7 +2137,6 @@ class MixedStrategy:
                         logger.debug(f"RSI金叉买入: {current_date}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
                     else:
                         logger.debug(f"RSI金叉买入被主升浪保护期阻止: {current_date}")
-                    logger.debug(f"RSI金叉买入: {current_date}, RSI_6={rsi_6:.1f}, RSI={rsi:.1f}")
 
         # 回写修改后的列
         df['buy_signal'] = buy_signal_arr

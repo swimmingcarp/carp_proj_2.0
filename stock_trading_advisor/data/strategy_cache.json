@@ -21,7 +21,7 @@
   },
   "000002": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "000034": {
     "sell_strategy": "original",
@@ -85,15 +85,15 @@
   },
   "002460": {
     "sell_strategy": "gradual",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "002466": {
-    "sell_strategy": "gradual",
+    "sell_strategy": "original",
     "order": "high_quality"
   },
   "002467": {
     "sell_strategy": "gradual",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "002555": {
     "sell_strategy": "gradual",
@@ -101,7 +101,7 @@
   },
   "002594": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "002624": {
     "sell_strategy": "original",
@@ -113,11 +113,11 @@
   },
   "002851": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "002916": {
     "sell_strategy": "gradual",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "002920": {
     "sell_strategy": "original",
@@ -153,7 +153,7 @@
   },
   "02533": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "03690": {
     "sell_strategy": "gradual",
@@ -184,8 +184,8 @@
     "order": "high_frequency"
   },
   "300316": {
-    "sell_strategy": "gradual",
-    "order": "high_frequency"
+    "sell_strategy": "original",
+    "order": "high_quality"
   },
   "300450": {
     "sell_strategy": "original",
@@ -229,11 +229,11 @@
   },
   "600015": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "600016": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "600036": {
     "sell_strategy": "original",
@@ -257,7 +257,7 @@
   },
   "600884": {
     "sell_strategy": "original",
-    "order": "high_frequency"
+    "order": "high_quality"
   },
   "600885": {
     "sell_strategy": "original",
@@ -265,7 +265,7 @@
   },
   "600900": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "601012": {
     "sell_strategy": "original",
@@ -289,7 +289,7 @@
   },
   "601328": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "601398": {
     "sell_strategy": "original",
@@ -301,7 +301,7 @@
   },
   "601939": {
     "sell_strategy": "original",
-    "order": "high_quality"
+    "order": "high_frequency"
   },
   "603063": {
     "sell_strategy": "original",

@@ -19,11 +19,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
-# 添加 src 目录到路径
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+BASE_DIR = Path(__file__).resolve().parent
+SRC_DIR = BASE_DIR / 'src'
+PROJECT_ROOT = BASE_DIR.parent
+
+# 确保 src 和项目根目录均在 sys.path 中
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_fetcher import DataFetcher
 from src.strategy import MixedStrategy
+from src.new_strategy import RSITrendStrategy
 from src.oscillation_strategy import OscillationStrategy
 from src.analyzer import SignalAnalyzer
 from src.plotter import plot_kline_with_signals
@@ -113,7 +121,7 @@ def normalize_stock_code(code: str) -> str:
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                   use_fixed_strategy: bool = False, df_override: Optional[pd.DataFrame] = None,
                   quiet: bool = False, chart_generation: bool = False,
-                  oscillation_driven: bool = False) -> Optional[Dict]:
+                  oscillation_driven: bool = False, use_new_strategy: bool = False) -> Optional[Dict]:
     """
     分析单只股票
 
@@ -122,6 +130,7 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         config: 配置字典
         show_backtest: 是否显示回测结果
         chart_generation: 是否生成K线图
+        use_new_strategy: 是否启用RSI趋势策略 (RSITrendStrategy)
     """
     logger = logging.getLogger(__name__)
     log_func = logger.info if not quiet else logger.debug
@@ -176,6 +185,13 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         strategy = OscillationStrategy(
             config=strategy_config,
             market=market
+        )
+    elif use_new_strategy:
+        echo("使用RSI趋势策略 (RSITrendStrategy)")
+        strategy = RSITrendStrategy(
+            config=strategy_config,
+            market=market,
+            stock_code=stock_code
         )
     else:
         strategy = MixedStrategy(
@@ -560,7 +576,8 @@ def format_stock_report(stock_code: str, current_price: float, signal_data: Opti
 
 def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = False,
                                    stock_codes: Optional[List[str]] = None,
-                                   oscillation_driven: bool = False):
+                                   oscillation_driven: bool = False,
+                                   use_new_strategy: bool = False):
     """
     对缓存中的所有股票执行回测并生成汇总报告
     """
@@ -639,7 +656,8 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
             use_fixed_strategy=use_fixed_strategy,
             df_override=df_raw,
             quiet=True,
-            oscillation_driven=oscillation_driven
+            oscillation_driven=oscillation_driven,
+            use_new_strategy=use_new_strategy
         )
 
         if not analysis:
@@ -836,6 +854,8 @@ def main():
     parser.add_argument('--oscillation-driven', action='store_true',
                         help='使用震荡间隔交易策略（只在震荡区间外的正常行情中交易一笔）')
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
+    parser.add_argument('--new-strategy', action='store_true',
+                        help='启用RSI趋势策略 (RSITrendStrategy)，替代默认混合策略')
     parser.add_argument('--report', action='store_true',
                         help='离线模式：对缓存中所有或指定股票（-s/-b）进行回测并输出报告')
     parser.add_argument('--chart-generation', action='store_true',
@@ -864,7 +884,8 @@ def main():
             config,
             use_fixed_strategy=args.fixed_strategy,
             stock_codes=report_codes if report_codes else None,
-            oscillation_driven=args.oscillation_driven
+            oscillation_driven=args.oscillation_driven,
+            use_new_strategy=args.new_strategy
         )
     elif args.stock:
         analyze_stock(
@@ -875,7 +896,8 @@ def main():
             quiet=False,
             df_override=None,
             chart_generation=args.chart_generation if hasattr(args, 'chart_generation') else False,
-            oscillation_driven=args.oscillation_driven if hasattr(args, 'oscillation_driven') else False
+            oscillation_driven=args.oscillation_driven if hasattr(args, 'oscillation_driven') else False,
+            use_new_strategy=args.new_strategy if hasattr(args, 'new_strategy') else False
         )
     elif args.batch:
         batch_analyze(args.batch, config)

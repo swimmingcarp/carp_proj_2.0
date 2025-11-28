@@ -13,8 +13,13 @@ from pathlib import Path
 from typing import Dict, List
 import glob
 
-# 添加 src 目录到路径
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+BASE_DIR = Path(__file__).resolve().parent
+SRC_DIR = BASE_DIR / 'src'
+PROJECT_ROOT = BASE_DIR.parent
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.strategy import MixedStrategy
 from src.indicators import calculate_all_indicators

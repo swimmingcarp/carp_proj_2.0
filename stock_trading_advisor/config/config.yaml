@@ -32,6 +32,19 @@ strategy:
   rsi_min_strength: true     # 是否要求最小强度（MACD>0.1 或 涨幅>3%）
   rsi_min_gap: 5             # RSI买入最小间隔天数（5天冷静期，避免频繁交易）
 
+  # RSI趋势策略参数（优化：使用激进配置获得最佳收益）
+  trend_rsi_fast_period: 9     # 快RSI周期（优化：25→9，提升收益42%）
+  trend_rsi_slow_period: 21    # 慢RSI周期（优化：100→21，最佳性价比）
+  trend_atr_period: 20         # ATR周期
+  trend_atr_multiplier: 3.0    # ATR倍数
+  trend_relaxed_entry: true    # 启用放宽入场条件
+  trend_relaxed_min_gap: 1.0   # 放宽入场最小差值
+  trend_use_zigzag_filter: false  # 禁用之字形过滤（减少误判）
+  trend_stop_loss_pct: 7.0     # 止损百分比
+  trend_exit_use_ma_filter: true  # 启用MA过滤退出
+  trend_lr_filter_enabled: true   # 启用线性回归过滤
+  trend_mtf_enabled: true      # 启用多时间框架确认
+
 # 回测配置
 backtest:
   initial_capital: 10000  # 初始资金（元）

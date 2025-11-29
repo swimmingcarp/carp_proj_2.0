@@ -66,6 +66,20 @@ class RSITrendStrategy(MixedStrategy):
             'trend_mtf_enabled': True,
             'trend_mtf_ratio': 5,  # 5倍周期作为更高时间框架
             'trend_mtf_min_periods': 50,  # 更高时间框架最少需要的数据点
+            'trend_mtf_adaptive_mode': True,  # 自适应模式：上升用早期，下跌用严格
+            'trend_mtf_early_entry': True,  # 启用早期入场模式
+            'trend_mtf_early_threshold': 0.7,  # 早期入场RSI阈值(0-1)
+            'trend_mtf_strict_mode': False,  # 严格模式：必须高时间框架完全确认
+            'trend_mtf_trend_lookback': 20,  # 判断趋势状态的回溯周期
+            # W底形态识别配置
+            'trend_w_bottom_enabled': False,  # 启用W底形态识别
+            # 主升浪持仓优化配置（优化后的参数）
+            'trend_main_wave_enabled': True,  # 启用主升浪检测
+            'trend_main_wave_min_gain': 10.0,  # 主升浪最小涨幅阈值(%) - 降低
+            'trend_main_wave_min_days': 3,  # 主升浪最小持续天数 - 降低
+            'trend_main_wave_rsi_threshold': 80,  # 主升浪期间RSI阈值 - 提高
+            'trend_main_wave_volume_factor': 1.2,  # 主升浪成交量放大倍数 - 降低
+            'trend_main_wave_hold_extension': True,  # 主升浪延长持仓
         }
         if config:
             defaults.update(config)
@@ -247,7 +261,26 @@ class RSITrendStrategy(MixedStrategy):
 
         stop_loss_pct = max(0.0, float(self.config.get('trend_stop_loss_pct', 7.0)))
 
-        entry_condition = (
+        # W底形态识别
+        w_bottom_enabled = bool(self.config.get('trend_w_bottom_enabled', False))
+        if w_bottom_enabled:
+            w_bottom_signals = self._detect_w_bottom_pattern(data)
+            data['w_bottom_signal'] = w_bottom_signals
+        else:
+            w_bottom_signals = pd.Series(False, index=data.index)
+            data['w_bottom_signal'] = w_bottom_signals
+
+        # 主升浪检测（需要在所有技术指标计算完成后进行）
+        main_wave_enabled = bool(self.config.get('trend_main_wave_enabled', True))
+        if main_wave_enabled:
+            main_wave_signals = self._detect_main_wave_signals(data)
+            data['main_wave_signal'] = main_wave_signals
+        else:
+            main_wave_signals = pd.Series(False, index=data.index)
+            data['main_wave_signal'] = main_wave_signals
+
+        # 入场条件：原有条件 或 W底突破信号
+        standard_entry = (
             (direction == 1) &
             data['is_heikin_bullish'] &
             zigzag_condition &
@@ -255,11 +288,43 @@ class RSITrendStrategy(MixedStrategy):
             lr_filter_condition &
             htf_bias  # 添加多时间框架确认
         )
-        exit_condition = (direction != 1)
+        
+        # W底入场条件（更宽松的确认）
+        w_bottom_entry = w_bottom_signals
+        if w_bottom_enabled:
+            w_bottom_entry = w_bottom_signals & htf_bias  # 仍需多时间框架确认
+        
+        entry_condition = standard_entry | w_bottom_entry
+        
+        # 基础退出条件
+        basic_exit_condition = (direction != 1)
         if exit_ma_filter_enabled:
-            exit_condition = exit_condition & (
+            basic_exit_condition = basic_exit_condition & (
                 ~strong_ma_uptrend | data['exit_ma_filter_break']
             )
+        
+        # 主升浪优化：在主升浪期间抑制卖出
+        if main_wave_enabled:
+            # 在主升浪期间，只有更强的退出信号才能卖出
+            main_wave_exit_suppression = main_wave_signals
+            
+            # 特殊情况：MA多头排列时的主升浪延长保护
+            ma_bullish_protection = pd.Series(False, index=data.index)
+            if 'exit_ema_fast' in data.columns and 'exit_ma_slow' in data.columns:
+                # MA多头排列 + 价格未大幅下跌时延长保护
+                ma_bullish = data['exit_ema_fast'] > data['exit_ma_slow']
+                price_not_crashed = data['close'] > data['exit_ma_slow'] * 0.90  # 价格在MA45的90%以上
+                recent_main_wave = main_wave_signals.rolling(window=5, min_periods=1).sum() > 0  # 最近5天有主升浪
+                
+                ma_bullish_protection = ma_bullish & price_not_crashed & recent_main_wave
+            
+            # 综合的主升浪保护：当前主升浪 + MA多头排列保护
+            comprehensive_protection = main_wave_exit_suppression | ma_bullish_protection
+            
+            # 主升浪期间的退出条件更严格
+            exit_condition = basic_exit_condition & (~comprehensive_protection)
+        else:
+            exit_condition = basic_exit_condition
 
         position, entry_flags, exit_flags, stop_loss_flags = self._build_position_series(
             entry_condition,
@@ -307,7 +372,42 @@ class RSITrendStrategy(MixedStrategy):
             if latest.get('trend_direction') == 1:
                 reasons.append("ATR趋势仍为多头")
             if latest.get('mtf_bias', True):
-                reasons.append("高时间框架趋势一致")
+                # 根据多时间框架模式显示不同信息
+                mtf_info_str = latest.get('mtf_info', '{}')
+                try:
+                    import ast
+                    mtf_info = ast.literal_eval(mtf_info_str) if isinstance(mtf_info_str, str) else {}
+                except:
+                    mtf_info = {}
+                    
+                adaptive_mode = mtf_info.get('adaptive_mode', False)
+                if adaptive_mode:
+                    latest_trend = mtf_info.get('latest_market_trend', 'neutral')
+                    latest_mode = mtf_info.get('latest_mode_used', 'standard')
+                    mode_dist = mtf_info.get('mode_distribution', {})
+                    
+                    if latest_trend == 'bullish' and latest_mode == 'early':
+                        reasons.append("当前上升阶段，高时间框架早期确认")
+                    elif latest_trend == 'bearish' and latest_mode == 'strict':
+                        reasons.append("当前下跌阶段，高时间框架严格确认")
+                    elif latest_trend == 'neutral':
+                        reasons.append("当前震荡阶段，高时间框架标准确认")
+                    else:
+                        reasons.append(f"高时间框架{latest_mode}确认")
+                        
+                    # 如果有模式分布信息，可以加入更多细节
+                    if len(mode_dist) > 1:
+                        dominant_mode = max(mode_dist.items(), key=lambda x: x[1])[0]
+                        if dominant_mode != latest_mode:
+                            reasons.append(f"(历史以{dominant_mode}模式为主)")
+                else:
+                    mode = mtf_info.get('latest_mode_used', mtf_info.get('mode_used', 'standard'))
+                    if mode == 'early':
+                        reasons.append("高时间框架早期确认")
+                    elif mode == 'strict':
+                        reasons.append("高时间框架严格确认")
+                    else:
+                        reasons.append("高时间框架趋势一致")
             else:
                 reasons.append("高时间框架趋势不一致")
             strength = 2 + int(latest.get('is_heikin_bullish', False)) + int(latest.get('trend_direction', 0) == 1) + int(latest.get('mtf_bias', True))
@@ -343,7 +443,31 @@ class RSITrendStrategy(MixedStrategy):
             if lr_filter_enabled and not bool(latest.get('lr_filter_condition', True)):
                 reasons.append("线性回归趋势/偏离未满足，暂缓抄底")
             if not latest.get('mtf_bias', True):
-                reasons.append("高时间框架趋势偏弱，暂缓买入")
+                # 根据模式给出不同建议
+                mtf_info_str = latest.get('mtf_info', '{}')
+                try:
+                    import ast
+                    mtf_info = ast.literal_eval(mtf_info_str) if isinstance(mtf_info_str, str) else {}
+                except:
+                    mtf_info = {}
+                    
+                adaptive_mode = mtf_info.get('adaptive_mode', False)
+                if adaptive_mode:
+                    latest_trend = mtf_info.get('latest_market_trend', 'neutral')
+                    if latest_trend == 'bearish':
+                        reasons.append("当前下跌阶段，高时间框架严格过滤")
+                    elif latest_trend == 'bullish':
+                        reasons.append("当前上升阶段但高时间框架未确认")
+                    else:
+                        reasons.append("当前震荡阶段，早期入场模式待确认")
+                else:
+                    mode = mtf_info.get('latest_mode_used', mtf_info.get('mode_used', 'standard'))
+                    if mode == 'strict':
+                        reasons.append("高时间框架趋势偏弱，严格模式暂缓买入")
+                    elif mode == 'early_neutral':
+                        reasons.append("震荡市早期入场模式待确认")
+                    else:
+                        reasons.append("高时间框架趋势偏弱，暂缓买入")
             strength = 1
 
         return {
@@ -440,6 +564,92 @@ class RSITrendStrategy(MixedStrategy):
     # ------------------------------------------------------------------ #
     # Helper methods                                                     #
     # ------------------------------------------------------------------ #
+    
+    def _detect_main_wave_signals(self, data):
+        """
+        主升浪检测逻辑 - 返回整个Series
+        
+        参数:
+        - data: 包含技术指标的数据DataFrame
+        
+        返回: pd.Series 主升浪信号序列
+        """
+        # 获取配置参数
+        min_gain = self.config.get('trend_main_wave_min_gain', 10.0) / 100  # 降低到10%
+        min_days = self.config.get('trend_main_wave_min_days', 3)  # 降低到3天
+        rsi_threshold = self.config.get('trend_main_wave_rsi_threshold', 80)  # 提高到80
+        volume_factor = self.config.get('trend_main_wave_volume_factor', 1.2)  # 降低到1.2倍
+        
+        # 初始化结果Series
+        main_wave_signals = pd.Series(False, index=data.index)
+        
+        # 对每个时间点进行主升浪检测
+        for i in range(len(data)):
+            if i < min_days:
+                continue
+                
+            # 条件1: 价格涨幅超过最小收益要求
+            start_index = max(0, i - min_days)
+            price_start = data['close'].iloc[start_index]
+            price_current = data['close'].iloc[i]
+            gain = (price_current - price_start) / price_start
+            gain_condition = gain >= min_gain
+            
+            # 条件2: RSI仍有上涨空间（未过度超买）
+            rsi_condition = data['fast_rsi'].iloc[i] <= rsi_threshold
+            
+            # 条件3: 成交量放大（相对于过去20天平均）
+            if i >= 20:
+                avg_volume = data['volume'].iloc[i-20:i].mean()
+                current_volume = data['volume'].iloc[i]
+                volume_condition = current_volume >= avg_volume * volume_factor
+            else:
+                volume_condition = True  # 历史数据不足时不限制
+                
+            # 条件4: 趋势方向向上（ATR趋势确认）
+            trend_condition = data['trend_direction'].iloc[i] == 1
+            
+            # 条件5: MA多头排列（新增关键条件）
+            ma_bullish_condition = False
+            if 'exit_ema_fast' in data.columns and 'exit_ma_slow' in data.columns:
+                ema16 = data['exit_ema_fast'].iloc[i]
+                ma45 = data['exit_ma_slow'].iloc[i]
+                ma_bullish_condition = ema16 > ma45
+            
+            # 条件6: 价格在关键均线之上（新增）
+            price_above_ma_condition = True
+            if 'exit_ma_slow' in data.columns:
+                ma45 = data['exit_ma_slow'].iloc[i]
+                price_above_ma_condition = data['close'].iloc[i] > ma45 * 0.95  # 允许5%的偏差
+            
+            # 条件7: 价格连续性上涨（放宽条件）
+            if i >= 2:  # 降低到2天
+                # 检查最近2天是否有1天以上上涨（放宽条件）
+                recent_changes = data['close'].iloc[i-1:i+1].pct_change().dropna()
+                up_days = (recent_changes > 0).sum()
+                continuity_condition = up_days >= 1  # 放宽到至少1天上涨
+            else:
+                continuity_condition = True
+                
+            # 主升浪判断：核心条件必须满足，其他条件可以放宽
+            # 核心条件：MA多头排列 + ATR趋势向上
+            core_conditions = ma_bullish_condition and trend_condition
+            
+            # 辅助条件：至少满足3个
+            auxiliary_conditions = [
+                gain_condition,
+                rsi_condition, 
+                volume_condition,
+                price_above_ma_condition,
+                continuity_condition
+            ]
+            auxiliary_score = sum(auxiliary_conditions)
+            
+            # 主升浪信号：核心条件满足 + 至少3个辅助条件满足
+            main_wave_signals.iloc[i] = core_conditions and auxiliary_score >= 3
+        
+        return main_wave_signals
+        
     def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         data = df.copy()
         if 'date' in data.columns:
@@ -455,6 +665,97 @@ class RSITrendStrategy(MixedStrategy):
                 "请确认数据源包含 open/high/low/close。"
             )
         return data
+
+    def _detect_market_trend_bias(self, data: pd.DataFrame, lookback: int = 20) -> str:
+        """
+        检测当前市场的趋势偏向
+        
+        Args:
+            data: 价格数据
+            lookback: 回溯周期
+            
+        Returns:
+            'bullish': 上升趋势
+            'bearish': 下跌趋势  
+            'neutral': 震荡趋势
+        """
+        if len(data) < lookback:
+            return 'neutral'
+            
+        recent_data = data.tail(lookback)
+        
+        # 1. 价格趋势分析
+        start_price = recent_data['close'].iloc[0]
+        end_price = recent_data['close'].iloc[-1] 
+        price_change_pct = (end_price - start_price) / start_price
+        
+        # 2. 移动平均趋势
+        ma_short = recent_data['close'].rolling(5).mean().iloc[-1]
+        ma_long = recent_data['close'].rolling(lookback).mean().iloc[-1]
+        ma_trend = 1 if ma_short > ma_long else -1
+        
+        # 3. 波动性分析
+        volatility = recent_data['close'].pct_change().std()
+        high_volatility = volatility > 0.03  # 3%以上日波动率认为高波动
+        
+        # 4. 价格相对位置
+        recent_high = recent_data['high'].max()
+        recent_low = recent_data['low'].min()
+        current_position = (end_price - recent_low) / (recent_high - recent_low) if recent_high > recent_low else 0.5
+        
+        # 综合判断
+        bullish_score = 0
+        bearish_score = 0
+        
+        # 价格变化权重 (30%)
+        if price_change_pct > 0.05:  # 上涨5%以上
+            bullish_score += 3
+        elif price_change_pct < -0.05:  # 下跌5%以上
+            bearish_score += 3
+        elif price_change_pct > 0:
+            bullish_score += 1
+        else:
+            bearish_score += 1
+            
+        # 均线趋势权重 (25%)
+        if ma_trend > 0:
+            bullish_score += 2.5
+        else:
+            bearish_score += 2.5
+            
+        # 相对位置权重 (25%)
+        if current_position > 0.7:  # 接近高点
+            bullish_score += 2.5
+        elif current_position < 0.3:  # 接近低点
+            bearish_score += 2.5
+        else:
+            # 中性位置，根据最近趋势
+            if price_change_pct > 0:
+                bullish_score += 1
+            else:
+                bearish_score += 1
+                
+        # 波动性调整 (20%)
+        if high_volatility:
+            # 高波动时更谨慎
+            bearish_score += 2
+        else:
+            # 低波动时可以稍微积极
+            bullish_score += 2
+            
+        # 判断结果
+        total_score = bullish_score + bearish_score
+        if total_score == 0:
+            return 'neutral'
+            
+        bullish_ratio = bullish_score / total_score
+        
+        if bullish_ratio >= 0.6:
+            return 'bullish'
+        elif bullish_ratio <= 0.4:
+            return 'bearish'
+        else:
+            return 'neutral'
 
     def _resample_to_higher_timeframe(self, data: pd.DataFrame, ratio: int) -> pd.DataFrame:
         """
@@ -514,6 +815,11 @@ class RSITrendStrategy(MixedStrategy):
             
         mtf_ratio = max(2, int(self.config.get('trend_mtf_ratio', 5)))
         min_periods = max(20, int(self.config.get('trend_mtf_min_periods', 50)))
+        adaptive_mode = bool(self.config.get('trend_mtf_adaptive_mode', True))
+        trend_lookback = max(10, int(self.config.get('trend_mtf_trend_lookback', 20)))
+        early_entry = bool(self.config.get('trend_mtf_early_entry', True))
+        early_threshold = float(self.config.get('trend_mtf_early_threshold', 0.7))
+        strict_mode = bool(self.config.get('trend_mtf_strict_mode', False))
         
         # 检查数据是否足够
         if len(data) < min_periods:
@@ -543,38 +849,172 @@ class RSITrendStrategy(MixedStrategy):
                 htf_data, htf_atr_values, atr_period, use_close
             )
             
-            # 判断高时间框架趋势偏向
-            htf_rsi_bullish = htf_fast_rsi > htf_slow_rsi
-            htf_trend_bullish = htf_direction == 1
+            # 动态模式选择：为每个高时间框架点计算趋势状态
+            htf_bullish_bias = pd.Series(False, index=htf_data.index)
+            mode_sequence = []  # 记录每个时期使用的模式
             
-            # 综合判断：RSI和ATR趋势都看多才确认
-            htf_bullish_bias = htf_rsi_bullish & htf_trend_bullish
+            for i in range(len(htf_data)):
+                # 对每个高时间框架点，检测其局部趋势状态
+                start_idx = max(0, i - trend_lookback + 1)
+                end_idx = i + 1
+                local_htf_data = htf_data.iloc[start_idx:end_idx]
+                
+                if len(local_htf_data) < 5:  # 数据不够，使用标准模式
+                    local_trend = 'neutral'
+                    effective_mode = 'standard'
+                    effective_threshold = early_threshold
+                else:
+                    # 检测局部趋势
+                    local_trend = self._detect_market_trend_bias(local_htf_data, min(trend_lookback, len(local_htf_data)))
+                    
+                    if adaptive_mode:
+                        # 根据局部趋势动态调整模式
+                        if local_trend == 'bullish':
+                            effective_early_entry = True
+                            effective_strict_mode = False
+                            effective_threshold = early_threshold * 0.8  # 更积极
+                            effective_mode = 'early'
+                        elif local_trend == 'bearish':
+                            effective_early_entry = False  
+                            effective_strict_mode = True
+                            effective_threshold = early_threshold * 1.2  # 更保守
+                            effective_mode = 'strict'
+                        else:  # neutral - 震荡市也使用早期入场模式
+                            effective_early_entry = True
+                            effective_strict_mode = False
+                            effective_threshold = early_threshold * 0.9  # 适度积极
+                            effective_mode = 'early_neutral'
+                    else:
+                        # 非自适应模式，使用配置值
+                        effective_early_entry = early_entry
+                        effective_strict_mode = strict_mode
+                        effective_threshold = early_threshold
+                        effective_mode = 'standard'
+                
+                mode_sequence.append({
+                    'index': i,
+                    'trend': local_trend,
+                    'mode': effective_mode,
+                    'threshold': effective_threshold
+                })
+                
+                # 根据当前模式计算信号
+                current_fast_rsi = htf_fast_rsi.iloc[i] if i < len(htf_fast_rsi) else np.nan
+                current_slow_rsi = htf_slow_rsi.iloc[i] if i < len(htf_slow_rsi) else np.nan
+                current_direction = htf_direction.iloc[i] if i < len(htf_direction) else np.nan
+                
+                if pd.isna(current_fast_rsi) or pd.isna(current_slow_rsi) or pd.isna(current_direction):
+                    bias_value = True  # 数据不足时不限制
+                elif effective_mode == 'strict':
+                    # 严格模式：RSI和ATR趋势都必须看多
+                    rsi_bullish = current_fast_rsi > current_slow_rsi
+                    trend_bullish = current_direction == 1
+                    bias_value = rsi_bullish and trend_bullish
+                elif effective_mode == 'early':
+                    # 早期入场模式：更灵活的确认条件
+                    rsi_diff = current_fast_rsi - current_slow_rsi
+                    rsi_strength = rsi_diff / 100.0  # 标准化到[-1, 1]
+                    
+                    # 条件1：RSI趋势向上且强度足够
+                    rsi_early_bullish = (rsi_strength >= effective_threshold - 1.0) and (rsi_diff > 0)
+                    
+                    # 条件2：ATR趋势确认或即将转多
+                    current_long_stop = htf_long_stop.iloc[i] if i < len(htf_long_stop) else np.nan
+                    current_close = htf_data['close'].iloc[i]
+                    trend_supportive = (current_direction == 1) or (
+                        (current_direction == -1) and 
+                        (not pd.isna(current_long_stop)) and
+                        (current_close > current_long_stop * 0.98)  # 接近突破多头止损线
+                    )
+                    
+                    # 条件3：价格动量确认（短期上涨）
+                    momentum_start = max(0, i - 2)
+                    if momentum_start < i:
+                        momentum_change = htf_data['close'].iloc[i] / htf_data['close'].iloc[momentum_start] - 1
+                        momentum_ok = momentum_change > -0.02  # 3期内跌幅不超过2%
+                    else:
+                        momentum_ok = True
+                    
+                    # 综合判断：至少满足两个条件
+                    condition_count = sum([rsi_early_bullish, trend_supportive, momentum_ok])
+                    bias_value = condition_count >= 2
+                elif effective_mode == 'early_neutral':
+                    # 震荡市早期入场模式：介于early和standard之间
+                    rsi_diff = current_fast_rsi - current_slow_rsi
+                    rsi_strength = rsi_diff / 100.0  # 标准化到[-1, 1]
+                    
+                    # 条件1：RSI趋势向上且强度适中
+                    rsi_early_bullish = (rsi_strength >= effective_threshold - 1.0) and (rsi_diff > 0)
+                    
+                    # 条件2：ATR趋势确认或中性
+                    current_long_stop = htf_long_stop.iloc[i] if i < len(htf_long_stop) else np.nan
+                    current_close = htf_data['close'].iloc[i]
+                    trend_supportive = (current_direction == 1) or (
+                        (current_direction == -1) and 
+                        (not pd.isna(current_long_stop)) and
+                        (current_close > current_long_stop * 0.99)  # 震荡市中稍微宽松的突破条件
+                    ) or (current_direction == 0)  # 震荡市中性方向也可接受
+                    
+                    # 条件3：价格动量确认（更宽松的动量要求）
+                    momentum_start = max(0, i - 3)  # 看更长周期的动量
+                    if momentum_start < i:
+                        momentum_change = htf_data['close'].iloc[i] / htf_data['close'].iloc[momentum_start] - 1
+                        momentum_ok = momentum_change > -0.03  # 震荡市中允许更大的短期回调
+                    else:
+                        momentum_ok = True
+                    
+                    # 震荡市更宽松：只要满足一个主要条件即可
+                    bias_value = rsi_early_bullish and (trend_supportive or momentum_ok)
+                else:
+                    # 标准模式：平衡的确认条件
+                    rsi_bullish = current_fast_rsi > current_slow_rsi
+                    trend_bullish = current_direction == 1
+                    bias_value = rsi_bullish and trend_bullish
+                
+                htf_bullish_bias.iloc[i] = bias_value
             
             # 将高时间框架信号映射回原始时间框架
             expanded_bias = []
-            htf_idx = 0
+            expanded_mode_info = []
             
             for i in range(len(data)):
                 current_htf_idx = i // mtf_ratio
                 if current_htf_idx < len(htf_bullish_bias):
                     bias_value = htf_bullish_bias.iloc[current_htf_idx]
+                    mode_info = mode_sequence[current_htf_idx] if current_htf_idx < len(mode_sequence) else {'mode': 'standard', 'trend': 'neutral'}
                     if pd.isna(bias_value):
                         bias_value = True  # 默认不限制
                 else:
                     bias_value = True  # 超出范围时不限制
+                    mode_info = {'mode': 'standard', 'trend': 'neutral'}
                     
                 expanded_bias.append(bias_value)
+                expanded_mode_info.append(mode_info)
                 
             htf_bias_series = pd.Series(expanded_bias, index=data.index)
             
+            # 统计模式使用情况
+            mode_stats = {}
+            for mode_info in mode_sequence:
+                mode = mode_info['mode']
+                mode_stats[mode] = mode_stats.get(mode, 0) + 1
+                
             # 返回诊断信息
+            latest_htf_idx = min(len(htf_bullish_bias) - 1, (len(data) - 1) // mtf_ratio)
+            latest_mode_info = mode_sequence[latest_htf_idx] if latest_htf_idx >= 0 and latest_htf_idx < len(mode_sequence) else {'mode': 'standard', 'trend': 'neutral'}
+            
             htf_info = {
                 'status': 'success',
+                'adaptive_mode': adaptive_mode,
+                'latest_market_trend': latest_mode_info.get('trend', 'neutral'),
+                'latest_mode_used': latest_mode_info.get('mode', 'standard'),
+                'mode_distribution': mode_stats,
                 'htf_periods': len(htf_data),
-                'latest_htf_rsi_fast': htf_fast_rsi.iloc[-1] if len(htf_fast_rsi) > 0 else None,
-                'latest_htf_rsi_slow': htf_slow_rsi.iloc[-1] if len(htf_slow_rsi) > 0 else None,
-                'latest_htf_trend_direction': htf_direction.iloc[-1] if len(htf_direction) > 0 else None,
-                'latest_htf_bias': htf_bullish_bias.iloc[-1] if len(htf_bullish_bias) > 0 else None,
+                'latest_htf_rsi_fast': htf_fast_rsi.iloc[latest_htf_idx] if latest_htf_idx >= 0 and len(htf_fast_rsi) > latest_htf_idx else None,
+                'latest_htf_rsi_slow': htf_slow_rsi.iloc[latest_htf_idx] if latest_htf_idx >= 0 and len(htf_slow_rsi) > latest_htf_idx else None,
+                'latest_htf_trend_direction': htf_direction.iloc[latest_htf_idx] if latest_htf_idx >= 0 and len(htf_direction) > latest_htf_idx else None,
+                'latest_htf_bias': htf_bullish_bias.iloc[latest_htf_idx] if latest_htf_idx >= 0 and len(htf_bullish_bias) > latest_htf_idx else None,
+                'bias_ratio': htf_bias_series.sum() / len(htf_bias_series) if len(htf_bias_series) > 0 else 0,
             }
             
             return htf_bias_series, htf_info

@@ -1,0 +1,43 @@
+# 自适应多时间框架配置
+strategy:
+  # RSI 趋势策略基础参数
+  trend_rsi_fast_period: 25
+  trend_rsi_slow_period: 100
+  trend_atr_period: 20
+  trend_atr_multiplier: 3.0
+  trend_stop_loss_pct: 7.0
+  
+  # 自适应多时间框架参数
+  trend_mtf_enabled: true
+  trend_mtf_adaptive_mode: true         # 启用自适应模式
+  trend_mtf_ratio: 4                    # 4倍周期，平衡响应速度
+  trend_mtf_trend_lookback: 20          # 判断趋势的回溯周期
+  trend_mtf_min_periods: 40             # 适中的最小周期要求
+  
+  # 早期入场参数（上升趋势时使用）
+  trend_mtf_early_entry: true           
+  trend_mtf_early_threshold: 0.6        # 相对宽松的阈值
+  
+  # 严格模式参数（下跌趋势时使用）
+  trend_mtf_strict_mode: false          # 由自适应模式控制
+  
+  # 其他过滤器优化
+  trend_relaxed_entry: true
+  trend_relaxed_min_gap: 0.8            # 适中的放宽入场间隔
+  trend_lr_filter_enabled: true
+  trend_lr_max_slope_pct: 1.8           # 稍微放宽线性回归限制
+
+# 回测配置
+backtest:
+  initial_capital: 10000
+  start_date: '2020-01-01'
+
+# 数据源配置  
+data_source:
+  provider: 'akshare'
+  cache_enabled: true
+
+# 日志配置
+logging:
+  level: 'INFO'
+  console: true

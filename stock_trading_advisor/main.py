@@ -895,9 +895,9 @@ def main():
             use_fixed_strategy=args.fixed_strategy,
             quiet=False,
             df_override=None,
-            chart_generation=args.chart_generation if hasattr(args, 'chart_generation') else False,
-            oscillation_driven=args.oscillation_driven if hasattr(args, 'oscillation_driven') else False,
-            use_new_strategy=args.new_strategy if hasattr(args, 'new_strategy') else False
+            chart_generation=args.chart_generation,
+            oscillation_driven=args.oscillation_driven,
+            use_new_strategy=args.new_strategy
         )
     elif args.batch:
         batch_analyze(args.batch, config)

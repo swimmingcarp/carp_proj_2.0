@@ -62,6 +62,10 @@ class RSITrendStrategy(MixedStrategy):
             'trend_lr_filter_enabled': True,
             'trend_lr_lookback': 30,
             'trend_lr_max_slope_pct': 1.5,
+            # 多时间框架配置
+            'trend_mtf_enabled': True,
+            'trend_mtf_ratio': 5,  # 5倍周期作为更高时间框架
+            'trend_mtf_min_periods': 50,  # 更高时间框架最少需要的数据点
         }
         if config:
             defaults.update(config)
@@ -236,6 +240,11 @@ class RSITrendStrategy(MixedStrategy):
             data['zigzag_prev_low'] = np.nan
         data['zigzag_condition'] = zigzag_condition
 
+        # 多时间框架趋势确认
+        htf_bias, htf_info = self._compute_higher_timeframe_bias(data)
+        data['mtf_bias'] = htf_bias
+        data['mtf_info'] = str(htf_info)  # 存储诊断信息
+
         stop_loss_pct = max(0.0, float(self.config.get('trend_stop_loss_pct', 7.0)))
 
         entry_condition = (
@@ -243,7 +252,8 @@ class RSITrendStrategy(MixedStrategy):
             data['is_heikin_bullish'] &
             zigzag_condition &
             (data['golden_cross'] | rsi_relaxed_condition) &
-            lr_filter_condition
+            lr_filter_condition &
+            htf_bias  # 添加多时间框架确认
         )
         exit_condition = (direction != 1)
         if exit_ma_filter_enabled:
@@ -296,7 +306,11 @@ class RSITrendStrategy(MixedStrategy):
                 reasons.append("Heikin Ashi 阳线确认")
             if latest.get('trend_direction') == 1:
                 reasons.append("ATR趋势仍为多头")
-            strength = 2 + int(latest.get('is_heikin_bullish', False)) + int(latest.get('trend_direction', 0) == 1)
+            if latest.get('mtf_bias', True):
+                reasons.append("高时间框架趋势一致")
+            else:
+                reasons.append("高时间框架趋势不一致")
+            strength = 2 + int(latest.get('is_heikin_bullish', False)) + int(latest.get('trend_direction', 0) == 1) + int(latest.get('mtf_bias', True))
 
         elif latest.get('exit_signal', 0) == 1 or (
             previous.get('buy_signal', 0) == 1 and latest.get('buy_signal', 0) == 0
@@ -328,6 +342,8 @@ class RSITrendStrategy(MixedStrategy):
             reasons.append("等待下一次RSI金叉")
             if lr_filter_enabled and not bool(latest.get('lr_filter_condition', True)):
                 reasons.append("线性回归趋势/偏离未满足，暂缓抄底")
+            if not latest.get('mtf_bias', True):
+                reasons.append("高时间框架趋势偏弱，暂缓买入")
             strength = 1
 
         return {
@@ -340,6 +356,7 @@ class RSITrendStrategy(MixedStrategy):
             'slow_rsi': latest.get('slow_rsi'),
             'trend_direction': latest.get('trend_direction'),
             'ha_bullish': latest.get('is_heikin_bullish'),
+            'mtf_bias': latest.get('mtf_bias', True),  # 多时间框架偏向
             # 兼容 signal analyzer 的字段
             'k': latest.get('fast_rsi', 0),
             'd': latest.get('slow_rsi', 0),
@@ -438,6 +455,133 @@ class RSITrendStrategy(MixedStrategy):
                 "请确认数据源包含 open/high/low/close。"
             )
         return data
+
+    def _resample_to_higher_timeframe(self, data: pd.DataFrame, ratio: int) -> pd.DataFrame:
+        """
+        将数据重采样到更高时间框架
+        
+        Args:
+            data: 原始数据框
+            ratio: 时间框架比率（如5表示5倍周期）
+            
+        Returns:
+            重采样后的数据框
+        """
+        if len(data) < ratio:
+            return pd.DataFrame()  # 数据不足，返回空DataFrame
+            
+        # 每 ratio 个数据点合并为一个
+        htf_data = []
+        
+        for i in range(0, len(data), ratio):
+            end_idx = min(i + ratio, len(data))
+            chunk = data.iloc[i:end_idx]
+            
+            if len(chunk) == 0:
+                continue
+                
+            # 合并OHLC数据
+            htf_row = {
+                'open': chunk['open'].iloc[0],
+                'high': chunk['high'].max(),
+                'low': chunk['low'].min(),
+                'close': chunk['close'].iloc[-1],
+            }
+            
+            # 如果有日期列，使用最后一个日期
+            if 'date' in data.columns:
+                htf_row['date'] = chunk['date'].iloc[-1]
+                
+            # 如果有成交量，使用总和
+            if 'volume' in data.columns:
+                htf_row['volume'] = chunk['volume'].sum()
+                
+            htf_data.append(htf_row)
+            
+        return pd.DataFrame(htf_data).reset_index(drop=True)
+
+    def _compute_higher_timeframe_bias(self, data: pd.DataFrame) -> Tuple[pd.Series, Dict]:
+        """
+        计算更高时间框架的趋势偏向
+        
+        Returns:
+            (htf_bias, htf_info) - 高时间框架偏向序列和相关信息
+        """
+        mtf_enabled = bool(self.config.get('trend_mtf_enabled', True))
+        if not mtf_enabled:
+            # 如果禁用多时间框架，返回全部为True的序列
+            return pd.Series(True, index=data.index), {}
+            
+        mtf_ratio = max(2, int(self.config.get('trend_mtf_ratio', 5)))
+        min_periods = max(20, int(self.config.get('trend_mtf_min_periods', 50)))
+        
+        # 检查数据是否足够
+        if len(data) < min_periods:
+            logger.warning(f"数据量不足({len(data)})，无法进行多时间框架分析，需要至少{min_periods}条记录")
+            return pd.Series(True, index=data.index), {'status': 'insufficient_data'}
+            
+        # 重采样到更高时间框架
+        try:
+            htf_data = self._resample_to_higher_timeframe(data, mtf_ratio)
+            if len(htf_data) < 20:  # 高时间框架数据也要有足够的点
+                return pd.Series(True, index=data.index), {'status': 'htf_insufficient_data'}
+                
+            # 计算高时间框架指标
+            fast_period = int(self.config.get('trend_rsi_fast_period', 25))
+            slow_period = int(self.config.get('trend_rsi_slow_period', 100))
+            atr_period = int(self.config.get('trend_atr_period', 20))
+            atr_multiplier = float(self.config.get('trend_atr_multiplier', 3.0))
+            use_close = bool(self.config.get('trend_use_close_for_extrema', True))
+            
+            # 计算高时间框架RSI
+            htf_fast_rsi = rsi_indicator(htf_data['close'], period=fast_period)
+            htf_slow_rsi = rsi_indicator(htf_data['close'], period=slow_period)
+            
+            # 计算高时间框架ATR趋势
+            htf_atr_values = atr_indicator(htf_data, period=atr_period) * atr_multiplier
+            htf_long_stop, htf_short_stop, htf_direction = self._compute_trend_levels(
+                htf_data, htf_atr_values, atr_period, use_close
+            )
+            
+            # 判断高时间框架趋势偏向
+            htf_rsi_bullish = htf_fast_rsi > htf_slow_rsi
+            htf_trend_bullish = htf_direction == 1
+            
+            # 综合判断：RSI和ATR趋势都看多才确认
+            htf_bullish_bias = htf_rsi_bullish & htf_trend_bullish
+            
+            # 将高时间框架信号映射回原始时间框架
+            expanded_bias = []
+            htf_idx = 0
+            
+            for i in range(len(data)):
+                current_htf_idx = i // mtf_ratio
+                if current_htf_idx < len(htf_bullish_bias):
+                    bias_value = htf_bullish_bias.iloc[current_htf_idx]
+                    if pd.isna(bias_value):
+                        bias_value = True  # 默认不限制
+                else:
+                    bias_value = True  # 超出范围时不限制
+                    
+                expanded_bias.append(bias_value)
+                
+            htf_bias_series = pd.Series(expanded_bias, index=data.index)
+            
+            # 返回诊断信息
+            htf_info = {
+                'status': 'success',
+                'htf_periods': len(htf_data),
+                'latest_htf_rsi_fast': htf_fast_rsi.iloc[-1] if len(htf_fast_rsi) > 0 else None,
+                'latest_htf_rsi_slow': htf_slow_rsi.iloc[-1] if len(htf_slow_rsi) > 0 else None,
+                'latest_htf_trend_direction': htf_direction.iloc[-1] if len(htf_direction) > 0 else None,
+                'latest_htf_bias': htf_bullish_bias.iloc[-1] if len(htf_bullish_bias) > 0 else None,
+            }
+            
+            return htf_bias_series, htf_info
+            
+        except Exception as e:
+            logger.warning(f"多时间框架计算失败: {e}")
+            return pd.Series(True, index=data.index), {'status': 'calculation_error', 'error': str(e)}
 
     def _compute_trend_levels(self, data: pd.DataFrame, atr_values: pd.Series,
                               period: int, use_close: bool) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -587,6 +731,8 @@ class RSITrendStrategy(MixedStrategy):
                     parts.append("Heikin Ashi 阳线")
                 if row.get('trend_direction') == 1:
                     parts.append("ATR趋势多头")
+                if row.get('mtf_bias', True):
+                    parts.append("高时间框架一致")
                 reasons[idx] = ' + '.join(parts)
         return pd.Series(reasons, index=data.index)
 

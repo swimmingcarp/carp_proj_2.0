@@ -23,10 +23,11 @@ try:
         ma_indicator,
         ema_indicator,
         rsi_indicator,
+        macd_indicator,
     )
     from .strategy import MixedStrategy
 except ImportError:  # pragma: no cover - fallback for standalone usage
-    from indicators import atr_indicator, rsi_indicator, ma_indicator, ema_indicator
+    from indicators import atr_indicator, rsi_indicator, ma_indicator, ema_indicator, macd_indicator
     from strategy import MixedStrategy
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,8 @@ class RSITrendStrategy(MixedStrategy):
             'trend_use_close_for_extrema': True,
             'trend_relaxed_entry': True,
             'trend_relaxed_min_gap': 1.0,
-            'trend_use_zigzag_filter': False,
-            'trend_zigzag_tolerance_pct': 1.5,
-            'trend_stop_loss_pct': 7.0,
+
+            'trend_stop_loss_pct': 7.0,  # ATR趋势判断止损（恢复原版）
             'trend_exit_use_ma_filter': True,
             'trend_exit_fast_ema_period': 16,
             'trend_exit_slow_ma_period': 45,
@@ -71,8 +71,7 @@ class RSITrendStrategy(MixedStrategy):
             'trend_mtf_early_threshold': 0.7,  # 早期入场RSI阈值(0-1)
             'trend_mtf_strict_mode': False,  # 严格模式：必须高时间框架完全确认
             'trend_mtf_trend_lookback': 20,  # 判断趋势状态的回溯周期
-            # W底形态识别配置
-            'trend_w_bottom_enabled': False,  # 启用W底形态识别
+
             # 主升浪持仓优化配置（优化后的参数）
             'trend_main_wave_enabled': True,  # 启用主升浪检测
             'trend_main_wave_min_gain': 10.0,  # 主升浪最小涨幅阈值(%) - 降低
@@ -80,6 +79,16 @@ class RSITrendStrategy(MixedStrategy):
             'trend_main_wave_rsi_threshold': 80,  # 主升浪期间RSI阈值 - 提高
             'trend_main_wave_volume_factor': 1.2,  # 主升浪成交量放大倍数 - 降低
             'trend_main_wave_hold_extension': True,  # 主升浪延长持仓
+            
+            # 底背离策略配置（买入信号）
+            'trend_bullish_divergence_enabled': True,  # 启用底背离检测
+            'trend_divergence_lookback': 30,  # 底背离检测回溯周期
+            'trend_divergence_min_consecutive': 2,  # 连续底背离最小次数
+            'trend_divergence_min_hold_days': 10,  # 底背离买入后的最短持有天数
+            'trend_divergence_profit_target': 15.0,  # 底背离买入的止盈目标(%)
+            'trend_divergence_ignore_rsi_exit': False,  # 底背离买入是否忽略RSI退出信号
+            'trend_divergence_use_rsi_trend': False,  # 底背离买入使用RSI趋势判断（恢复原版，关闭优化）
+            'trend_divergence_rsi_decline_threshold': -5.0,  # RSI相对下降阈值（负数表示下降）
         }
         if config:
             defaults.update(config)
@@ -128,6 +137,12 @@ class RSITrendStrategy(MixedStrategy):
 
         data['fast_rsi'] = rsi_indicator(data['close'], period=fast_period)
         data['slow_rsi'] = rsi_indicator(data['close'], period=slow_period)
+
+        # 计算MACD指标（用于底背离检测）
+        macd_diff, macd_dea, macd_hist = macd_indicator(data['close'])
+        data['macd_diff'] = macd_diff
+        data['macd_dea'] = macd_dea
+        data['macd_hist'] = macd_hist
 
         atr_values = atr_indicator(data, period=atr_period) * atr_multiplier
         data['atr_trailing'] = atr_values
@@ -237,22 +252,7 @@ class RSITrendStrategy(MixedStrategy):
             data['exit_strong_ma_trend'] = pd.Series(False, index=data.index)
             data['exit_ma_filter_active'] = pd.Series(False, index=data.index)
 
-        zigzag_enabled = bool(self.config.get('trend_use_zigzag_filter', True))
-        zigzag_tolerance = float(self.config.get('trend_zigzag_tolerance_pct', 0.0))
-        if zigzag_enabled:
-            last_low, prev_low = self._compute_zigzag_lows(data)
-            data['zigzag_last_low'] = last_low
-            data['zigzag_prev_low'] = prev_low
-            zigzag_condition = ~(
-                last_low.notna() &
-                prev_low.notna() &
-                (last_low < prev_low * (1 + zigzag_tolerance / 100.0))
-            )
-        else:
-            zigzag_condition = pd.Series(True, index=data.index)
-            data['zigzag_last_low'] = np.nan
-            data['zigzag_prev_low'] = np.nan
-        data['zigzag_condition'] = zigzag_condition
+
 
         # 多时间框架趋势确认
         htf_bias, htf_info = self._compute_higher_timeframe_bias(data)
@@ -261,14 +261,16 @@ class RSITrendStrategy(MixedStrategy):
 
         stop_loss_pct = max(0.0, float(self.config.get('trend_stop_loss_pct', 7.0)))
 
-        # W底形态识别
-        w_bottom_enabled = bool(self.config.get('trend_w_bottom_enabled', False))
-        if w_bottom_enabled:
-            w_bottom_signals = self._detect_w_bottom_pattern(data)
-            data['w_bottom_signal'] = w_bottom_signals
+
+
+        # 底背离检测（买入信号）
+        bullish_divergence_enabled = bool(self.config.get('trend_bullish_divergence_enabled', True))
+        if bullish_divergence_enabled:
+            bullish_divergence_signals = self._detect_bullish_divergence(data)
+            data['bullish_divergence_signal'] = bullish_divergence_signals
         else:
-            w_bottom_signals = pd.Series(False, index=data.index)
-            data['w_bottom_signal'] = w_bottom_signals
+            bullish_divergence_signals = pd.Series(False, index=data.index)
+            data['bullish_divergence_signal'] = bullish_divergence_signals
 
         # 主升浪检测（需要在所有技术指标计算完成后进行）
         main_wave_enabled = bool(self.config.get('trend_main_wave_enabled', True))
@@ -279,22 +281,25 @@ class RSITrendStrategy(MixedStrategy):
             main_wave_signals = pd.Series(False, index=data.index)
             data['main_wave_signal'] = main_wave_signals
 
-        # 入场条件：原有条件 或 W底突破信号
+        # 入场条件：原有条件 或 底背离信号
         standard_entry = (
             (direction == 1) &
             data['is_heikin_bullish'] &
-            zigzag_condition &
             (data['golden_cross'] | rsi_relaxed_condition) &
             lr_filter_condition &
             htf_bias  # 添加多时间框架确认
         )
         
-        # W底入场条件（更宽松的确认）
-        w_bottom_entry = w_bottom_signals
-        if w_bottom_enabled:
-            w_bottom_entry = w_bottom_signals & htf_bias  # 仍需多时间框架确认
+        # 底背离入场条件（独立生效，不需要其他确认）
+        divergence_entry = pd.Series(False, index=data.index)
+        if bullish_divergence_enabled:
+            # 底背离信号独立生效，与其他指标相互独立
+            divergence_entry = bullish_divergence_signals
         
-        entry_condition = standard_entry | w_bottom_entry
+        entry_condition = standard_entry | divergence_entry
+        
+        # 底背离买入保护：标记底背离买入，用于后续退出逻辑
+        data['divergence_entry'] = divergence_entry
         
         # 基础退出条件
         basic_exit_condition = (direction != 1)
@@ -326,17 +331,21 @@ class RSITrendStrategy(MixedStrategy):
         else:
             exit_condition = basic_exit_condition
 
-        position, entry_flags, exit_flags, stop_loss_flags = self._build_position_series(
+        # 底背离买入需要特殊的退出处理
+        position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags = self._build_position_series_with_divergence(
             entry_condition,
             exit_condition,
+            divergence_entry,
             data['close'],
-            stop_loss_pct
+            stop_loss_pct,
+            data  # 传入完整数据用于MA计算
         )
 
         data['buy_signal'] = position
         data['entry_signal'] = entry_flags
         data['exit_signal'] = exit_flags
         data['stop_loss_exit'] = stop_loss_flags
+        data['profit_target_exit'] = profit_target_flags  # 添加止盈标记
         data['stop_loss_pct'] = stop_loss_pct if stop_loss_pct > 0 else np.nan
         data['entry_reason'] = self._build_entry_reasons(data, entry_flags)
         data['exit_reason'] = self._build_exit_reasons(data, exit_flags)
@@ -361,56 +370,63 @@ class RSITrendStrategy(MixedStrategy):
 
         if latest.get('entry_signal', 0) == 1:
             signal = 'BUY'
-            if latest.get('golden_cross'):
-                reasons.append("RSI快线金叉慢线")
-            elif latest.get('rsi_relaxed_condition'):
-                reasons.append("RSI保持在慢线之上（放宽入场）")
+            
+            # 检查是否为底背离入场
+            if latest.get('bullish_divergence_signal', False):
+                reasons.append("检测到连续底背离信号（独立生效）")
+                strength = 4  # 底背离信号强度较高
+            # 标准RSI入场
             else:
-                reasons.append("RSI多头信号")
-            if latest.get('is_heikin_bullish'):
-                reasons.append("Heikin Ashi 阳线确认")
-            if latest.get('trend_direction') == 1:
-                reasons.append("ATR趋势仍为多头")
-            if latest.get('mtf_bias', True):
-                # 根据多时间框架模式显示不同信息
-                mtf_info_str = latest.get('mtf_info', '{}')
-                try:
-                    import ast
-                    mtf_info = ast.literal_eval(mtf_info_str) if isinstance(mtf_info_str, str) else {}
-                except:
-                    mtf_info = {}
-                    
-                adaptive_mode = mtf_info.get('adaptive_mode', False)
-                if adaptive_mode:
-                    latest_trend = mtf_info.get('latest_market_trend', 'neutral')
-                    latest_mode = mtf_info.get('latest_mode_used', 'standard')
-                    mode_dist = mtf_info.get('mode_distribution', {})
-                    
-                    if latest_trend == 'bullish' and latest_mode == 'early':
-                        reasons.append("当前上升阶段，高时间框架早期确认")
-                    elif latest_trend == 'bearish' and latest_mode == 'strict':
-                        reasons.append("当前下跌阶段，高时间框架严格确认")
-                    elif latest_trend == 'neutral':
-                        reasons.append("当前震荡阶段，高时间框架标准确认")
-                    else:
-                        reasons.append(f"高时间框架{latest_mode}确认")
-                        
-                    # 如果有模式分布信息，可以加入更多细节
-                    if len(mode_dist) > 1:
-                        dominant_mode = max(mode_dist.items(), key=lambda x: x[1])[0]
-                        if dominant_mode != latest_mode:
-                            reasons.append(f"(历史以{dominant_mode}模式为主)")
+                if latest.get('golden_cross'):
+                    reasons.append("RSI快线金叉慢线")
+                elif latest.get('rsi_relaxed_condition'):
+                    reasons.append("RSI保持在慢线之上（放宽入场）")
                 else:
-                    mode = mtf_info.get('latest_mode_used', mtf_info.get('mode_used', 'standard'))
-                    if mode == 'early':
-                        reasons.append("高时间框架早期确认")
-                    elif mode == 'strict':
-                        reasons.append("高时间框架严格确认")
+                    reasons.append("RSI多头信号")
+                if latest.get('is_heikin_bullish'):
+                    reasons.append("Heikin Ashi 阳线确认")
+                if latest.get('trend_direction') == 1:
+                    reasons.append("ATR趋势仍为多头")
+                if latest.get('mtf_bias', True):
+                    # 根据多时间框架模式显示不同信息
+                    mtf_info_str = latest.get('mtf_info', '{}')
+                    try:
+                        import ast
+                        mtf_info = ast.literal_eval(mtf_info_str) if isinstance(mtf_info_str, str) else {}
+                    except:
+                        mtf_info = {}
+                        
+                    adaptive_mode = mtf_info.get('adaptive_mode', False)
+                    if adaptive_mode:
+                        latest_trend = mtf_info.get('latest_market_trend', 'neutral')
+                        latest_mode = mtf_info.get('latest_mode_used', 'standard')
+                        mode_dist = mtf_info.get('mode_distribution', {})
+                        
+                        if latest_trend == 'bullish' and latest_mode == 'early':
+                            reasons.append("当前上升阶段，高时间框架早期确认")
+                        elif latest_trend == 'bearish' and latest_mode == 'strict':
+                            reasons.append("当前下跌阶段，高时间框架严格确认")
+                        elif latest_trend == 'neutral':
+                            reasons.append("当前震荡阶段，高时间框架标准确认")
+                        else:
+                            reasons.append(f"高时间框架{latest_mode}确认")
+                            
+                        # 如果有模式分布信息，可以加入更多细节
+                        if len(mode_dist) > 1:
+                            dominant_mode = max(mode_dist.items(), key=lambda x: x[1])[0]
+                            if dominant_mode != latest_mode:
+                                reasons.append(f"(历史以{dominant_mode}模式为主)")
                     else:
-                        reasons.append("高时间框架趋势一致")
-            else:
-                reasons.append("高时间框架趋势不一致")
-            strength = 2 + int(latest.get('is_heikin_bullish', False)) + int(latest.get('trend_direction', 0) == 1) + int(latest.get('mtf_bias', True))
+                        mode = mtf_info.get('latest_mode_used', mtf_info.get('mode_used', 'standard'))
+                        if mode == 'early':
+                            reasons.append("高时间框架早期确认")
+                        elif mode == 'strict':
+                            reasons.append("高时间框架严格确认")
+                        else:
+                            reasons.append("高时间框架趋势一致")
+                else:
+                    reasons.append("高时间框架趋势不一致")
+                strength = 2 + int(latest.get('is_heikin_bullish', False)) + int(latest.get('trend_direction', 0) == 1) + int(latest.get('mtf_bias', True))
 
         elif latest.get('exit_signal', 0) == 1 or (
             previous.get('buy_signal', 0) == 1 and latest.get('buy_signal', 0) == 0
@@ -481,11 +497,12 @@ class RSITrendStrategy(MixedStrategy):
             'trend_direction': latest.get('trend_direction'),
             'ha_bullish': latest.get('is_heikin_bullish'),
             'mtf_bias': latest.get('mtf_bias', True),  # 多时间框架偏向
+            'bullish_divergence': latest.get('bullish_divergence_signal', False),  # 底背离信号
             # 兼容 signal analyzer 的字段
             'k': latest.get('fast_rsi', 0),
             'd': latest.get('slow_rsi', 0),
-            'macd': 0.0,
-            'diff': 0.0,
+            'macd': latest.get('macd_hist', 0.0),
+            'diff': latest.get('macd_diff', 0.0),
             'ema_16': latest.get('exit_ema_fast', np.nan),
             'ma_16': latest.get('exit_ma_confirm', np.nan),
             'ma_45': latest.get('exit_ma_slow', np.nan),
@@ -564,6 +581,98 @@ class RSITrendStrategy(MixedStrategy):
     # ------------------------------------------------------------------ #
     # Helper methods                                                     #
     # ------------------------------------------------------------------ #
+    
+    def _detect_bullish_divergence(self, data: pd.DataFrame) -> pd.Series:
+        """
+        检测底背离信号（完全避免未来函数）
+        
+        判断底背离方案（真正无未来函数版本）:
+        1. 低点定义：当前是过去30日的最低价（不需要确认后一天是否更高）
+        2. 判断底背离：当前低点价格 < 前一低点价格，但当前MACD diff > 前一低点MACD diff
+        3. 必须找到连续2个底背离
+        4. 当天收盘后立即发出信号（不延迟）
+        
+        例如：08-06是30日最低点，当天收盘后立即判断是否底背离并发出信号
+        
+        Returns: pd.Series 底背离信号序列
+        """
+        divergence_enabled = bool(self.config.get('trend_bullish_divergence_enabled', True))
+        if not divergence_enabled:
+            return pd.Series(False, index=data.index)
+            
+        lookback = int(self.config.get('trend_divergence_lookback', 30))
+        min_consecutive = int(self.config.get('trend_divergence_min_consecutive', 2))
+        
+        # 初始化结果
+        divergence_signals = pd.Series(False, index=data.index)
+        
+        if len(data) < lookback + 10:
+            return divergence_signals
+            
+        close = data['close'].values
+        macd_diff = data['macd_diff'].values if 'macd_diff' in data.columns else None
+        
+        if macd_diff is None:
+            logger.warning("底背离检测需要MACD diff指标")
+            return divergence_signals
+            
+        # 步骤1: 找到所有低点（真正无未来函数：低点=过去N日最低价）
+        # 可以遍历到最后一天，不需要未来数据
+        lows_indices = []
+        for i in range(lookback, len(close)):  # 从lookback开始，确保有足够历史数据
+            # 检查是否为过去lookback天的最低价
+            start_idx = i - lookback
+            if close[i] == np.min(close[start_idx:i+1]):
+                # 额外确认：不能是平台（避免连续多天最低价）
+                # 只在首次触及最低价时记录
+                if i == start_idx or close[i] < close[i-1]:
+                    lows_indices.append(i)
+        
+        if len(lows_indices) < min_consecutive:
+            return divergence_signals
+            
+        # 步骤2: 对每个低点检查是否形成底背离
+        divergence_lows = []  # 存储形成底背离的低点索引
+        
+        for i in range(1, len(lows_indices)):
+            curr_idx = lows_indices[i]
+            prev_idx = lows_indices[i-1]
+            
+            # 当前低点的收盘价比前一个低点低
+            price_lower = close[curr_idx] < close[prev_idx]
+            
+            # 当前低点的MACD diff比前一个低点高（背离）
+            macd_higher = macd_diff[curr_idx] > macd_diff[prev_idx]
+            
+            if price_lower and macd_higher:
+                divergence_lows.append(curr_idx)
+        
+        # 步骤3: 检查连续底背离
+        if len(divergence_lows) < min_consecutive:
+            return divergence_signals
+            
+        # 寻找连续的底背离点（不做假背离检测，避免未来函数）
+        consecutive_count = 1
+        for i in range(1, len(divergence_lows)):
+            # 检查在lows_indices中的位置是否连续
+            curr_pos = lows_indices.index(divergence_lows[i])
+            prev_pos = lows_indices.index(divergence_lows[i-1])
+            
+            if curr_pos == prev_pos + 1:
+                consecutive_count += 1
+                
+                # 如果达到连续要求，当天立即发出信号（不延迟）
+                if consecutive_count >= min_consecutive:
+                    signal_idx = divergence_lows[i]
+                    # 当天立即发出买入信号
+                    divergence_signals.iloc[signal_idx] = True
+                    # 信号持续2天，便于触发买入
+                    for j in range(signal_idx, min(signal_idx + 2, len(divergence_signals))):
+                        divergence_signals.iloc[j] = True
+            else:
+                consecutive_count = 1
+        
+        return divergence_signals
     
     def _detect_main_wave_signals(self, data):
         """
@@ -759,7 +868,7 @@ class RSITrendStrategy(MixedStrategy):
 
     def _resample_to_higher_timeframe(self, data: pd.DataFrame, ratio: int) -> pd.DataFrame:
         """
-        将数据重采样到更高时间框架
+        将数据重采样到更高时间框架（避免未来函数）
         
         Args:
             data: 原始数据框
@@ -771,14 +880,18 @@ class RSITrendStrategy(MixedStrategy):
         if len(data) < ratio:
             return pd.DataFrame()  # 数据不足，返回空DataFrame
             
-        # 每 ratio 个数据点合并为一个
+        # 每 ratio 个数据点合并为一个（只使用完整周期，避免未来函数）
         htf_data = []
         
-        for i in range(0, len(data), ratio):
-            end_idx = min(i + ratio, len(data))
-            chunk = data.iloc[i:end_idx]
+        # 关键修改：只遍历完整的周期，最后不完整的周期不使用
+        num_complete_periods = len(data) // ratio
+        
+        for i in range(num_complete_periods):
+            start_idx = i * ratio
+            end_idx = start_idx + ratio
+            chunk = data.iloc[start_idx:end_idx]
             
-            if len(chunk) == 0:
+            if len(chunk) < ratio:  # 确保是完整周期
                 continue
                 
             # 合并OHLC数据
@@ -1154,6 +1267,175 @@ class RSITrendStrategy(MixedStrategy):
 
         return position, entry_flags, exit_flags, stop_flags
 
+    def _build_position_series_with_divergence(self, entry_condition: pd.Series,
+                                              exit_condition: pd.Series,
+                                              divergence_entry: pd.Series,
+                                              price_series: pd.Series,
+                                              stop_loss_pct: float,
+                                              data: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """根据条件构造持仓序列（支持底背离买入保护）
+        
+        Args:
+            entry_condition: 综合入场条件（标准入场 | 底背离）
+            exit_condition: 退出条件
+            divergence_entry: 底背离入场信号
+            price_series: 价格序列
+            stop_loss_pct: 止损百分比
+            data: 完整数据
+            
+        Returns:
+            position, entry_flags, exit_flags, stop_flags, profit_target_flags
+        """
+        min_hold_days = int(self.config.get('trend_divergence_min_hold_days', 10))
+        profit_target_pct = float(self.config.get('trend_divergence_profit_target', 15.0))
+        ignore_rsi_exit = bool(self.config.get('trend_divergence_ignore_rsi_exit', False))
+        use_rsi_trend = bool(self.config.get('trend_divergence_use_rsi_trend', True))
+        rsi_decline_threshold = float(self.config.get('trend_divergence_rsi_decline_threshold', -5.0))
+        
+        # 获取RSI数据用于趋势判断
+        rsi_fast = None
+        if use_rsi_trend and data is not None and 'fast_rsi' in data.columns:
+            rsi_fast = data['fast_rsi']
+        
+        n = len(entry_condition)
+        position = np.zeros(n, dtype=int)
+        entry_flags = np.zeros(n, dtype=int)
+        exit_flags = np.zeros(n, dtype=int)
+        stop_flags = np.zeros(n, dtype=int)
+        profit_target_flags = np.zeros(n, dtype=int)  # 止盈标记
+        in_position = False
+        entry_price = None
+        is_divergence_entry = False  # 标记当前持仓是否为底背离买入
+        hold_days = 0  # 持仓天数
+        entry_rsi = None  # 记录买入时的RSI值
+
+        for i in range(n):
+            entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
+            exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
+            is_div_entry = bool(divergence_entry.iloc[i]) if not pd.isna(divergence_entry.iloc[i]) else False
+            curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
+
+            if not in_position and entry_active:
+                in_position = True
+                entry_flags[i] = 1
+                entry_price = curr_price if not pd.isna(curr_price) else None
+                is_divergence_entry = is_div_entry  # 记录是否为底背离买入
+                hold_days = 0  # 重置持仓天数
+                # 记录买入时的RSI值（用于底背离买入的趋势判断）
+                if is_div_entry and rsi_fast is not None and i < len(rsi_fast):
+                    entry_rsi = rsi_fast.iloc[i] if not pd.isna(rsi_fast.iloc[i]) else None
+                else:
+                    entry_rsi = None
+
+            if in_position:
+                hold_days += 1
+                
+                # 底背离买入的特殊退出逻辑（不使用15%止盈，只用ATR+止损控制）
+                if is_divergence_entry and entry_price and not pd.isna(curr_price):
+                    # 条件1：未达到最短持有天数，只有止损才退出
+                    if hold_days < min_hold_days:
+                        # 只有触发止损时才退出
+                        if stop_loss_pct > 0 and entry_price:
+                            threshold = entry_price * (1 - stop_loss_pct / 100.0)
+                            if curr_price <= threshold:
+                                in_position = False
+                                exit_flags[i] = 1
+                                stop_flags[i] = 1
+                                entry_price = None
+                                is_divergence_entry = False
+                                entry_rsi = None
+                                hold_days = 0
+                    # 条件2：达到最短持有天数后
+                    else:
+                        # 使用RSI相对变化判断（推荐）
+                        if use_rsi_trend and rsi_fast is not None and entry_rsi is not None:
+                            # 获取当前RSI值
+                            curr_rsi = rsi_fast.iloc[i] if i < len(rsi_fast) and not pd.isna(rsi_fast.iloc[i]) else None
+                            
+                            if curr_rsi is not None:
+                                # 计算RSI相对变化
+                                rsi_change = curr_rsi - entry_rsi
+                                
+                                # 如果RSI相对于买入时显著下降，才考虑退出
+                                if exit_active and rsi_change < rsi_decline_threshold:
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    entry_price = None
+                                    is_divergence_entry = False
+                                    entry_rsi = None
+                                    hold_days = 0
+                                # 否则只检查止损
+                                elif stop_loss_pct > 0 and entry_price:
+                                    threshold = entry_price * (1 - stop_loss_pct / 100.0)
+                                    if curr_price <= threshold:
+                                        in_position = False
+                                        exit_flags[i] = 1
+                                        stop_flags[i] = 1
+                                        entry_price = None
+                                        is_divergence_entry = False
+                                        entry_rsi = None
+                                        hold_days = 0
+                            else:
+                                # RSI数据不可用，按正常逻辑
+                                if exit_active:
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    entry_price = None
+                                    is_divergence_entry = False
+                                    entry_rsi = None
+                                    hold_days = 0
+                        # 完全忽略RSI退出
+                        elif ignore_rsi_exit:
+                            if stop_loss_pct > 0 and entry_price:
+                                threshold = entry_price * (1 - stop_loss_pct / 100.0)
+                                if curr_price <= threshold:
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    stop_flags[i] = 1
+                                    entry_price = None
+                                    is_divergence_entry = False
+                                    entry_rsi = None
+                                    hold_days = 0
+                        # 默认逻辑（按正常退出）
+                        else:
+                            if exit_active:
+                                in_position = False
+                                exit_flags[i] = 1
+                                entry_price = None
+                                is_divergence_entry = False
+                                entry_rsi = None
+                                hold_days = 0
+                            elif stop_loss_pct > 0 and entry_price:
+                                threshold = entry_price * (1 - stop_loss_pct / 100.0)
+                                if curr_price <= threshold:
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    stop_flags[i] = 1
+                                    entry_price = None
+                                    is_divergence_entry = False
+                                    entry_rsi = None
+                                    hold_days = 0
+                
+                # 非底背离买入，按正常逻辑处理
+                elif not is_divergence_entry:
+                    if exit_active:
+                        in_position = False
+                        exit_flags[i] = 1
+                        entry_price = None
+                        hold_days = 0
+                    elif stop_loss_pct > 0 and entry_price and not pd.isna(curr_price):
+                        threshold = entry_price * (1 - stop_loss_pct / 100.0)
+                        if curr_price <= threshold:
+                            in_position = False
+                            exit_flags[i] = 1
+                            stop_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+
+            position[i] = 1 if in_position else 0
+
+        return position, entry_flags, exit_flags, stop_flags, profit_target_flags
+
     @staticmethod
     def _build_entry_reasons(data: pd.DataFrame, entry_flags: np.ndarray) -> pd.Series:
         reasons = [''] * len(data)
@@ -1161,18 +1443,25 @@ class RSITrendStrategy(MixedStrategy):
             if flag:
                 row = data.iloc[idx]
                 parts = []
-                if row.get('golden_cross'):
-                    parts.append("RSI金叉")
-                elif row.get('rsi_relaxed_condition'):
-                    parts.append("RSI多头延续")
+                
+                # 检查是否为底背离入场（独立生效）
+                if row.get('bullish_divergence_signal', False):
+                    parts.append("底背离信号（独立生效）")
+                # 标准RSI入场
                 else:
-                    parts.append("RSI多头")
-                if row.get('is_heikin_bullish'):
-                    parts.append("Heikin Ashi 阳线")
-                if row.get('trend_direction') == 1:
-                    parts.append("ATR趋势多头")
-                if row.get('mtf_bias', True):
-                    parts.append("高时间框架一致")
+                    if row.get('golden_cross'):
+                        parts.append("RSI金叉")
+                    elif row.get('rsi_relaxed_condition'):
+                        parts.append("RSI多头延续")
+                    else:
+                        parts.append("RSI多头")
+                    if row.get('is_heikin_bullish'):
+                        parts.append("Heikin Ashi 阳线")
+                    if row.get('trend_direction') == 1:
+                        parts.append("ATR趋势多头")
+                    if row.get('mtf_bias', True):
+                        parts.append("高时间框架一致")
+                        
                 reasons[idx] = ' + '.join(parts)
         return pd.Series(reasons, index=data.index)
 
@@ -1181,7 +1470,14 @@ class RSITrendStrategy(MixedStrategy):
         reasons = [''] * len(data)
         for idx, flag in enumerate(exit_flags):
             if flag:
-                parts = ["ATR趋势转空"]
+                parts = []
+                
+                # 优先检查止盈退出
+                if data.iloc[idx].get('profit_target_exit'):
+                    parts.append("底背离止盈15%")
+                else:
+                    parts.append("ATR趋势转空")
+                
                 if data.iloc[idx].get('death_cross'):
                     parts.append("RSI死叉确认")
                 if data.iloc[idx].get('exit_ma_filter_break'):
@@ -1207,32 +1503,3 @@ class RSITrendStrategy(MixedStrategy):
             if mask.any():
                 return df.loc[mask].iloc[0]
         return None
-
-    @staticmethod
-    def _compute_zigzag_lows(data: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
-        """简单ZigZag低点检测：基于局部最小值"""
-        lows = data['low'].to_numpy()
-        n = len(lows)
-        last_low = np.nan
-        prev_low = np.nan
-        last_arr = np.full(n, np.nan)
-        prev_arr = np.full(n, np.nan)
-
-        for i in range(2, n):
-            l_prev = lows[i - 1]
-            if np.isnan(l_prev) or np.isnan(lows[i]) or np.isnan(lows[i - 2]):
-                last_arr[i] = last_low
-                prev_arr[i] = prev_low
-                continue
-
-            if l_prev <= lows[i] and l_prev <= lows[i - 2]:
-                prev_low = last_low
-                last_low = l_prev
-
-            last_arr[i] = last_low
-            prev_arr[i] = prev_low
-
-        return (
-            pd.Series(last_arr, index=data.index),
-            pd.Series(prev_arr, index=data.index)
-        )

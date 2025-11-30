@@ -664,11 +664,39 @@ class RSITrendStrategy(MixedStrategy):
                 # 如果达到连续要求，当天立即发出信号（不延迟）
                 if consecutive_count >= min_consecutive:
                     signal_idx = divergence_lows[i]
-                    # 当天立即发出买入信号
-                    divergence_signals.iloc[signal_idx] = True
-                    # 信号持续2天，便于触发买入
-                    for j in range(signal_idx, min(signal_idx + 2, len(divergence_signals))):
-                        divergence_signals.iloc[j] = True
+                    
+                    # 斜率过滤：检查过去20天是否处于急速下跌中
+                    slope_period = 20
+                    slope_threshold = -0.003  # 约-15%/20天
+                    pass_slope_filter = True
+                    
+                    if signal_idx >= slope_period:
+                        # 计算过去20天的价格斜率（线性回归）
+                        start_idx = signal_idx - slope_period
+                        price_window = close[start_idx:signal_idx+1]
+                        x = np.arange(len(price_window))
+                        
+                        # 使用最小二乘法计算斜率
+                        mean_price = np.mean(price_window)
+                        if mean_price > 0:
+                            # 计算标准化斜率 = 斜率 / 平均价格
+                            slope = np.polyfit(x, price_window, 1)[0]
+                            normalized_slope = slope / mean_price
+                            
+                            # 如果斜率太负（急速下跌），不发出信号
+                            if normalized_slope < slope_threshold:
+                                pass_slope_filter = False
+                                signal_date = data.index[signal_idx] if hasattr(data.index[signal_idx], 'strftime') else str(data.index[signal_idx])
+                                logger.info(f"[斜率过滤] {self.stock_code} {signal_date}: "
+                                          f"底背离被过滤 (斜率={normalized_slope:.6f} < {slope_threshold})")
+                    
+                    # 只有通过斜率过滤才发出信号
+                    if pass_slope_filter:
+                        # 当天立即发出买入信号
+                        divergence_signals.iloc[signal_idx] = True
+                        # 信号持续2天，便于触发买入
+                        for j in range(signal_idx, min(signal_idx + 2, len(divergence_signals))):
+                            divergence_signals.iloc[j] = True
             else:
                 consecutive_count = 1
         

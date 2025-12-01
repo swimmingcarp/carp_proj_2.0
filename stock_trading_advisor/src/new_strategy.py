@@ -117,6 +117,7 @@ class RSITrendStrategy(MixedStrategy):
             return None, None
 
         data = self._prepare_dataframe(df)
+        
         fast_period = int(self.config.get('trend_rsi_fast_period', 25))
         slow_period = int(self.config.get('trend_rsi_slow_period', 100))
         atr_period = int(self.config.get('trend_atr_period', 20))
@@ -146,6 +147,7 @@ class RSITrendStrategy(MixedStrategy):
 
         atr_values = atr_indicator(data, period=atr_period) * atr_multiplier
         data['atr_trailing'] = atr_values
+        data['atr'] = atr_indicator(data, period=14)  # 用于强弱判断的14日ATR
 
         long_stop, short_stop, direction = self._compute_trend_levels(
             data,
@@ -167,6 +169,126 @@ class RSITrendStrategy(MixedStrategy):
         data['golden_cross'] = self._crossover(data['fast_rsi'], data['slow_rsi'])
         data['death_cross'] = self._crossunder(data['fast_rsi'], data['slow_rsi'])
         data['rsi_diff'] = data['fast_rsi'] - data['slow_rsi']
+
+        # 双通道策略：长期趋势确认 + 短期回调买点（直接启用）
+        dual_channel_enabled = True
+        ultra_long_period = 180  # 超超长期趋势确认
+        very_long_period = 120   # 超长期趋势确认
+        long_period = 60         # 长期趋势确认
+        short_period = 20        # 短期回调捕捉
+        dev_multiplier = 2.0
+        
+        log_close = np.log(data['close'])
+        
+        def calc_channel_params(arr, period):
+            """计算通道参数：斜率、截距、标准差、Pearson R"""
+            if len(arr) < period or np.isnan(arr).any():
+                return np.nan, np.nan, np.nan, np.nan
+            
+            n = len(arr)
+            x = np.arange(n)
+            sum_x = np.sum(x)
+            sum_xx = np.sum(x * x)
+            sum_y = np.sum(arr)
+            sum_yx = np.sum(x * arr)
+            
+            slope = (n * sum_yx - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
+            average = sum_y / n
+            intercept = average - slope * sum_x / n + slope
+            
+            # 计算标准差
+            fitted_val = intercept
+            sum_dev = 0.0
+            for i in range(n):
+                residual = arr[i] - fitted_val
+                fitted_val += slope
+                sum_dev += residual * residual
+            std_dev = np.sqrt(sum_dev / (n - 1))
+            
+            # 计算Pearson R
+            regres = intercept + slope * (n - 1) * 0.5
+            sum_dxx = 0.0
+            sum_dyy = 0.0
+            sum_dyx = 0.0
+            fitted_val = intercept
+            for i in range(n):
+                dxt = arr[i] - average
+                dyt = fitted_val - regres
+                fitted_val += slope
+                sum_dxx += dxt * dxt
+                sum_dyy += dyt * dyt
+                sum_dyx += dxt * dyt
+            pearson = sum_dyx / np.sqrt(sum_dxx * sum_dyy) if sum_dxx * sum_dyy > 0 else 0.0
+            
+            return slope, intercept, std_dev, abs(pearson)
+        
+        # 超超长期通道（180日）：确认最核心的主趋势
+        ultra_long_slope = pd.Series(index=data.index, dtype=float)
+        ultra_long_pearson = pd.Series(index=data.index, dtype=float)
+        
+        for i in range(ultra_long_period - 1, len(data)):
+            arr = log_close.iloc[i - ultra_long_period + 1:i + 1].values
+            slope, _, _, pearson = calc_channel_params(arr, ultra_long_period)
+            ultra_long_slope.iloc[i] = slope
+            ultra_long_pearson.iloc[i] = pearson
+        
+        # 超长期通道（120日）：确认真正的主趋势
+        very_long_slope = pd.Series(index=data.index, dtype=float)
+        very_long_pearson = pd.Series(index=data.index, dtype=float)
+        
+        for i in range(very_long_period - 1, len(data)):
+            arr = log_close.iloc[i - very_long_period + 1:i + 1].values
+            slope, _, _, pearson = calc_channel_params(arr, very_long_period)
+            very_long_slope.iloc[i] = slope
+            very_long_pearson.iloc[i] = pearson
+        
+        # 长期通道：确认主趋势
+        long_slope = pd.Series(index=data.index, dtype=float)
+        long_intercept = pd.Series(index=data.index, dtype=float)
+        long_std = pd.Series(index=data.index, dtype=float)
+        long_pearson = pd.Series(index=data.index, dtype=float)
+        
+        for i in range(long_period - 1, len(data)):
+            arr = log_close.iloc[i - long_period + 1:i + 1].values
+            slope, intercept, std, pearson = calc_channel_params(arr, long_period)
+            long_slope.iloc[i] = slope
+            long_intercept.iloc[i] = intercept
+            long_std.iloc[i] = std
+            long_pearson.iloc[i] = pearson
+        
+        # 短期通道：捕捉回调买点
+        short_slope = pd.Series(index=data.index, dtype=float)
+        short_intercept = pd.Series(index=data.index, dtype=float)
+        short_std = pd.Series(index=data.index, dtype=float)
+        short_lower = pd.Series(index=data.index, dtype=float)
+        
+        for i in range(short_period - 1, len(data)):
+            arr = log_close.iloc[i - short_period + 1:i + 1].values
+            slope, intercept, std, _ = calc_channel_params(arr, short_period)
+            short_slope.iloc[i] = slope
+            short_intercept.iloc[i] = intercept
+            short_std.iloc[i] = std
+            # 计算短期下轨
+            midline = np.exp(intercept)
+            short_lower.iloc[i] = midline / np.exp(dev_multiplier * std)
+        
+        # 三层趋势确认：180日、120日、60日都必须上升
+        ultra_long_uptrend = (ultra_long_slope > 0) & (ultra_long_pearson > 0.65)  # 超超长期确认（最低要求）
+        very_long_uptrend = (very_long_slope > 0) & (very_long_pearson > 0.70)  # 超长期确认
+        long_uptrend = (long_slope > 0) & (long_pearson > 0.75)  # 长期确认
+        
+        # 短期回调买点：价格触及或跌破短期下轨
+        price_near_lower = data['close'] <= short_lower * 1.02  # 价格在下轨附近2%以内
+        
+        # 双通道买点：180日+120日+60日都上升 + 短期回调至下轨
+        data['dual_channel_signal'] = ultra_long_uptrend & very_long_uptrend & long_uptrend & price_near_lower
+        data['ultra_long_channel_uptrend'] = ultra_long_uptrend
+        data['ultra_long_channel_pearson'] = ultra_long_pearson
+        data['very_long_channel_uptrend'] = very_long_uptrend
+        data['very_long_channel_pearson'] = very_long_pearson
+        data['long_channel_uptrend'] = long_uptrend
+        data['long_channel_pearson'] = long_pearson
+        data['short_channel_lower'] = short_lower
 
         relaxed_enabled = bool(self.config.get('trend_relaxed_entry', True))
         relaxed_gap = max(0.0, float(self.config.get('trend_relaxed_min_gap', 1.0)))
@@ -236,6 +358,7 @@ class RSITrendStrategy(MixedStrategy):
                     streak_arr[i] = 0
             streak_series = pd.Series(streak_arr, index=data.index)
             ma_filter_break = strong_ma_uptrend & (streak_series >= 3)
+            
             data['exit_close_below_ma_confirm'] = close_below_confirm
             data['exit_ma_confirm_below_streak'] = streak_series
             data['exit_ma_filter_break'] = ma_filter_break
@@ -256,6 +379,7 @@ class RSITrendStrategy(MixedStrategy):
 
         # 多时间框架趋势确认
         htf_bias, htf_info = self._compute_higher_timeframe_bias(data)
+        
         data['mtf_bias'] = htf_bias
         data['mtf_info'] = str(htf_info)  # 存储诊断信息
 
@@ -287,8 +411,14 @@ class RSITrendStrategy(MixedStrategy):
             data['is_heikin_bullish'] &
             (data['golden_cross'] | rsi_relaxed_condition) &
             lr_filter_condition &
-            htf_bias  # 添加多时间框架确认
+            htf_bias
         )
+        
+        # 双通道买点：作为独立的加仓信号（不依赖其他指标）
+        dual_channel_entry = pd.Series(False, index=data.index)
+        if dual_channel_enabled:
+            # 双通道信号独立生效：180日+120日+60日三重趋势确认已经足够严格
+            dual_channel_entry = data['dual_channel_signal']
         
         # 底背离入场条件（独立生效，不需要其他确认）
         divergence_entry = pd.Series(False, index=data.index)
@@ -296,7 +426,7 @@ class RSITrendStrategy(MixedStrategy):
             # 底背离信号独立生效，与其他指标相互独立
             divergence_entry = bullish_divergence_signals
         
-        entry_condition = standard_entry | divergence_entry
+        entry_condition = standard_entry | divergence_entry | dual_channel_entry
         
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑
         data['divergence_entry'] = divergence_entry
@@ -375,6 +505,14 @@ class RSITrendStrategy(MixedStrategy):
             if latest.get('bullish_divergence_signal', False):
                 reasons.append("检测到连续底背离信号（独立生效）")
                 strength = 4  # 底背离信号强度较高
+            # 检查是否为双通道买点
+            elif latest.get('dual_channel_signal', False):
+                ultra_pearson = latest.get('ultra_long_channel_pearson', 0)
+                very_pearson = latest.get('very_long_channel_pearson', 0)
+                long_pearson = latest.get('long_channel_pearson', 0)
+                reasons.append(f"三重趋势确认回调买点(180日R={ultra_pearson:.2f}+120日R={very_pearson:.2f}+60日R={long_pearson:.2f})")
+                reasons.append("价格回调至20日通道下轨")
+                strength = 4
             # 标准RSI入场
             else:
                 if latest.get('golden_cross'):

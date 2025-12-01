@@ -44,6 +44,12 @@ strategy:
   trend_exit_use_ma_filter: true  # 启用MA过滤退出
   trend_lr_filter_enabled: true   # 启用线性回归过滤
   trend_mtf_enabled: true      # 启用多时间框架确认
+  
+  # 双通道策略：长期趋势确认 + 短期回调买点
+  trend_dual_channel_enabled: false  # 启用双通道策略（默认关闭，需验证效果）
+  trend_dual_channel_long: 60        # 长期通道周期（60日确认主趋势）
+  trend_dual_channel_short: 20       # 短期通道周期（20日捕捉回调）
+  trend_dual_channel_dev: 2.0        # 通道标准差倍数
 
 # 回测配置
 backtest:

@@ -65,12 +65,19 @@ def load_config(config_path: str = 'config/config.yaml') -> dict:
     """
     加载配置文件
 
-    说明：
+    说明:
     - 如果配置文件不存在或读取失败，静默返回空配置 {}
     - 调用方会使用 config.py 中的默认参数作为系统默认配置
     """
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        # 如果是相对路径，转换为相对于main.py的绝对路径
+        from pathlib import Path
+        config_file = Path(config_path)
+        if not config_file.is_absolute():
+            script_dir = Path(__file__).parent
+            config_file = script_dir / config_path
+        
+        with open(config_file, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     except Exception:
         # 不打印错误信息，直接使用系统默认配置（config.py）

@@ -32,9 +32,9 @@ strategy:
   rsi_min_strength: true     # 是否要求最小强度（MACD>0.1 或 涨幅>3%）
   rsi_min_gap: 5             # RSI买入最小间隔天数（5天冷静期，避免频繁交易）
 
-  # RSI趋势策略参数（优化：使用激进配置获得最佳收益）
-  trend_rsi_fast_period: 9     # 快RSI周期（优化：25→9，提升收益42%）
-  trend_rsi_slow_period: 21    # 慢RSI周期（优化：100→21，最佳性价比）
+  # RSI趋势策略参数（使用激进配置9,21，回撤较小）
+  trend_rsi_fast_period: 25     # 快RSI周期
+  trend_rsi_slow_period: 100    # 慢RSI周期
   trend_atr_period: 20         # ATR周期
   trend_atr_multiplier: 3.0    # ATR倍数
   trend_relaxed_entry: true    # 启用放宽入场条件
@@ -50,6 +50,12 @@ strategy:
   trend_dual_channel_long: 60        # 长期通道周期（60日确认主趋势）
   trend_dual_channel_short: 20       # 短期通道周期（20日捕捉回调）
   trend_dual_channel_dev: 2.0        # 通道标准差倍数
+  
+  # W底形态策略：双底确认买入
+  trend_w_bottom_enabled: true       # 启用W底形态检测
+  trend_w_bottom_lookback: 20        # 低点确认周期（过去N天最低点）
+  trend_w_bottom_min_gap: 30         # 两个低点最小间隔天数
+  trend_w_bottom_price_tolerance: 0.05  # 价格相似度容忍度（5%）
 
 # 回测配置
 backtest:

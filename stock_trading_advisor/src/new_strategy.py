@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 try:
     from .indicators import (
@@ -395,6 +396,15 @@ class RSITrendStrategy(MixedStrategy):
         else:
             bullish_divergence_signals = pd.Series(False, index=data.index)
             data['bullish_divergence_signal'] = bullish_divergence_signals
+        
+        # W底形态检测（买入信号）
+        w_bottom_enabled = bool(self.config.get('trend_w_bottom_enabled', True))
+        if w_bottom_enabled:
+            w_bottom_signals = self._detect_w_bottom(data)
+            data['w_bottom_signal'] = w_bottom_signals
+        else:
+            w_bottom_signals = pd.Series(False, index=data.index)
+            data['w_bottom_signal'] = w_bottom_signals
 
         # 主升浪检测（需要在所有技术指标计算完成后进行）
         main_wave_enabled = bool(self.config.get('trend_main_wave_enabled', True))
@@ -426,10 +436,23 @@ class RSITrendStrategy(MixedStrategy):
             # 底背离信号独立生效，与其他指标相互独立
             divergence_entry = bullish_divergence_signals
         
-        entry_condition = standard_entry | divergence_entry | dual_channel_entry
+        # W底形态入场条件（独立生效）
+        w_bottom_entry = pd.Series(False, index=data.index)
+        if w_bottom_enabled:
+            # W底信号独立生效
+            w_bottom_entry = w_bottom_signals
+            # 调试：检查W底信号数量
+            w_bottom_count = w_bottom_signals.sum()
+            if w_bottom_count > 0:
+                logger.info(f"[W底买入] 检测到{w_bottom_count}个W底信号，准备生成买入条件")
+        
+        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry
         
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑
         data['divergence_entry'] = divergence_entry
+        
+        # W底买入保护：标记W底买入
+        data['w_bottom_entry'] = w_bottom_entry
         
         # 基础退出条件
         basic_exit_condition = (direction != 1)
@@ -461,11 +484,12 @@ class RSITrendStrategy(MixedStrategy):
         else:
             exit_condition = basic_exit_condition
 
-        # 底背离买入需要特殊的退出处理
+        # 底背离买入和W底买入需要特殊的退出处理
         position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags = self._build_position_series_with_divergence(
             entry_condition,
             exit_condition,
             divergence_entry,
+            w_bottom_entry,  # 新增W底买入标记
             data['close'],
             stop_loss_pct,
             data  # 传入完整数据用于MA计算
@@ -479,6 +503,28 @@ class RSITrendStrategy(MixedStrategy):
         data['stop_loss_pct'] = stop_loss_pct if stop_loss_pct > 0 else np.nan
         data['entry_reason'] = self._build_entry_reasons(data, entry_flags)
         data['exit_reason'] = self._build_exit_reasons(data, exit_flags)
+        
+        # 调试：输出买入/卖出信号数量和对应日期
+        entry_count = np.sum(entry_flags)
+        exit_count = np.sum(exit_flags)
+        logger.info(f"[信号统计] 买入信号数量: {entry_count}, 卖出信号数量: {exit_count}")
+        
+        # 输出所有买入和卖出信号的日期
+        if 'date' in data.columns:
+            entry_dates = data[entry_flags == 1]['date'].tolist()
+            exit_dates = data[exit_flags == 1]['date'].tolist()
+            logger.info(f"[买入信号日期] {entry_dates}")
+            logger.info(f"[卖出信号日期] {exit_dates}")
+            
+            # 输出buy_signal在买入和卖出日期的值
+            logger.info("[buy_signal状态检查]")
+            for d in ['2023-07-28', '2023-07-31', '2024-12-24']:
+                if d in data['date'].values:
+                    idx = data[data['date'] == d].index[0]
+                    signal = position[idx]
+                    entry = entry_flags[idx]
+                    exit_f = exit_flags[idx]
+                    logger.info(f"  {d}: buy_signal={signal}, entry_flag={entry}, exit_flag={exit_f}")
 
         return data, None
 
@@ -505,6 +551,11 @@ class RSITrendStrategy(MixedStrategy):
             if latest.get('bullish_divergence_signal', False):
                 reasons.append("检测到连续底背离信号（独立生效）")
                 strength = 4  # 底背离信号强度较高
+            # 检查是否为W底买点
+            elif latest.get('w_bottom_signal', False):
+                reasons.append("检测到W底形态（双底确认）")
+                reasons.append("两个低点间隔>30天且价格接近")
+                strength = 4  # W底信号强度较高
             # 检查是否为双通道买点
             elif latest.get('dual_channel_signal', False):
                 ultra_pearson = latest.get('ultra_long_channel_pearson', 0)
@@ -666,6 +717,7 @@ class RSITrendStrategy(MixedStrategy):
             return base_result
 
         trades = backtest_result['trades']
+        logger.info(f"[回测统计] trades数量: {len(trades)}")
         if not trades:
             return base_result
 
@@ -679,10 +731,15 @@ class RSITrendStrategy(MixedStrategy):
             is_last_trade_open = (idx == len(trades) - 1) and last_is_open
 
             if buy_row is not None:
+                # 获取买入原因，如果为空则使用默认值
+                entry_reason = buy_row.get('entry_reason', '')
+                if not entry_reason or entry_reason.strip() == '':
+                    entry_reason = 'RSI趋势买入'
+                    
                 buy_points.append({
                     'date': trade['buy_date'],
                     'price': trade['buy_price'],
-                    'reason': buy_row.get('entry_reason', 'RSI金叉信号'),
+                    'reason': entry_reason,
                     'fast_rsi': buy_row.get('fast_rsi'),
                     'slow_rsi': buy_row.get('slow_rsi'),
                     'trend_direction': buy_row.get('trend_direction'),
@@ -930,7 +987,10 @@ class RSITrendStrategy(MixedStrategy):
         if 'date' in data.columns:
             data = data.sort_values('date').reset_index(drop=True)
         else:
-            data = data.sort_index().reset_index(drop=True)
+            # 保存日期索引到列中
+            data = data.sort_index()
+            data['date'] = data.index
+            data = data.reset_index(drop=True)
 
         required_cols = ['open', 'high', 'low', 'close']
         missing = [col for col in required_cols if col not in data.columns]
@@ -1436,15 +1496,17 @@ class RSITrendStrategy(MixedStrategy):
     def _build_position_series_with_divergence(self, entry_condition: pd.Series,
                                               exit_condition: pd.Series,
                                               divergence_entry: pd.Series,
+                                              w_bottom_entry: pd.Series,
                                               price_series: pd.Series,
                                               stop_loss_pct: float,
                                               data: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """根据条件构造持仓序列（支持底背离买入保护）
+        """根据条件构造持仓序列（支持底背离和W底买入保护）
         
         Args:
-            entry_condition: 综合入场条件（标准入场 | 底背离）
+            entry_condition: 综合入场条件（标准入场 | 底背离 | W底）
             exit_condition: 退出条件
             divergence_entry: 底背离入场信号
+            w_bottom_entry: W底入场信号
             price_series: 价格序列
             stop_loss_pct: 止损百分比
             data: 完整数据
@@ -1472,6 +1534,8 @@ class RSITrendStrategy(MixedStrategy):
         in_position = False
         entry_price = None
         is_divergence_entry = False  # 标记当前持仓是否为底背离买入
+        is_w_bottom_entry = False  # 标记当前持仓是否为W底买入
+        w_bottom_price = None  # 记录W底的最低价格（用于止损）
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
 
@@ -1479,6 +1543,7 @@ class RSITrendStrategy(MixedStrategy):
             entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
             exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
             is_div_entry = bool(divergence_entry.iloc[i]) if not pd.isna(divergence_entry.iloc[i]) else False
+            is_w_entry = bool(w_bottom_entry.iloc[i]) if not pd.isna(w_bottom_entry.iloc[i]) else False
             curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
 
             if not in_position and entry_active:
@@ -1486,7 +1551,20 @@ class RSITrendStrategy(MixedStrategy):
                 entry_flags[i] = 1
                 entry_price = curr_price if not pd.isna(curr_price) else None
                 is_divergence_entry = is_div_entry  # 记录是否为底背离买入
+                is_w_bottom_entry = is_w_entry  # 记录是否为W底买入
                 hold_days = 0  # 重置持仓天数
+                
+                # 调试W底买入
+                if is_w_entry and data is not None and 'date' in data.columns:
+                    buy_date = data['date'].iloc[i]
+                    logger.info(f"[W底买入执行] {buy_date} 触发W底买入，价格={entry_price:.2f}")
+                
+                # 如果是W底买入，记录W底价格
+                if is_w_entry and 'w_bottom_price' in data.columns:
+                    w_bottom_price = data['w_bottom_price'].iloc[i] if not pd.isna(data['w_bottom_price'].iloc[i]) else None
+                else:
+                    w_bottom_price = None
+                
                 # 记录买入时的RSI值（用于底背离买入的趋势判断）
                 if is_div_entry and rsi_fast is not None and i < len(rsi_fast):
                     entry_rsi = rsi_fast.iloc[i] if not pd.isna(rsi_fast.iloc[i]) else None
@@ -1496,8 +1574,69 @@ class RSITrendStrategy(MixedStrategy):
             if in_position:
                 hold_days += 1
                 
+                # W底买入的专属退出逻辑（15日内：跌破第二个低点3%止损，涨超15%止盈）
+                if is_w_bottom_entry and w_bottom_price and entry_price and not pd.isna(curr_price):
+                    if hold_days <= 15:
+                        # 15日内使用W底专属逻辑
+                        # 止损：跌破第二个低点的3%（第二个低点是确认买入的关键支撑位）
+                        # 【关键】使用当天最低价判断止损，而不是收盘价，这样更接近实际交易
+                        curr_low = data['low'].iloc[i] if 'low' in data.columns else curr_price
+                        stop_threshold = w_bottom_price * 0.97
+                        if curr_low <= stop_threshold:
+                            if data is not None and 'date' in data.columns:
+                                sell_date = data['date'].iloc[i]
+                                logger.info(f"[W底止损] {sell_date} 跌破止损线{stop_threshold:.2f}，当前价{curr_price:.2f}")
+                            in_position = False
+                            exit_flags[i] = 1
+                            stop_flags[i] = 1
+                            entry_price = None
+                            is_w_bottom_entry = False
+                            w_bottom_price = None
+                            hold_days = 0
+                            position[i] = 0  # 【修复】在continue前设置position
+                            continue
+                        
+                        # 止盈：涨超15%
+                        profit_threshold = entry_price * 1.15
+                        if curr_price >= profit_threshold:
+                            if data is not None and 'date' in data.columns:
+                                sell_date = data['date'].iloc[i]
+                                logger.info(f"[W底止盈] {sell_date} 涨超15%止盈，当前价{curr_price:.2f}")
+                            in_position = False
+                            exit_flags[i] = 1
+                            profit_target_flags[i] = 1
+                            entry_price = None
+                            is_w_bottom_entry = False
+                            w_bottom_price = None
+                            hold_days = 0
+                            position[i] = 0  # 【修复】在continue前设置position
+                            continue
+                        
+                        # 【关键】15日内未触发止损/止盈，继续持有，跳过后面的传统卖出逻辑
+                        position[i] = 1  # 【修复】在continue前设置position
+                        continue
+                    else:
+                        # 持有超过15天，传统卖出逻辑接管
+                        if exit_active:
+                            in_position = False
+                            exit_flags[i] = 1
+                            entry_price = None
+                            is_w_bottom_entry = False
+                            w_bottom_price = None
+                            hold_days = 0
+                        elif stop_loss_pct > 0 and entry_price:
+                            threshold = entry_price * (1 - stop_loss_pct / 100.0)
+                            if curr_price <= threshold:
+                                in_position = False
+                                exit_flags[i] = 1
+                                stop_flags[i] = 1
+                                entry_price = None
+                                is_w_bottom_entry = False
+                                w_bottom_price = None
+                                hold_days = 0
+                
                 # 底背离买入的特殊退出逻辑（不使用15%止盈，只用ATR+止损控制）
-                if is_divergence_entry and entry_price and not pd.isna(curr_price):
+                elif is_divergence_entry and entry_price and not pd.isna(curr_price):
                     # 条件1：未达到最短持有天数，只有止损才退出
                     if hold_days < min_hold_days:
                         # 只有触发止损时才退出
@@ -1582,8 +1721,8 @@ class RSITrendStrategy(MixedStrategy):
                                     entry_rsi = None
                                     hold_days = 0
                 
-                # 非底背离买入，按正常逻辑处理
-                elif not is_divergence_entry:
+                # 非底背离和非W底买入，按正常逻辑处理
+                elif not is_divergence_entry and not is_w_bottom_entry:
                     if exit_active:
                         in_position = False
                         exit_flags[i] = 1
@@ -1613,21 +1752,27 @@ class RSITrendStrategy(MixedStrategy):
                 # 检查是否为底背离入场（独立生效）
                 if row.get('bullish_divergence_signal', False):
                     parts.append("底背离信号（独立生效）")
+                # 检查是否为W底入场（独立生效）
+                elif row.get('w_bottom_signal', False):
+                    parts.append("W底形态（双底确认）")
                 # 标准RSI入场
                 else:
-                    if row.get('golden_cross'):
+                    if row.get('golden_cross', False):
                         parts.append("RSI金叉")
-                    elif row.get('rsi_relaxed_condition'):
+                    elif row.get('rsi_relaxed_condition', False):
                         parts.append("RSI多头延续")
                     else:
                         parts.append("RSI多头")
-                    if row.get('is_heikin_bullish'):
+                    if row.get('is_heikin_bullish', False):
                         parts.append("Heikin Ashi 阳线")
-                    if row.get('trend_direction') == 1:
+                    if row.get('trend_direction', 0) == 1:
                         parts.append("ATR趋势多头")
                     if row.get('mtf_bias', True):
                         parts.append("高时间框架一致")
                         
+                # 确保至少有一个原因（不应该为空）
+                if not parts:
+                    parts.append('RSI趋势买入')
                 reasons[idx] = ' + '.join(parts)
         return pd.Series(reasons, index=data.index)
 
@@ -1669,3 +1814,173 @@ class RSITrendStrategy(MixedStrategy):
             if mask.any():
                 return df.loc[mask].iloc[0]
         return None
+
+    def _detect_w_bottom(self, data: pd.DataFrame) -> pd.Series:
+        """
+        检测W底形态买入信号
+        
+        逻辑：
+        1. 找到一系列低点（close < pre-close && close < next-close）
+        2. 低点必须是过去20日的最低点
+        3. 选取2个低点，收盘价比较接近（差异<5%）
+        4. 两个低点间隔大于30天
+        5. 区间内所有收盘价都高于这两个低点
+        6. 第二个低点的第二天作为买入信号（避免未来函数）
+        
+        Returns:
+            pd.Series: W底买入信号
+        """
+        w_bottom_signals = pd.Series(False, index=data.index)
+        
+        if len(data) < 60:  # 至少需要60天数据
+            return w_bottom_signals
+        
+        close = data['close'].values
+        n = len(close)
+        
+        # 从配置读取参数
+        lookback_period = int(self.config.get('trend_w_bottom_lookback', 20))
+        min_gap_days = int(self.config.get('trend_w_bottom_min_gap', 30))
+        price_tolerance = float(self.config.get('trend_w_bottom_price_tolerance', 0.05))
+        
+        # 第一步：找到所有局部低点
+        local_lows = []
+        for i in range(lookback_period, n - 1):
+            # 检查是否是局部低点：close < pre-close && close < next-close
+            if close[i] < close[i-1] and close[i] < close[i+1]:
+                # 检查是否是过去20日最低点
+                window_min = np.min(close[max(0, i-lookback_period+1):i+1])
+                if close[i] <= window_min:
+                    local_lows.append((i, close[i]))
+        
+        if len(local_lows) < 2:
+            return w_bottom_signals
+        
+        # 第二步：寻找符合条件的W底
+        for i in range(len(local_lows) - 1):
+            idx1, price1 = local_lows[i]
+            
+            for j in range(i + 1, len(local_lows)):
+                idx2, price2 = local_lows[j]
+                
+                # 检查间隔
+                gap = idx2 - idx1
+                if gap < min_gap_days:
+                    continue
+                
+                # 【关键过滤】第二个低点不能明显低于第一个低点（防止下跌中继）
+                # 允许第二个低点略低（5%容差内），但不能明显更低
+                if price2 < price1 * 0.95:  # 第二个低点比第一个低超过5%，说明还在下跌
+                    continue
+                
+                # 检查价格相似度
+                lower_price = min(price1, price2)
+                higher_price = max(price1, price2)
+                if (higher_price - lower_price) / lower_price > price_tolerance:
+                    continue
+                
+                # 检查区间内所有价格是否都高于这两个低点
+                interval_prices = close[idx1:idx2+1]
+                min_low = min(price1, price2)
+                
+                # 允许在低点当天等于最低价，但其他天必须高于
+                valid_interval = True
+                for k, price in enumerate(interval_prices):
+                    actual_idx = idx1 + k
+                    # 跳过两个低点本身
+                    if actual_idx == idx1 or actual_idx == idx2:
+                        continue
+                    # 其他天必须高于最低点
+                    if price <= min_low:
+                        valid_interval = False
+                        break
+                
+                if not valid_interval:
+                    continue
+                
+                # 【关键过滤】振幅检查：从低点到中间高点的涨幅要>=30%
+                # 这确保W底有足够明显的反弹力度，过滤掉振幅不足的弱反弹
+                between_high = np.max(data['high'].iloc[idx1:idx2+1]) if 'high' in data.columns else np.max(interval_prices)
+                w_bottom_low = min(price1, price2)
+                amplitude = (between_high - w_bottom_low) / w_bottom_low * 100
+                if amplitude < 30.0:
+                    continue
+                
+                # 【关键过滤】避免缓慢下跌磨底 - 使用线性回归判断
+                # 从中间高点到第二个低点，如果是明显的单边下跌趋势，则过滤
+                # 找到中间高点的位置
+                high_prices = data['high'].iloc[idx1:idx2+1].values if 'high' in data.columns else interval_prices
+                max_high_idx_relative = np.argmax(high_prices)
+                max_high_idx = idx1 + max_high_idx_relative
+                
+                # 如果高点到低点2的距离足够长（>30天），进行线性回归判断
+                if idx2 - max_high_idx > 30:
+                    # 提取从高点到低点2的收盘价
+                    decline_segment = close[max_high_idx:idx2+1]
+                    x = np.arange(len(decline_segment))
+                    
+                    # 线性回归
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x, decline_segment)
+                    r_squared = r_value ** 2
+                    
+                    # 判断标准：斜率为负且R²>0.7，说明是明显的单边下跌（缓慢阴跌）
+                    # R²>0.7表示价格走势高度线性化，即持续单边下跌而非震荡
+                    if slope < 0 and r_squared > 0.7:
+                        continue
+                
+                # 旧的过滤条件保留：如果间隔>120天且两个低点价格非常接近（<3%），也过滤
+                price_diff_pct = abs(price2 - price1) / price1 * 100
+                if gap > 120 and price_diff_pct < 3.0:
+                    continue
+                
+                # 【关键过滤】第二个低点的第二天必须收阳线
+                # 这说明有资金开始介入，是更强的买入信号
+                signal_idx = idx2 + 1  # 第二个低点的第二天
+                if signal_idx >= n:
+                    continue
+                
+                # 检查第二天是否收阳线，且阳线实体要有一定强度
+                open_price = data['open'].iloc[signal_idx] if 'open' in data.columns else close[signal_idx - 1]
+                close_price = close[signal_idx]
+                is_bullish = close_price > open_price
+                
+                if not is_bullish:
+                    # 第二天没有收阳线，跳过这个W底
+                    continue
+                
+                # 【关键过滤】阳线实体强度：涨幅至少1%，避免弱势阳线
+                body_strength = (close_price - open_price) / open_price * 100
+                if body_strength < 1.0:
+                    # 阳线太弱（涨幅<1%），跳过这个W底
+                    continue
+                
+                # 找到了有效的W底，在第二天收盘买入（signal_idx就是买入日）
+                w_bottom_signals.iloc[signal_idx] = True
+                
+                # 【重要】保存W底的第二个低点价格（不是两个低点的较小值）
+                # 因为第二个低点是确认买入的关键支撑位，跌破第二个低点说明形态破坏
+                w_bottom_price = price2  # 使用第二个低点作为止损基准
+                if 'w_bottom_price' not in data.columns:
+                    data['w_bottom_price'] = np.nan
+                data.loc[data.index[signal_idx], 'w_bottom_price'] = w_bottom_price
+                
+                # 获取日期信息
+                if 'date' in data.columns:
+                    date1 = pd.to_datetime(data['date'].iloc[idx1]).strftime('%Y-%m-%d')
+                    date2 = pd.to_datetime(data['date'].iloc[idx2]).strftime('%Y-%m-%d')
+                    signal_date = pd.to_datetime(data['date'].iloc[signal_idx]).strftime('%Y-%m-%d')
+                else:
+                    date1 = str(idx1)
+                    date2 = str(idx2)
+                    signal_date = str(signal_idx)
+                
+                logger.info(f"[W底] 检测到W底形态: ({date1}, {date2}), "
+                           f"低点价格=({price1:.2f}, {price2:.2f}), 止损基准={w_bottom_price:.2f}, "
+                           f"间隔={gap}天, 振幅={amplitude:.1f}%, "
+                           f"{signal_date}收阳线确认并买入(涨幅{body_strength:.2f}%), "
+                           f"signal_idx={signal_idx}, w_bottom_signals[{signal_idx}]={w_bottom_signals.iloc[signal_idx]}")
+                
+                # 找到第一个有效的W底后，这个低点1就不再作为起点
+                break
+        
+        return w_bottom_signals

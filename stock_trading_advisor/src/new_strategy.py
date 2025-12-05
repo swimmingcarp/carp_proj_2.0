@@ -1536,6 +1536,7 @@ class RSITrendStrategy(MixedStrategy):
         is_divergence_entry = False  # 标记当前持仓是否为底背离买入
         is_w_bottom_entry = False  # 标记当前持仓是否为W底买入
         w_bottom_price = None  # 记录W底的最低价格（用于止损）
+        w_bottom_gap = None  # 记录W底的间隔天数（用于动态缓冲期）
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
 
@@ -1559,11 +1560,13 @@ class RSITrendStrategy(MixedStrategy):
                     buy_date = data['date'].iloc[i]
                     logger.info(f"[W底买入执行] {buy_date} 触发W底买入，价格={entry_price:.2f}")
                 
-                # 如果是W底买入，记录W底价格
+                # 如果是W底买入，记录W底价格和间隔天数
                 if is_w_entry and 'w_bottom_price' in data.columns:
                     w_bottom_price = data['w_bottom_price'].iloc[i] if not pd.isna(data['w_bottom_price'].iloc[i]) else None
+                    w_bottom_gap = data['w_bottom_gap'].iloc[i] if 'w_bottom_gap' in data.columns and not pd.isna(data['w_bottom_gap'].iloc[i]) else None
                 else:
                     w_bottom_price = None
+                    w_bottom_gap = None
                 
                 # 记录买入时的RSI值（用于底背离买入的趋势判断）
                 if is_div_entry and rsi_fast is not None and i < len(rsi_fast):
@@ -1574,10 +1577,12 @@ class RSITrendStrategy(MixedStrategy):
             if in_position:
                 hold_days += 1
                 
-                # W底买入的专属退出逻辑（15日内：跌破第二个低点3%止损，涨超15%止盈）
+                # W底买入的专属退出逻辑（动态缓冲期内：跌破第二个低点3%止损，涨超15%止盈）
+                # 缓冲期规则：gap ≤ 45天 → 15天；gap > 45天 → gap/3
                 if is_w_bottom_entry and w_bottom_price and entry_price and not pd.isna(curr_price):
-                    if hold_days <= 15:
-                        # 15日内使用W底专属逻辑
+                    buffer_days = 15 if (not w_bottom_gap or w_bottom_gap <= 45) else int(w_bottom_gap // 3)
+                    if hold_days <= buffer_days:
+                        # 缓冲期内使用W底专属逻辑
                         # 止损：跌破第二个低点的3%（第二个低点是确认买入的关键支撑位）
                         # 【关键】使用当天最低价判断止损，而不是收盘价，这样更接近实际交易
                         curr_low = data['low'].iloc[i] if 'low' in data.columns else curr_price
@@ -1586,12 +1591,17 @@ class RSITrendStrategy(MixedStrategy):
                             if data is not None and 'date' in data.columns:
                                 sell_date = data['date'].iloc[i]
                                 logger.info(f"[W底止损] {sell_date} 跌破止损线{stop_threshold:.2f}，当前价{curr_price:.2f}")
+                            # 【关键】在退出行也标记w_bottom_price，用于显示准确的止损原因
+                            if 'w_bottom_stop_exit' not in data.columns:
+                                data['w_bottom_stop_exit'] = False
+                            data.loc[data.index[i], 'w_bottom_stop_exit'] = True
                             in_position = False
                             exit_flags[i] = 1
                             stop_flags[i] = 1
                             entry_price = None
                             is_w_bottom_entry = False
                             w_bottom_price = None
+                            w_bottom_gap = None
                             hold_days = 0
                             position[i] = 0  # 【修复】在continue前设置position
                             continue
@@ -1608,21 +1618,23 @@ class RSITrendStrategy(MixedStrategy):
                             entry_price = None
                             is_w_bottom_entry = False
                             w_bottom_price = None
+                            w_bottom_gap = None
                             hold_days = 0
                             position[i] = 0  # 【修复】在continue前设置position
                             continue
                         
-                        # 【关键】15日内未触发止损/止盈，继续持有，跳过后面的传统卖出逻辑
+                        # 【关键】缓冲期内未触发止损/止盈，继续持有，跳过后面的传统卖出逻辑
                         position[i] = 1  # 【修复】在continue前设置position
                         continue
                     else:
-                        # 持有超过15天，传统卖出逻辑接管
+                        # 持有超过缓冲期，传统卖出逻辑接管
                         if exit_active:
                             in_position = False
                             exit_flags[i] = 1
                             entry_price = None
                             is_w_bottom_entry = False
                             w_bottom_price = None
+                            w_bottom_gap = None
                             hold_days = 0
                         elif stop_loss_pct > 0 and entry_price:
                             threshold = entry_price * (1 - stop_loss_pct / 100.0)
@@ -1633,6 +1645,7 @@ class RSITrendStrategy(MixedStrategy):
                                 entry_price = None
                                 is_w_bottom_entry = False
                                 w_bottom_price = None
+                                w_bottom_gap = None
                                 hold_days = 0
                 
                 # 底背离买入的特殊退出逻辑（不使用15%止盈，只用ATR+止损控制）
@@ -1795,7 +1808,10 @@ class RSITrendStrategy(MixedStrategy):
                     parts.append("EMA16>MA45下连续3日跌破MA16")
                 if data.iloc[idx].get('stop_loss_exit'):
                     stop_val = data.iloc[idx].get('stop_loss_pct')
-                    if stop_val and not pd.isna(stop_val):
+                    # 检查是否为W底止损（跌破第二个低点3%）
+                    if data.iloc[idx].get('w_bottom_stop_exit'):
+                        parts.append("跌破W底支撑3%")
+                    elif stop_val and not pd.isna(stop_val):
                         parts.append(f"触发{stop_val:.1f}%止损")
                     else:
                         parts.append("触发止损")
@@ -1957,12 +1973,16 @@ class RSITrendStrategy(MixedStrategy):
                 # 找到了有效的W底，在第二天收盘买入（signal_idx就是买入日）
                 w_bottom_signals.iloc[signal_idx] = True
                 
-                # 【重要】保存W底的第二个低点价格（不是两个低点的较小值）
-                # 因为第二个低点是确认买入的关键支撑位，跌破第二个低点说明形态破坏
+                # 【重要】保存W底的第二个低点价格和间隔天数
+                # 第二个低点是确认买入的关键支撑位，跌破第二个低点说明形态破坏
+                # 间隔天数用于计算动态缓冲期（gap ≤ 45天 → 15天；gap > 45天 → gap/3）
                 w_bottom_price = price2  # 使用第二个低点作为止损基准
                 if 'w_bottom_price' not in data.columns:
                     data['w_bottom_price'] = np.nan
+                if 'w_bottom_gap' not in data.columns:
+                    data['w_bottom_gap'] = np.nan
                 data.loc[data.index[signal_idx], 'w_bottom_price'] = w_bottom_price
+                data.loc[data.index[signal_idx], 'w_bottom_gap'] = gap
                 
                 # 获取日期信息
                 if 'date' in data.columns:

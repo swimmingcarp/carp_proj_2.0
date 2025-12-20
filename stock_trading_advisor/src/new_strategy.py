@@ -64,7 +64,9 @@ class RSITrendStrategy(MixedStrategy):
             'trend_lr_lookback': 30,
             'trend_lr_max_slope_pct': 1.5,
             # 多时间框架配置
-            'trend_mtf_enabled': True,
+            # 重要：为避免MTF带来的信号滞后/漏买，且避免任何潜在未来函数争议，默认强制关闭。
+            # 如需重新启用，请修改代码（当前版本忽略外部配置）。
+            'trend_mtf_enabled': False,
             'trend_mtf_ratio': 5,  # 5倍周期作为更高时间框架
             'trend_mtf_min_periods': 50,  # 更高时间框架最少需要的数据点
             'trend_mtf_adaptive_mode': True,  # 自适应模式：上升用早期，下跌用严格
@@ -93,6 +95,9 @@ class RSITrendStrategy(MixedStrategy):
         }
         if config:
             defaults.update(config)
+
+        # 代码层面强制关闭MTF：忽略外部配置文件/入参对该开关的覆盖
+        defaults['trend_mtf_enabled'] = False
 
         super().__init__(
             config=defaults,
@@ -1147,10 +1152,12 @@ class RSITrendStrategy(MixedStrategy):
         Returns:
             (htf_bias, htf_info) - 高时间框架偏向序列和相关信息
         """
-        mtf_enabled = bool(self.config.get('trend_mtf_enabled', True))
+        # 强制禁用多时间框架(MTF)：避免信号滞后/漏买。
+        # 注意：此处为“写死”逻辑，外部配置将被忽略。
+        mtf_enabled = False
         if not mtf_enabled:
-            # 如果禁用多时间框架，返回全部为True的序列
-            return pd.Series(True, index=data.index), {}
+            # 如果禁用多时间框架，返回全部为True的序列（不限制）
+            return pd.Series(True, index=data.index), {'status': 'disabled'}
             
         mtf_ratio = max(2, int(self.config.get('trend_mtf_ratio', 5)))
         min_periods = max(20, int(self.config.get('trend_mtf_min_periods', 50)))
@@ -1317,14 +1324,27 @@ class RSITrendStrategy(MixedStrategy):
             expanded_mode_info = []
             
             for i in range(len(data)):
+                # 重要：避免未来函数（lookahead）
+                # htf_bullish_bias[k] 是由第 k 个高周期K线(包含 ratio 根低周期K线)计算得到，
+                # 只有在该高周期K线收盘(即 i % ratio == ratio-1)之后才“已知”。
+                # 因此：
+                # - 若当前低周期K线不是高周期收盘日，则只能使用上一个已完成高周期的bias
+                # - 若是高周期收盘日，则可以使用当前高周期的bias
                 current_htf_idx = i // mtf_ratio
-                if current_htf_idx < len(htf_bullish_bias):
-                    bias_value = htf_bullish_bias.iloc[current_htf_idx]
-                    mode_info = mode_sequence[current_htf_idx] if current_htf_idx < len(mode_sequence) else {'mode': 'standard', 'trend': 'neutral'}
+                is_htf_close = (i % mtf_ratio) == (mtf_ratio - 1)
+                latest_completed_htf_idx = current_htf_idx if is_htf_close else (current_htf_idx - 1)
+
+                if 0 <= latest_completed_htf_idx < len(htf_bullish_bias):
+                    bias_value = htf_bullish_bias.iloc[latest_completed_htf_idx]
+                    mode_info = (
+                        mode_sequence[latest_completed_htf_idx]
+                        if latest_completed_htf_idx < len(mode_sequence)
+                        else {'mode': 'standard', 'trend': 'neutral'}
+                    )
                     if pd.isna(bias_value):
                         bias_value = True  # 默认不限制
                 else:
-                    bias_value = True  # 超出范围时不限制
+                    bias_value = True  # 数据不足/尚无已完成高周期K线时不限制
                     mode_info = {'mode': 'standard', 'trend': 'neutral'}
                     
                 expanded_bias.append(bias_value)
@@ -1757,6 +1777,13 @@ class RSITrendStrategy(MixedStrategy):
     @staticmethod
     def _build_entry_reasons(data: pd.DataFrame, entry_flags: np.ndarray) -> pd.Series:
         reasons = [''] * len(data)
+        mtf_disabled = False
+        # 当策略层面关闭MTF时，避免原因里误写“高时间框架一致”
+        if 'mtf_info' in data.columns:
+            try:
+                mtf_disabled = data['mtf_info'].astype(str).str.contains("'status': 'disabled'|\"status\": \"disabled\"|disabled", regex=True).any()
+            except Exception:
+                mtf_disabled = False
         for idx, flag in enumerate(entry_flags):
             if flag:
                 row = data.iloc[idx]
@@ -1780,7 +1807,7 @@ class RSITrendStrategy(MixedStrategy):
                         parts.append("Heikin Ashi 阳线")
                     if row.get('trend_direction', 0) == 1:
                         parts.append("ATR趋势多头")
-                    if row.get('mtf_bias', True):
+                    if (not mtf_disabled) and row.get('mtf_bias', True):
                         parts.append("高时间框架一致")
                         
                 # 确保至少有一个原因（不应该为空）

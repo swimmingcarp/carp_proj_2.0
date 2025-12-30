@@ -549,7 +549,11 @@ class RSITrendStrategy(MixedStrategy):
 
         stop_loss_pct = float(self.config.get('trend_stop_loss_pct', 7.0))
 
-        if latest.get('entry_signal', 0) == 1:
+        # 【关键修复】判断是否为"新入场"：entry_signal=1 且 前一天未持仓(buy_signal=0)
+        # 如果前一天已经持仓，则当前应为"持有"而非"买入"，避免重复发送买入提醒
+        is_new_entry = (latest.get('entry_signal', 0) == 1 and previous.get('buy_signal', 0) == 0)
+
+        if is_new_entry:
             signal = 'BUY'
             
             # 检查是否为底背离入场

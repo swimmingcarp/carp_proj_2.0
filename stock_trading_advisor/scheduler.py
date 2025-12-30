@@ -7,13 +7,14 @@ Stock Trading Advisor - 定时调度器
 
 import sys
 import yaml
+import json
 import logging
 import argparse
 import schedule
 import time
 from pathlib import Path
-from datetime import datetime
-from typing import List, Dict
+from datetime import datetime, date
+from typing import List, Dict, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 SRC_DIR = BASE_DIR / 'src'
@@ -24,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_fetcher import DataFetcher
-from src.strategy import MixedStrategy
+from src.new_strategy import RSITrendStrategy
 from src.analyzer import SignalAnalyzer
 from src.market_hours import MarketHours
 from src.wechat_notifier import WeChatNotificationManager
@@ -65,6 +66,10 @@ class TradingScheduler:
 
         # 实时数据获取失败的股票列表（在每次 run_analysis 内重置）
         self.network_failed_stocks = []
+
+        # 实盘持仓追踪：解决盘中价格和收盘价不一致的问题
+        self.position_file = self.script_dir / 'data' / 'realtime_positions.json'
+        self.realtime_positions = self._load_positions()
 
     def _load_config(self, config_path: str) -> dict:
         """加载配置文件"""
@@ -176,6 +181,116 @@ class TradingScheduler:
                 print(f"❌ 错误: 读取监控列表失败: {e}")
                 return []
 
+    # ========== 实盘持仓追踪功能 ==========
+    # 解决盘中价格（如15:57）和收盘价不一致导致的信号漂移问题
+    
+    def _load_positions(self) -> Dict:
+        """加载实盘持仓状态"""
+        try:
+            if self.position_file.exists():
+                with open(self.position_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            self.logger.warning(f"加载持仓状态失败: {e}")
+        return {}
+
+    def _save_positions(self):
+        """保存实盘持仓状态"""
+        try:
+            self.position_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.position_file, 'w', encoding='utf-8') as f:
+                json.dump(self.realtime_positions, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error(f"保存持仓状态失败: {e}")
+
+    def _get_position(self, code: str) -> Optional[Dict]:
+        """获取某只股票的实盘持仓状态"""
+        return self.realtime_positions.get(code)
+
+    def _set_position(self, code: str, buy_price: float, buy_date: str):
+        """记录买入持仓"""
+        self.realtime_positions[code] = {
+            'buy_price': buy_price,
+            'buy_date': buy_date,
+            'status': 'holding'
+        }
+        self.logger.info(f"[持仓追踪] 记录买入: {code} @ ¥{buy_price:.2f} ({buy_date})")
+
+    def _clear_position(self, code: str):
+        """清除持仓记录"""
+        if code in self.realtime_positions:
+            del self.realtime_positions[code]
+            self.logger.info(f"[持仓追踪] 清除持仓: {code}")
+
+    def _apply_position_tracking(self, signals: List[Dict]) -> List[Dict]:
+        """
+        应用实盘持仓追踪逻辑，修正因盘中价格和收盘价不一致导致的信号问题
+        
+        规则：
+        1. 今天发出买入信号，但实盘已持有 → 显示"持有"而非"买入"
+        2. 实盘已持有，但策略显示"观望"（昨天收盘没买入信号）→ 提示"止损卖出"
+        3. 策略显示"卖出"且实盘持有 → 正常卖出并清除持仓
+        4. 策略显示"买入"且实盘未持有 → 正常买入并记录持仓
+        """
+        today = date.today().isoformat()
+        adjusted_signals = []
+        
+        for signal in signals:
+            code = signal.get('code', '')
+            action = signal.get('action', '')
+            price = signal.get('price', 0)
+            position = self._get_position(code)
+            
+            original_action = action
+            adjusted_reason = None
+            
+            if action == '买入':
+                if position:
+                    # 规则1: 已持仓，买入信号改为持有
+                    signal['action'] = '持有'
+                    signal['signal'] = 'HOLD_BUY'
+                    adjusted_reason = f"实盘已于{position['buy_date']}买入，继续持有"
+                    # 更新原因
+                    original_reason = signal.get('reason', '')
+                    signal['reason'] = f"[持仓追踪] {adjusted_reason}（原信号: 买入 - {original_reason}）"
+                    self.logger.info(f"[持仓追踪] {code}: 买入→持有 ({adjusted_reason})")
+                else:
+                    # 规则4: 新买入，记录持仓
+                    self._set_position(code, price, today)
+                    
+            elif action == '卖出':
+                if position:
+                    # 规则3: 正常卖出，清除持仓
+                    self._clear_position(code)
+                    
+            elif action == '观望':
+                if position:
+                    # 规则2: 实盘持有但策略显示观望，说明盘中买入后收盘价不满足条件
+                    # 检查是否是当天买入的（当天买入的不需要止损提示）
+                    if position.get('buy_date') != today:
+                        signal['action'] = '卖出'
+                        signal['signal'] = 'SELL'
+                        buy_price = position.get('buy_price', 0)
+                        loss_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+                        adjusted_reason = f"实盘于{position['buy_date']}以¥{buy_price:.2f}买入，但策略信号已消失，建议止损"
+                        signal['reason'] = f"[持仓追踪] {adjusted_reason}（当前价¥{price:.2f}，浮盈{loss_pct:+.2f}%）"
+                        self.logger.info(f"[持仓追踪] {code}: 观望→卖出止损 ({adjusted_reason})")
+                        self._clear_position(code)
+                        
+            elif action == '持有':
+                # 策略本身显示持有，确保持仓记录存在
+                if not position:
+                    # 可能是之前没有追踪到的持仓，补记录
+                    self._set_position(code, price, today)
+                    self.logger.info(f"[持仓追踪] {code}: 补记录持仓 @ ¥{price:.2f}")
+            
+            adjusted_signals.append(signal)
+        
+        # 保存持仓状态
+        self._save_positions()
+        
+        return adjusted_signals
+
     def _analyze_stock(self, stock_code: str) -> Dict:
         """
         分析单只股票
@@ -203,7 +318,7 @@ class TradingScheduler:
 
             # 检测市场类型
             market = fetcher._detect_market(stock_code)
-            strategy = MixedStrategy(config=strategy_config, market=market)
+            strategy = RSITrendStrategy(config=strategy_config, market=market)
 
             # 获取数据（最近1年）
             result = fetcher.get_k_data(
@@ -555,6 +670,9 @@ class TradingScheduler:
 
         # 过滤信号
         filtered_signals = self._filter_signals(signals)
+
+        # 应用实盘持仓追踪逻辑（解决盘中价格和收盘价不一致问题）
+        filtered_signals = self._apply_position_tracking(filtered_signals)
 
         # 生成提醒文本
         alert_text = self._format_alert(filtered_signals)

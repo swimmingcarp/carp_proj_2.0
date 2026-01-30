@@ -420,7 +420,40 @@ class RSITrendStrategy(MixedStrategy):
             main_wave_signals = pd.Series(False, index=data.index)
             data['main_wave_signal'] = main_wave_signals
 
-        # 入场条件：原有条件 或 底背离信号
+        # 溢价/折价区间计算（价格位置分析）
+        # 在120天周期内计算价格相对位置（0-100%）
+        lookback = 120
+        rolling_high = data['close'].rolling(window=lookback, min_periods=1).max()
+        rolling_low = data['close'].rolling(window=lookback, min_periods=1).min()
+        price_range = rolling_high - rolling_low
+
+        # 避免除以零
+        price_position = pd.Series(0.5, index=data.index)  # 默认50%（中性）
+        valid_range = price_range > 0
+        price_position[valid_range] = (
+            (data['close'][valid_range] - rolling_low[valid_range]) /
+            price_range[valid_range]
+        )
+
+        # 定义区间（写死阈值）
+        in_extreme_discount = price_position < 0.25  # 极度折价区（0-25%）
+        in_discount = (price_position >= 0.25) & (price_position < 0.50)  # 折价区（25%-50%）
+        in_premium = (price_position >= 0.50) & (price_position < 0.75)  # 溢价区（50%-75%）
+        in_extreme_premium = price_position >= 0.75  # 极度溢价区（75%-100%）
+
+        # 合并折价区和极度折价区作为"可买入区"
+        in_buy_zone = price_position < 0.50  # 0-50%为可买入区
+        in_sell_zone = price_position >= 0.75  # 75%-100%为提前止盈区
+
+        data['price_position'] = price_position
+        data['in_extreme_discount'] = in_extreme_discount
+        data['in_discount'] = in_discount
+        data['in_premium'] = in_premium
+        data['in_extreme_premium'] = in_extreme_premium
+        data['in_buy_zone'] = in_buy_zone
+        data['in_sell_zone'] = in_sell_zone
+
+        # 入场条件：原有条件（恢复原版，不过滤）
         standard_entry = (
             (direction == 1) &
             data['is_heikin_bullish'] &
@@ -428,12 +461,19 @@ class RSITrendStrategy(MixedStrategy):
             lr_filter_condition &
             htf_bias
         )
-        
-        # 双通道买点：作为独立的加仓信号（不依赖其他指标）
+
+        # 双通道买点：作为独立的加仓信号（恢复原版，不过滤）
         dual_channel_entry = pd.Series(False, index=data.index)
         if dual_channel_enabled:
-            # 双通道信号独立生效：180日+120日+60日三重趋势确认已经足够严格
             dual_channel_entry = data['dual_channel_signal']
+
+        # 折价区补充买入：在极度折价区（0-25%）且趋势向上时额外买入
+        # 这是一个补充信号，不替代原有买入逻辑
+        discount_zone_entry = (
+            in_extreme_discount &  # 极度折价区（0-25%）
+            (direction == 1) &      # 趋势向上
+            data['is_heikin_bullish']  # Heikin Ashi阳线确认
+        )
         
         # 底背离入场条件（独立生效，不需要其他确认）
         divergence_entry = pd.Series(False, index=data.index)
@@ -451,13 +491,16 @@ class RSITrendStrategy(MixedStrategy):
             if w_bottom_count > 0:
                 logger.info(f"[W底买入] 检测到{w_bottom_count}个W底信号，准备生成买入条件")
         
-        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry
-        
+        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry
+
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑
         data['divergence_entry'] = divergence_entry
-        
+
         # W底买入保护：标记W底买入
         data['w_bottom_entry'] = w_bottom_entry
+
+        # 折价区补充买入：标记折价区买入
+        data['discount_zone_entry'] = discount_zone_entry
         
         # 基础退出条件
         basic_exit_condition = (direction != 1)
@@ -470,7 +513,7 @@ class RSITrendStrategy(MixedStrategy):
         if main_wave_enabled:
             # 在主升浪期间，只有更强的退出信号才能卖出
             main_wave_exit_suppression = main_wave_signals
-            
+
             # 特殊情况：MA多头排列时的主升浪延长保护
             ma_bullish_protection = pd.Series(False, index=data.index)
             if 'exit_ema_fast' in data.columns and 'exit_ma_slow' in data.columns:
@@ -478,15 +521,16 @@ class RSITrendStrategy(MixedStrategy):
                 ma_bullish = data['exit_ema_fast'] > data['exit_ma_slow']
                 price_not_crashed = data['close'] > data['exit_ma_slow'] * 0.90  # 价格在MA45的90%以上
                 recent_main_wave = main_wave_signals.rolling(window=5, min_periods=1).sum() > 0  # 最近5天有主升浪
-                
+
                 ma_bullish_protection = ma_bullish & price_not_crashed & recent_main_wave
-            
+
             # 综合的主升浪保护：当前主升浪 + MA多头排列保护
             comprehensive_protection = main_wave_exit_suppression | ma_bullish_protection
-            
-            # 主升浪期间的退出条件更严格
+
+            # 主升浪期间的退出条件更严格（移除强制止盈，完全依赖ATR趋势判断）
             exit_condition = basic_exit_condition & (~comprehensive_protection)
         else:
+            # 无主升浪保护时，使用基础退出条件
             exit_condition = basic_exit_condition
 
         # 底背离买入和W底买入需要特殊的退出处理

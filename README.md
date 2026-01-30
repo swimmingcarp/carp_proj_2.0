@@ -111,7 +111,7 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py --report --osc
 source venv/bin/activate && python3 stock_trading_advisor/main.py --report -b 300293 300274 300750 605117
 
 # 使用策略缓存生成固定组合的批量报告
-source venv/bin/activate && python3 stock_trading_advisor/main.py --report --fixed-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy
 
 # 生成K线图并标注买卖点
 source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --chart-generation

@@ -85,10 +85,10 @@ class RSITrendStrategy(MixedStrategy):
             
             # 底背离策略配置（买入信号）
             'trend_bullish_divergence_enabled': True,  # 启用底背离检测
-            'trend_divergence_lookback': 30,  # 底背离检测回溯周期
+            'trend_divergence_lookback': 20,  # Yifang优化：20天回溯（原30天）
             'trend_divergence_min_consecutive': 2,  # 连续底背离最小次数
-            'trend_divergence_min_hold_days': 10,  # 底背离买入后的最短持有天数
-            'trend_divergence_profit_target': 15.0,  # 底背离买入的止盈目标(%)
+            'trend_divergence_min_hold_days': 15,  # Yifang优化：15天持有期（原10天）
+            'trend_divergence_profit_target': 20.0,  # Yifang优化：20%止盈（原15%）
             'trend_divergence_ignore_rsi_exit': False,  # 底背离买入是否忽略RSI退出信号
             'trend_divergence_use_rsi_trend': False,  # 底背离买入使用RSI趋势判断（恢复原版，关闭优化）
             'trend_divergence_rsi_decline_threshold': -5.0,  # RSI相对下降阈值（负数表示下降）
@@ -1752,8 +1752,21 @@ class RSITrendStrategy(MixedStrategy):
                                 hold_days = 0
                     # 条件2：达到最短持有天数后
                     else:
+                        # Yifang优化：添加底背离止盈逻辑
+                        profit_threshold = entry_price * (1 + profit_target_pct / 100.0)
+                        if curr_price >= profit_threshold:
+                            in_position = False
+                            exit_flags[i] = 1
+                            profit_target_flags[i] = 1
+                            entry_price = None
+                            is_divergence_entry = False
+                            entry_rsi = None
+                            hold_days = 0
+                            if data is not None and 'date' in data.columns:
+                                sell_date = data['date'].iloc[i]
+                                logger.info(f"[底背离止盈] {sell_date} 达到{profit_target_pct:.0f}%止盈目标，当前价{curr_price:.2f}")
                         # 使用RSI相对变化判断（推荐）
-                        if use_rsi_trend and rsi_fast is not None and entry_rsi is not None:
+                        elif use_rsi_trend and rsi_fast is not None and entry_rsi is not None:
                             # 获取当前RSI值
                             curr_rsi = rsi_fast.iloc[i] if i < len(rsi_fast) and not pd.isna(rsi_fast.iloc[i]) else None
                             

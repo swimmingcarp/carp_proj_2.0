@@ -152,6 +152,16 @@ class RSITrendStrategy(MixedStrategy):
         else:
             data['volume_weak'] = pd.Series(False, index=data.index)
 
+        # 大周期M顶过滤：规避危险高位追高
+        # 检测过去60-120天的前高，如果当前价格接近但未突破，可能是M顶右侧
+        data['high_1y'] = data['high'].rolling(window=250, min_periods=100).max()
+        data['position_vs_1y_high'] = (data['close'] / data['high_1y'] - 1) * 100
+        data['prev_peak_60_120'] = data['high'].shift(60).rolling(window=60, min_periods=30).max()
+        data['is_m_top'] = (
+            (data['close'] / data['prev_peak_60_120']).between(0.95, 1.02) &
+            (data['position_vs_1y_high'] < -3)
+        )
+
         # 计算MACD指标（用于底背离检测）
         macd_diff, macd_dea, macd_hist = macd_indicator(data['close'])
         data['macd_diff'] = macd_diff
@@ -460,14 +470,15 @@ class RSITrendStrategy(MixedStrategy):
         data['in_buy_zone'] = in_buy_zone
         data['in_sell_zone'] = in_sell_zone
 
-        # 入场条件：成交量过滤（选择性应用，仅过滤standard_entry）
+        # 入场条件：成交量+M顶过滤（选择性应用）
         standard_entry = (
             (direction == 1) &
             data['is_heikin_bullish'] &
             (data['golden_cross'] | rsi_relaxed_condition) &
             lr_filter_condition &
             htf_bias &
-            (~data['volume_weak'])  # 成交量过滤：排除低成交量信号
+            (~data['volume_weak']) &  # 成交量过滤
+            (~data['is_m_top'])  # M顶过滤：规避危险高位追高
         )
 
         # 双通道买点：作为独立的加仓信号（恢复原版，不过滤）

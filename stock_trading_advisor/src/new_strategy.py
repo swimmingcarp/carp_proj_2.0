@@ -145,6 +145,13 @@ class RSITrendStrategy(MixedStrategy):
         data['fast_rsi'] = rsi_indicator(data['close'], period=fast_period)
         data['slow_rsi'] = rsi_indicator(data['close'], period=slow_period)
 
+        # 成交量过滤：低成交量信号过滤（0.75倍MA20）
+        if 'volume' in data.columns:
+            data['volume_ma20'] = data['volume'].rolling(window=20, min_periods=1).mean()
+            data['volume_weak'] = data['volume'] < data['volume_ma20'] * 0.75
+        else:
+            data['volume_weak'] = pd.Series(False, index=data.index)
+
         # 计算MACD指标（用于底背离检测）
         macd_diff, macd_dea, macd_hist = macd_indicator(data['close'])
         data['macd_diff'] = macd_diff
@@ -453,13 +460,14 @@ class RSITrendStrategy(MixedStrategy):
         data['in_buy_zone'] = in_buy_zone
         data['in_sell_zone'] = in_sell_zone
 
-        # 入场条件：原有条件（恢复原版，不过滤）
+        # 入场条件：成交量过滤（选择性应用，仅过滤standard_entry）
         standard_entry = (
             (direction == 1) &
             data['is_heikin_bullish'] &
             (data['golden_cross'] | rsi_relaxed_condition) &
             lr_filter_condition &
-            htf_bias
+            htf_bias &
+            (~data['volume_weak'])  # 成交量过滤：排除低成交量信号
         )
 
         # 双通道买点：作为独立的加仓信号（恢复原版，不过滤）

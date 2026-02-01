@@ -170,6 +170,12 @@ class RSITrendStrategy(MixedStrategy):
         data['macd_dea'] = macd_dea
         data['macd_hist'] = macd_hist
 
+        # Aroon震荡市场检测（基于之前优化的最佳参数）
+        from .indicators import calculate_aroon
+        data = calculate_aroon(data, period=25)
+        # -22 < Aroon Osc < 22 = 震荡市（最优阈值）
+        data['is_sideways'] = (data['aroon_osc'].abs() < 22)
+
         atr_values = atr_indicator(data, period=atr_period) * atr_multiplier
         data['atr_trailing'] = atr_values
         data['atr'] = atr_indicator(data, period=14)  # 用于强弱判断的14日ATR
@@ -511,14 +517,38 @@ class RSITrendStrategy(MixedStrategy):
             w_bottom_count = w_bottom_signals.sum()
             if w_bottom_count > 0:
                 logger.info(f"[W底买入] 检测到{w_bottom_count}个W底信号，准备生成买入条件")
-        
-        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry
+
+        # 震荡市场入场条件（基于Aroon + BB + RSI）
+        from .indicators import bollinger_bands
+        bb_upper, bb_middle, bb_lower, bb_width, bb_percent = bollinger_bands(data['close'], period=20, std_dev=2.0)
+        data['bb_upper'] = bb_upper
+        data['bb_middle'] = bb_middle
+        data['bb_lower'] = bb_lower
+        data['bb_width'] = bb_width
+        data['bb_percent'] = bb_percent
+
+        sideways_entry = (
+            data['is_sideways'] &           # Aroon震荡
+            (data['bb_percent'] <= 0.20) &  # 价格接近下轨
+            (data['fast_rsi'] < 31)         # RSI超卖（最优参数）
+        )
+
+        # 统计震荡策略触发情况
+        sideways_count = data['is_sideways'].sum()
+        sideways_entry_count = sideways_entry.sum()
+        if sideways_count > 0:
+            logger.info(f"[Aroon震荡] 震荡天数: {sideways_count}/{len(data)} ({sideways_count/len(data)*100:.1f}%), 入场信号: {sideways_entry_count}")
+
+        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry | sideways_entry
 
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑
         data['divergence_entry'] = divergence_entry
 
         # W底买入保护：标记W底买入
         data['w_bottom_entry'] = w_bottom_entry
+
+        # 震荡市场买入：标记震荡市场买入
+        data['sideways_entry'] = sideways_entry
 
         # 折价区补充买入：标记折价区买入
         data['discount_zone_entry'] = discount_zone_entry
@@ -555,11 +585,12 @@ class RSITrendStrategy(MixedStrategy):
             exit_condition = basic_exit_condition
 
         # 底背离买入和W底买入需要特殊的退出处理
-        position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags = self._build_position_series_with_divergence(
+        position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags, sideways_exit_type = self._build_position_series_with_divergence(
             entry_condition,
             exit_condition,
             divergence_entry,
-            w_bottom_entry,  # 新增W底买入标记
+            w_bottom_entry,  # W底买入标记
+            sideways_entry,  # 震荡市场买入标记
             data['close'],
             stop_loss_pct,
             data  # 传入完整数据用于MA计算
@@ -570,6 +601,7 @@ class RSITrendStrategy(MixedStrategy):
         data['exit_signal'] = exit_flags
         data['stop_loss_exit'] = stop_loss_flags
         data['profit_target_exit'] = profit_target_flags  # 添加止盈标记
+        data['sideways_exit_type'] = sideways_exit_type  # 震荡退出类型：1=上轨, 2=止盈, 3=止损
         data['stop_loss_pct'] = stop_loss_pct if stop_loss_pct > 0 else np.nan
         data['entry_reason'] = self._build_entry_reasons(data, entry_flags)
         data['exit_reason'] = self._build_exit_reasons(data, exit_flags)
@@ -1586,22 +1618,24 @@ class RSITrendStrategy(MixedStrategy):
                                               exit_condition: pd.Series,
                                               divergence_entry: pd.Series,
                                               w_bottom_entry: pd.Series,
+                                              sideways_entry: pd.Series,
                                               price_series: pd.Series,
                                               stop_loss_pct: float,
                                               data: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """根据条件构造持仓序列（支持底背离和W底买入保护）
-        
+        """根据条件构造持仓序列（支持底背离、W底和震荡市场买入保护）
+
         Args:
-            entry_condition: 综合入场条件（标准入场 | 底背离 | W底）
+            entry_condition: 综合入场条件（标准入场 | 底背离 | W底 | 震荡）
             exit_condition: 退出条件
             divergence_entry: 底背离入场信号
             w_bottom_entry: W底入场信号
+            sideways_entry: 震荡市场入场信号
             price_series: 价格序列
             stop_loss_pct: 止损百分比
             data: 完整数据
-            
+
         Returns:
-            position, entry_flags, exit_flags, stop_flags, profit_target_flags
+            position, entry_flags, exit_flags, stop_flags, profit_target_flags, sideways_exit_type
         """
         min_hold_days = int(self.config.get('trend_divergence_min_hold_days', 10))
         profit_target_pct = float(self.config.get('trend_divergence_profit_target', 15.0))
@@ -1620,10 +1654,12 @@ class RSITrendStrategy(MixedStrategy):
         exit_flags = np.zeros(n, dtype=int)
         stop_flags = np.zeros(n, dtype=int)
         profit_target_flags = np.zeros(n, dtype=int)  # 止盈标记
+        sideways_exit_type = np.zeros(n, dtype=int)  # 震荡退出类型：1=上轨退出, 2=止盈, 3=止损
         in_position = False
         entry_price = None
         is_divergence_entry = False  # 标记当前持仓是否为底背离买入
         is_w_bottom_entry = False  # 标记当前持仓是否为W底买入
+        is_sideways_entry = False  # 标记当前持仓是否为震荡市场买入
         w_bottom_price = None  # 记录W底的最低价格（用于止损）
         w_bottom_gap = None  # 记录W底的间隔天数（用于动态缓冲期）
         hold_days = 0  # 持仓天数
@@ -1634,6 +1670,7 @@ class RSITrendStrategy(MixedStrategy):
             exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
             is_div_entry = bool(divergence_entry.iloc[i]) if not pd.isna(divergence_entry.iloc[i]) else False
             is_w_entry = bool(w_bottom_entry.iloc[i]) if not pd.isna(w_bottom_entry.iloc[i]) else False
+            is_sw_entry = bool(sideways_entry.iloc[i]) if not pd.isna(sideways_entry.iloc[i]) else False
             curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
 
             if not in_position and entry_active:
@@ -1642,6 +1679,7 @@ class RSITrendStrategy(MixedStrategy):
                 entry_price = curr_price if not pd.isna(curr_price) else None
                 is_divergence_entry = is_div_entry  # 记录是否为底背离买入
                 is_w_bottom_entry = is_w_entry  # 记录是否为W底买入
+                is_sideways_entry = is_sw_entry  # 记录是否为震荡市场买入
                 hold_days = 0  # 重置持仓天数
                 
                 # 调试W底买入
@@ -1822,9 +1860,59 @@ class RSITrendStrategy(MixedStrategy):
                                     is_divergence_entry = False
                                     entry_rsi = None
                                     hold_days = 0
-                
-                # 非底背离和非W底买入，按正常逻辑处理
-                elif not is_divergence_entry and not is_w_bottom_entry:
+
+                # 震荡市场买入的特殊退出逻辑（固定止盈止损）
+                elif is_sideways_entry and entry_price and not pd.isna(curr_price):
+                    # 获取布林带和RSI数据
+                    bb_percent = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else 0.5
+                    fast_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else 50
+
+                    # 出场条件1：触及布林带上轨 + RSI超买
+                    if bb_percent >= 0.85 and fast_rsi > 70:
+                        in_position = False
+                        exit_flags[i] = 1
+                        sideways_exit_type[i] = 1
+                        entry_price = None
+                        is_sideways_entry = False
+                        hold_days = 0
+                        if data is not None and 'date' in data.columns:
+                            sell_date = data['date'].iloc[i]
+                            logger.info(f"[Aroon震荡上轨退出] {sell_date} 触及上轨+RSI超买，卖出价格{curr_price:.2f}")
+                        continue
+
+                    # 出场条件2：固定止盈 8.5%（最优参数）
+                    profit_pct = (curr_price / entry_price - 1) * 100
+                    if profit_pct >= 8.5:
+                        in_position = False
+                        exit_flags[i] = 1
+                        profit_target_flags[i] = 1
+                        sideways_exit_type[i] = 2
+                        entry_price = None
+                        is_sideways_entry = False
+                        hold_days = 0
+                        if data is not None and 'date' in data.columns:
+                            sell_date = data['date'].iloc[i]
+                            logger.info(f"[Aroon震荡止盈] {sell_date} 达到8.5%止盈目标，卖出价格{curr_price:.2f}")
+                        continue
+
+                    # 出场条件3：固定止损 1.0%（最优参数）
+                    if profit_pct <= -1.0:
+                        in_position = False
+                        exit_flags[i] = 1
+                        stop_flags[i] = 1
+                        sideways_exit_type[i] = 3
+                        entry_price = None
+                        is_sideways_entry = False
+                        hold_days = 0
+                        if data is not None and 'date' in data.columns:
+                            sell_date = data['date'].iloc[i]
+                            logger.info(f"[Aroon震荡止损] {sell_date} 触发1.0%止损，卖出价格{curr_price:.2f}")
+                        continue
+
+                    # 继续持有
+
+                # 非底背离、非W底、非震荡市场买入，按正常逻辑处理
+                elif not is_divergence_entry and not is_w_bottom_entry and not is_sideways_entry:
                     if exit_active:
                         in_position = False
                         exit_flags[i] = 1
@@ -1841,7 +1929,7 @@ class RSITrendStrategy(MixedStrategy):
 
             position[i] = 1 if in_position else 0
 
-        return position, entry_flags, exit_flags, stop_flags, profit_target_flags
+        return position, entry_flags, exit_flags, stop_flags, profit_target_flags, sideways_exit_type
 
     @staticmethod
     def _build_entry_reasons(data: pd.DataFrame, entry_flags: np.ndarray) -> pd.Series:
@@ -1864,6 +1952,9 @@ class RSITrendStrategy(MixedStrategy):
                 # 检查是否为W底入场（独立生效）
                 elif row.get('w_bottom_signal', False):
                     parts.append("W底形态（双底确认）")
+                # 检查是否为震荡市场入场（独立生效）
+                elif row.get('sideways_entry', False):
+                    parts.append("Aroon震荡入场（BB下轨+RSI超卖）")
                 # 标准RSI入场
                 else:
                     if row.get('golden_cross', False):
@@ -1891,9 +1982,17 @@ class RSITrendStrategy(MixedStrategy):
         for idx, flag in enumerate(exit_flags):
             if flag:
                 parts = []
-                
-                # 优先检查止盈退出
-                if data.iloc[idx].get('profit_target_exit'):
+
+                # 优先检查震荡退出
+                sw_exit = data.iloc[idx].get('sideways_exit_type', 0)
+                if sw_exit == 1:
+                    parts.append("Aroon震荡上轨退出（BB上轨+RSI超买）")
+                elif sw_exit == 2:
+                    parts.append("Aroon震荡止盈8.5%")
+                elif sw_exit == 3:
+                    parts.append("Aroon震荡止损1.0%")
+                # 检查止盈退出
+                elif data.iloc[idx].get('profit_target_exit'):
                     parts.append("底背离止盈15%")
                 else:
                     parts.append("ATR趋势转空")

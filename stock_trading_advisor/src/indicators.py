@@ -49,6 +49,48 @@ def obv_indicator(df: pd.DataFrame) -> pd.Series:
             obv.append(obv[-1])
     return pd.Series(obv, index=df.index)
 
+def calculate_aroon(df: pd.DataFrame, period: int = 25) -> pd.DataFrame:
+    """
+    Aroon指标 - 识别趋势和震荡市场
+
+    Aroon Up: ((period - 最高点距今天数) / period) * 100
+    Aroon Down: ((period - 最低点距今天数) / period) * 100
+    Aroon Oscillator: Aroon Up - Aroon Down
+
+    震荡市：-30 < Aroon Osc < 30 (上下力量均衡)
+    上升趋势：Aroon Osc > 50 (上升力量主导)
+    下跌趋势：Aroon Osc < -50 (下跌力量主导)
+    """
+    high = df['high']
+    low = df['low']
+
+    aroon_up = []
+    aroon_down = []
+
+    for i in range(len(df)):
+        if i < period - 1:
+            aroon_up.append(np.nan)
+            aroon_down.append(np.nan)
+        else:
+            # 计算period周期内最高点距今天数
+            high_window = high.iloc[i-period+1:i+1]
+            days_since_high = period - 1 - high_window.values[::-1].argmax()
+            aroon_up_val = ((period - days_since_high) / period) * 100
+
+            # 计算period周期内最低点距今天数
+            low_window = low.iloc[i-period+1:i+1]
+            days_since_low = period - 1 - low_window.values[::-1].argmin()
+            aroon_down_val = ((period - days_since_low) / period) * 100
+
+            aroon_up.append(aroon_up_val)
+            aroon_down.append(aroon_down_val)
+
+    df['aroon_up'] = aroon_up
+    df['aroon_down'] = aroon_down
+    df['aroon_osc'] = df['aroon_up'] - df['aroon_down']
+
+    return df
+
 import pandas as pd
 import numpy as np
 import numba

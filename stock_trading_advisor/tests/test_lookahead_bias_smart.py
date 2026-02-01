@@ -32,7 +32,7 @@ from src.new_strategy import RSITrendStrategy
 
 
 class TestLookAheadBiasSmart(unittest.TestCase):
-    """未来函数检测 - 智能采样版本（使用真实数据 02367）"""
+    """未来函数检测 - 智能采样版本（使用真实数据）"""
 
     def _extract_signal_points(self, result: pd.DataFrame,
                               signal_cols: List[str]) -> Dict[str, List[int]]:
@@ -120,22 +120,26 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         else:
             return []
 
-    def test_real_data_smart_sampling(self):
+    def _test_stock(self, stock_code: str, market: str = 'CN'):
         """
-        真实数据智能采样测试（02367为例）
+        通用的股票测试方法
+
+        Args:
+            stock_code: 股票代码
+            market: 市场 ('CN' 或 'HK')
         """
         print("\n" + "="*80)
-        print("真实数据智能采样测试 (02367)")
+        print(f"真实数据智能采样测试 ({stock_code})")
         print("="*80)
 
         # 读取真实数据
         data_path = os.path.join(
             os.path.dirname(__file__),
-            '../data/cache/02367_qfq.csv'
+            f'../data/cache/{stock_code}_qfq.csv'
         )
 
         if not os.path.exists(data_path):
-            print("⚠️  未找到02367数据文件，跳过真实数据测试")
+            print(f"⚠️  未找到{stock_code}数据文件，跳过测试")
             return
 
         real_data = pd.read_csv(data_path)
@@ -145,7 +149,7 @@ class TestLookAheadBiasSmart(unittest.TestCase):
 
         # 步骤1：全局回测
         print("\n步骤1: 全局回测...")
-        strategy_full = RSITrendStrategy(market='HK', stock_code='02367')
+        strategy_full = RSITrendStrategy(market=market, stock_code=stock_code)
         result_full, _ = strategy_full.analyze(real_data.copy())
 
         if result_full is None:
@@ -153,13 +157,24 @@ class TestLookAheadBiasSmart(unittest.TestCase):
 
         # 用于提取信号点的列（只包含离散的买卖信号）
         signal_cols = ['entry_signal', 'exit_signal', 'w_bottom_signal',
-                      'bullish_divergence_signal']
+                      'bullish_divergence_signal', 'sideways_entry']  # 新增：震荡入场信号
 
         # 用于比较的列（包括中间状态，用于检测未来函数）
-        comparison_cols = signal_cols + ['mtf_bias', 'direction']
+        comparison_cols = signal_cols + ['mtf_bias', 'direction',
+                                          'is_sideways', 'aroon_osc']  # 新增：震荡状态和Aroon指标
 
         # 提取信号点
         signal_points = self._extract_signal_points(result_full, signal_cols)
+
+        # 提取震荡区间边界点（is_sideways 从 False→True 和 True→False 的转换点）
+        if 'is_sideways' in result_full.columns:
+            sideways_vals = result_full['is_sideways'].astype(int).values
+            boundary_indices = []
+            for i in range(181, len(sideways_vals)):
+                if sideways_vals[i] != sideways_vals[i - 1]:
+                    boundary_indices.append(i)
+            signal_points['sideways_boundary'] = boundary_indices
+
         total_signal_points = sum(len(indices) for indices in signal_points.values())
 
         print(f"   找到信号点: {total_signal_points}个")
@@ -216,7 +231,7 @@ class TestLookAheadBiasSmart(unittest.TestCase):
 
             # 截取数据
             partial_data = real_data.iloc[:test_idx + 1].copy()
-            strategy = RSITrendStrategy(market='HK', stock_code='02367')
+            strategy = RSITrendStrategy(market=market, stock_code=stock_code)
             result_partial, _ = strategy.analyze(partial_data)
 
             if result_partial is None:
@@ -308,6 +323,18 @@ class TestLookAheadBiasSmart(unittest.TestCase):
                 error_details.append(f"平静期差异: {len(quiet_point_errors)}个")
 
             self.fail(f"真实数据检测到未来函数！{' | '.join(error_details)}")
+
+    def test_02367(self):
+        """测试港股02367"""
+        self._test_stock('02367', market='HK')
+
+    def test_300750(self):
+        """测试A股300750"""
+        self._test_stock('300750', market='CN')
+
+    def test_300274(self):
+        """测试A股300274"""
+        self._test_stock('300274', market='CN')
 
 
 def run_tests():

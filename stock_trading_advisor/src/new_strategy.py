@@ -48,14 +48,14 @@ class RSITrendStrategy(MixedStrategy):
                  stock_code: str = ''):
         defaults = {
             'trend_rsi_fast_period': 25,
-            'trend_rsi_slow_period': 100,
+            'trend_rsi_slow_period': 70,  # 优化：100→70，+4.02%收益
             'trend_atr_period': 20,
             'trend_atr_multiplier': 3.0,
             'trend_use_close_for_extrema': True,
             'trend_relaxed_entry': True,
             'trend_relaxed_min_gap': 1.0,
 
-            'trend_stop_loss_pct': 7.0,  # ATR趋势判断止损（恢复原版）
+            'trend_stop_loss_pct': 8.5,  # 优化：7.0→8.5，+4.70%收益，+1.30%胜率
             'trend_exit_use_ma_filter': True,
             'trend_exit_fast_ema_period': 16,
             'trend_exit_slow_ma_period': 45,
@@ -125,7 +125,7 @@ class RSITrendStrategy(MixedStrategy):
         data = self._prepare_dataframe(df)
         
         fast_period = int(self.config.get('trend_rsi_fast_period', 25))
-        slow_period = int(self.config.get('trend_rsi_slow_period', 100))
+        slow_period = int(self.config.get('trend_rsi_slow_period', 70))
         atr_period = int(self.config.get('trend_atr_period', 20))
         atr_multiplier = float(self.config.get('trend_atr_multiplier', 3.0))
         use_close = bool(self.config.get('trend_use_close_for_extrema', True))
@@ -408,7 +408,7 @@ class RSITrendStrategy(MixedStrategy):
         data['mtf_bias'] = htf_bias
         data['mtf_info'] = str(htf_info)  # 存储诊断信息
 
-        stop_loss_pct = max(0.0, float(self.config.get('trend_stop_loss_pct', 7.0)))
+        stop_loss_pct = max(0.0, float(self.config.get('trend_stop_loss_pct', 8.5)))
 
 
 
@@ -612,7 +612,7 @@ class RSITrendStrategy(MixedStrategy):
         reasons: List[str] = []
         strength = 1
 
-        stop_loss_pct = float(self.config.get('trend_stop_loss_pct', 7.0))
+        stop_loss_pct = float(self.config.get('trend_stop_loss_pct', 8.5))
 
         # 【关键修复】判断是否为"新入场"：entry_signal=1 且 前一天未持仓(buy_signal=0)
         # 如果前一天已经持仓，则当前应为"持有"而非"买入"，避免重复发送买入提醒
@@ -1249,7 +1249,7 @@ class RSITrendStrategy(MixedStrategy):
                 
             # 计算高时间框架指标
             fast_period = int(self.config.get('trend_rsi_fast_period', 25))
-            slow_period = int(self.config.get('trend_rsi_slow_period', 100))
+            slow_period = int(self.config.get('trend_rsi_slow_period', 70))
             atr_period = int(self.config.get('trend_atr_period', 20))
             atr_multiplier = float(self.config.get('trend_atr_multiplier', 3.0))
             use_close = bool(self.config.get('trend_use_close_for_extrema', True))

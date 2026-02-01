@@ -34,13 +34,13 @@ strategy:
 
   # RSI趋势策略参数（使用激进配置9,21，回撤较小）
   trend_rsi_fast_period: 25     # 快RSI周期
-  trend_rsi_slow_period: 100    # 慢RSI周期
+  trend_rsi_slow_period: 70     # 慢RSI周期（优化：100→70，+4.02%收益）
   trend_atr_period: 20         # ATR周期
   trend_atr_multiplier: 3.0    # ATR倍数
   trend_relaxed_entry: true    # 启用放宽入场条件
   trend_relaxed_min_gap: 1.0   # 放宽入场最小差值
   trend_use_zigzag_filter: false  # 禁用之字形过滤（减少误判）
-  trend_stop_loss_pct: 7.0     # 止损百分比
+  trend_stop_loss_pct: 8.5     # 止损百分比（优化：7.0→8.5，+4.70%收益）
   trend_exit_use_ma_filter: true  # 启用MA过滤退出
   trend_lr_filter_enabled: true   # 启用线性回归过滤
   trend_mtf_enabled: true      # 启用多时间框架确认

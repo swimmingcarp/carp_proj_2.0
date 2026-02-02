@@ -38,12 +38,14 @@ strategy:
   trend_atr_period: 20         # ATR周期
   trend_atr_multiplier: 3.0    # ATR倍数
   trend_relaxed_entry: true    # 启用放宽入场条件
-  trend_relaxed_min_gap: 1.0   # 放宽入场最小差值
+  trend_relaxed_min_gap: 1.2   # 放宽入场最小差值（优化：1.0→1.2，+0.69%收益⭐）
   trend_use_zigzag_filter: false  # 禁用之字形过滤（减少误判）
   trend_stop_loss_pct: 8.5     # 止损百分比（优化：7.0→8.5，+4.70%收益）
   trend_exit_use_ma_filter: true  # 启用MA过滤退出
+  trend_exit_fast_ema_period: 22   # 退出EMA快线（优化：16→22，+6.5%收益⭐）
+  trend_exit_slow_ma_period: 35    # 退出MA慢线（优化：45→35，配合EMA22最优⭐）
   trend_lr_filter_enabled: true   # 启用线性回归过滤
-  trend_mtf_enabled: true      # 启用多时间框架确认
+  trend_mtf_enabled: false     # 多时间框架确认（代码强制关闭，避免未来函数）
   
   # 双通道策略：长期趋势确认 + 短期回调买点
   trend_dual_channel_enabled: false  # 启用双通道策略（默认关闭，需验证效果）

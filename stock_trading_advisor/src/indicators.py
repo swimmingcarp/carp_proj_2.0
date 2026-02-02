@@ -28,6 +28,50 @@ def atr_indicator(df: pd.DataFrame, period: int = 14) -> pd.Series:
     atr = tr.rolling(period).mean()
     return atr
 
+# 新增：CMF（蔡金资金流量指标）
+def cmf_indicator(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """
+    Chaikin Money Flow - 资金流量指标
+    CMF > 0 = 买入压力（资金流入），CMF < 0 = 卖出压力（资金流出）
+    """
+    high = df['high'].values
+    low = df['low'].values
+    close = df['close'].values
+    volume = df['volume'].values
+
+    hl_range = high - low
+    mf_multiplier = np.zeros(len(df))
+    valid = hl_range > 0
+    mf_multiplier[valid] = ((close[valid] - low[valid]) - (high[valid] - close[valid])) / hl_range[valid]
+    mf_volume = mf_multiplier * volume
+
+    mf_vol_series = pd.Series(mf_volume, index=df.index)
+    vol_series = pd.Series(volume, index=df.index)
+
+    cmf = mf_vol_series.rolling(window=period, min_periods=period).sum() / \
+          vol_series.rolling(window=period, min_periods=period).sum()
+    return cmf
+
+
+# 新增：Stochastic RSI
+def stochastic_rsi(rsi_series: pd.Series, period: int = 14, k_period: int = 3, d_period: int = 3):
+    """
+    Stochastic RSI - 随机RSI指标
+    返回: (stoch_rsi_k, stoch_rsi_d)
+    """
+    rsi_min = rsi_series.rolling(window=period, min_periods=period).min()
+    rsi_max = rsi_series.rolling(window=period, min_periods=period).max()
+    rsi_range = rsi_max - rsi_min
+
+    stoch_rsi = pd.Series(np.nan, index=rsi_series.index)
+    valid = rsi_range > 0
+    stoch_rsi[valid] = (rsi_series[valid] - rsi_min[valid]) / rsi_range[valid]
+
+    stoch_rsi_k = stoch_rsi.rolling(window=k_period, min_periods=1).mean()
+    stoch_rsi_d = stoch_rsi_k.rolling(window=d_period, min_periods=1).mean()
+    return stoch_rsi_k, stoch_rsi_d
+
+
 # 新增：OBV（能量潮指标）
 def obv_indicator(df: pd.DataFrame) -> pd.Series:
     """

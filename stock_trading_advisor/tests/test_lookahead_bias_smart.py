@@ -157,11 +157,13 @@ class TestLookAheadBiasSmart(unittest.TestCase):
 
         # 用于提取信号点的列（只包含离散的买卖信号）
         signal_cols = ['entry_signal', 'exit_signal', 'w_bottom_signal',
-                      'bullish_divergence_signal', 'sideways_entry']  # 新增：震荡入场信号
+                      'bullish_divergence_signal', 'sideways_entry',
+                      'rsi_momentum_entry']  # 新增：RSI动量入场信号
 
         # 用于比较的列（包括中间状态，用于检测未来函数）
         comparison_cols = signal_cols + ['mtf_bias', 'direction',
-                                          'is_sideways', 'aroon_osc']  # 新增：震荡状态和Aroon指标
+                                          'is_sideways', 'aroon_osc',
+                                          'atr_expanding', 'rsi_momentum']  # 新增：ATR波动率过滤和RSI动量
 
         # 提取信号点
         signal_points = self._extract_signal_points(result_full, signal_cols)

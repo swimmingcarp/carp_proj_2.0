@@ -53,12 +53,12 @@ class RSITrendStrategy(MixedStrategy):
             'trend_atr_multiplier': 3.0,
             'trend_use_close_for_extrema': True,
             'trend_relaxed_entry': True,
-            'trend_relaxed_min_gap': 1.0,
+            'trend_relaxed_min_gap': 1.2,  # 优化：1.0→1.2，+0.69%收益
 
             'trend_stop_loss_pct': 8.5,  # 优化：7.0→8.5，+4.70%收益，+1.30%胜率
             'trend_exit_use_ma_filter': True,
-            'trend_exit_fast_ema_period': 16,
-            'trend_exit_slow_ma_period': 45,
+            'trend_exit_fast_ema_period': 22,  # 优化：16→22，+6.5%收益
+            'trend_exit_slow_ma_period': 35,  # 优化：45→35，配合EMA22最优
             'trend_exit_confirm_ma_period': 16,
             'trend_lr_filter_enabled': True,
             'trend_lr_lookback': 30,
@@ -179,6 +179,9 @@ class RSITrendStrategy(MixedStrategy):
         atr_values = atr_indicator(data, period=atr_period) * atr_multiplier
         data['atr_trailing'] = atr_values
         data['atr'] = atr_indicator(data, period=14)  # 用于强弱判断的14日ATR
+        # ATR波动率过滤：当波动率异常高时（ATR > 2倍MA20），避免入场
+        data['atr_ma20'] = data['atr'].rolling(window=20, min_periods=10).mean()
+        data['atr_expanding'] = data['atr'] > data['atr_ma20'] * 1.5
 
         long_stop, short_stop, direction = self._compute_trend_levels(
             data,
@@ -200,6 +203,10 @@ class RSITrendStrategy(MixedStrategy):
         data['golden_cross'] = self._crossover(data['fast_rsi'], data['slow_rsi'])
         data['death_cross'] = self._crossunder(data['fast_rsi'], data['slow_rsi'])
         data['rsi_diff'] = data['fast_rsi'] - data['slow_rsi']
+        # RSI动量加速：3日变化量
+        data['rsi_momentum'] = data['fast_rsi'] - data['fast_rsi'].shift(3)
+        # ROC (Rate of Change) 10日价格动量
+        data['roc_10'] = (data['close'] / data['close'].shift(10) - 1) * 100
 
         # 双通道策略：长期趋势确认 + 短期回调买点（直接启用）
         dual_channel_enabled = True
@@ -486,7 +493,8 @@ class RSITrendStrategy(MixedStrategy):
             lr_filter_condition &
             htf_bias &
             (~data['volume_weak']) &  # 成交量过滤
-            (~data['is_m_top'])  # M顶过滤：规避危险高位追高
+            (~data['is_m_top']) &  # M顶过滤
+            (~data['atr_expanding'])  # ATR波动率过滤
         )
 
         # 双通道买点：作为独立的加仓信号（恢复原版，不过滤）
@@ -539,7 +547,20 @@ class RSITrendStrategy(MixedStrategy):
         if sideways_count > 0:
             logger.info(f"[Aroon震荡] 震荡天数: {sideways_count}/{len(data)} ({sideways_count/len(data)*100:.1f}%), 入场信号: {sideways_entry_count}")
 
-        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry | sideways_entry
+        # RSI动量加速入场：RSI从低位快速上升（3日变化>10）
+        rsi_momentum_entry = (
+            (direction == 1) &
+            data['is_heikin_bullish'] &
+            (data['rsi_momentum'] > 10) &
+            (data['fast_rsi'] < 60) &
+            (data['fast_rsi'].shift(3) < 40) &
+            lr_filter_condition &
+            (~data['volume_weak']) &
+            (~data['is_m_top']) &
+            (~data['atr_expanding'])
+        )
+
+        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry | sideways_entry | rsi_momentum_entry
 
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑
         data['divergence_entry'] = divergence_entry
@@ -552,6 +573,9 @@ class RSITrendStrategy(MixedStrategy):
 
         # 折价区补充买入：标记折价区买入
         data['discount_zone_entry'] = discount_zone_entry
+
+        # RSI动量加速买入：标记RSI动量买入
+        data['rsi_momentum_entry'] = rsi_momentum_entry
         
         # 基础退出条件
         basic_exit_condition = (direction != 1)

@@ -170,6 +170,10 @@ class RSITrendStrategy(MixedStrategy):
         data['macd_dea'] = macd_dea
         data['macd_hist'] = macd_hist
 
+        # 计算MA120和短期涨幅（用于规避极端追高）
+        data['ma_120'] = data['close'].rolling(120).mean()
+        data['short_gain_10d'] = (data['close'] / data['close'].shift(10) - 1) * 100
+
         # Aroon震荡市场检测（基于之前优化的最佳参数）
         from .indicators import calculate_aroon
         data = calculate_aroon(data, period=25)
@@ -607,6 +611,9 @@ class RSITrendStrategy(MixedStrategy):
         else:
             # 无主升浪保护时，使用基础退出条件
             exit_condition = basic_exit_condition
+
+        # 初始化回调买入标记列
+        data['chase_pullback_entry'] = False
 
         # 底背离买入和W底买入需要特殊的退出处理
         position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags, sideways_exit_type = self._build_position_series_with_divergence(
@@ -1601,7 +1608,8 @@ class RSITrendStrategy(MixedStrategy):
     def _build_position_series(entry_condition: pd.Series,
                                exit_condition: pd.Series,
                                price_series: pd.Series,
-                               stop_loss_pct: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                               stop_loss_pct: float,
+                               data: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """根据条件构造持仓序列"""
         n = len(entry_condition)
         position = np.zeros(n, dtype=int)
@@ -1611,12 +1619,73 @@ class RSITrendStrategy(MixedStrategy):
         in_position = False
         entry_price = None
 
+        # 追高冷却期状态
+        chase_cooldown_active = False
+        chase_peak_price = 0
+        chase_start_idx = 0
+        chase_rise_vol_ratio = 0
+        chase_cooldown_days = 30
+        chase_pullback_pct = 4
+        chase_hard_block = False
+
         for i in range(n):
             entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
             exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
             curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
 
-            if not in_position and entry_active:
+            # 追高冷却期逻辑
+            avoid_extreme_chase = False
+            chase_pullback_buy = False
+            if data is not None and i < len(data):
+                row = data.iloc[i]
+                ma_120 = row.get('ma_120', np.nan)
+                short_gain_10d = row.get('short_gain_10d', np.nan)
+
+                price_vs_ma120 = ((curr_price / ma_120 - 1) * 100) if not np.isnan(ma_120) and not np.isnan(curr_price) and ma_120 > 0 else 0
+
+                is_chase_condition = (price_vs_ma120 > 15) and (not np.isnan(short_gain_10d) and short_gain_10d > 15)
+
+                if is_chase_condition and not chase_cooldown_active and not in_position:
+                    chase_cooldown_active = True
+                    chase_peak_price = curr_price if not np.isnan(curr_price) else 0
+                    chase_start_idx = i
+                    vol = row.get('volume', np.nan)
+                    vol_ma20 = row.get('volume_ma20', np.nan)
+                    if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0:
+                        chase_rise_vol_ratio = vol / vol_ma20
+                    else:
+                        chase_rise_vol_ratio = 1.0
+                    # 硬屏蔽：巨量(>2x)+10日涨>30% → 完全不允许回调买入
+                    chase_hard_block = (chase_rise_vol_ratio > 2.0
+                                        and not np.isnan(short_gain_10d) and short_gain_10d > 30)
+                    avoid_extreme_chase = True
+                elif chase_cooldown_active and not in_position:
+                    if not np.isnan(curr_price) and curr_price > chase_peak_price:
+                        chase_peak_price = curr_price
+                    days_in_cooldown = i - chase_start_idx
+                    if days_in_cooldown > chase_cooldown_days:
+                        chase_cooldown_active = False
+                        chase_hard_block = False
+                    elif chase_peak_price > 0 and not np.isnan(curr_price):
+                        if chase_hard_block:
+                            avoid_extreme_chase = True
+                        else:
+                            drop_from_peak = (1 - curr_price / chase_peak_price) * 100
+                            chase_cleared = not is_chase_condition
+                            # 巨量暴涨过滤：追高时成交量>1.8x不执行回调买入
+                            rise_vol_ok = chase_rise_vol_ratio <= 1.8
+                            # 跌速检查：要求>=0.6%/天
+                            speed_ok = True
+                            if days_in_cooldown > 0:
+                                drop_speed = drop_from_peak / days_in_cooldown
+                                speed_ok = drop_speed >= 0.6
+                            if drop_from_peak >= chase_pullback_pct and entry_active and rise_vol_ok and speed_ok:
+                                chase_pullback_buy = True
+                                chase_cooldown_active = False
+                            else:
+                                avoid_extreme_chase = True
+
+            if not in_position and (entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position):
                 in_position = True
                 entry_flags[i] = 1
                 entry_price = curr_price if not pd.isna(curr_price) else None
@@ -1689,6 +1758,31 @@ class RSITrendStrategy(MixedStrategy):
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
 
+        # 追高冷却期参数（从config读取，支持优化调参）
+        chase_cooldown_active = False
+        chase_peak_price = 0
+        chase_start_idx = 0
+        chase_rise_vol_ratio = 0  # 记录追高时的成交量倍数
+        chase_mode = self.config.get('chase_mode', 'cooldown')  # 'block', 'cooldown', 'none'
+        chase_cooldown_days = self.config.get('chase_cooldown_days', 30)
+        # 多Profile OR逻辑：chase_profiles是条件列表，满足任一即允许回调买入
+        # 每个profile: {pullback_pct, require_cleared, vol_min_ratio, rise_vol_max, min_drop_speed}
+        chase_profiles = self.config.get('chase_profiles', None)
+        if chase_profiles is None:
+            # 兼容旧版单参数配置（默认值为优化最优参数）
+            chase_profiles = [{
+                'pullback_pct': self.config.get('chase_pullback_pct', 4),
+                'require_cleared': self.config.get('chase_require_cleared', False),
+                'vol_min_ratio': self.config.get('chase_vol_min_ratio', 0),
+                'rise_vol_max': self.config.get('chase_rise_vol_max', 1.8),
+                'min_drop_speed': self.config.get('chase_min_drop_speed', 0.6),
+            }]
+        # 硬屏蔽条件：满足时完全不允许回调买入（比cooldown更严格）
+        chase_hard_block_vol = self.config.get('chase_hard_block_vol', 2.0)  # 巨量阈值
+        chase_hard_block_gain = self.config.get('chase_hard_block_gain', 30)  # 10日涨幅阈值
+        chase_hard_block = False  # 当前是否处于硬屏蔽状态
+        chase_max_drop_pct = self.config.get('chase_max_drop_pct', 0)  # 急跌跌幅上限，0=不限
+
         for i in range(n):
             entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
             exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
@@ -1697,13 +1791,105 @@ class RSITrendStrategy(MixedStrategy):
             is_sw_entry = bool(sideways_entry.iloc[i]) if not pd.isna(sideways_entry.iloc[i]) else False
             curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
 
-            if not in_position and entry_active:
+            # 追高冷却期逻辑
+            avoid_extreme_chase = False
+            chase_pullback_buy = False
+            if chase_mode != 'none' and data is not None and i < len(data):
+                row = data.iloc[i]
+                ma_120 = row.get('ma_120', np.nan)
+                short_gain_10d = row.get('short_gain_10d', np.nan)
+
+                price_vs_ma120 = ((curr_price / ma_120 - 1) * 100) if not np.isnan(ma_120) and not np.isnan(curr_price) and ma_120 > 0 else 0
+
+                is_chase_condition = (price_vs_ma120 > 15) and (not np.isnan(short_gain_10d) and short_gain_10d > 15)
+
+                if is_chase_condition and not chase_cooldown_active and not in_position:
+                    chase_cooldown_active = True
+                    chase_peak_price = curr_price if not np.isnan(curr_price) else 0
+                    chase_start_idx = i
+                    # 记录追高时的成交量倍数
+                    vol = row.get('volume', np.nan)
+                    vol_ma20 = row.get('volume_ma20', np.nan)
+                    if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0:
+                        chase_rise_vol_ratio = vol / vol_ma20
+                    else:
+                        chase_rise_vol_ratio = 1.0
+                    # 硬屏蔽判定：巨量+10日暴涨 → 完全不允许回调买入
+                    chase_hard_block = (
+                        chase_hard_block_vol > 0 and chase_hard_block_gain > 0
+                        and chase_rise_vol_ratio > chase_hard_block_vol
+                        and not np.isnan(short_gain_10d) and short_gain_10d > chase_hard_block_gain
+                    )
+                    avoid_extreme_chase = True
+                elif chase_cooldown_active and not in_position:
+                    if chase_mode == 'block':
+                        # 纯阻断模式：条件期间一直阻断
+                        if is_chase_condition:
+                            avoid_extreme_chase = True
+                        else:
+                            chase_cooldown_active = False
+                    else:
+                        # cooldown模式：追踪高点，满足任一profile条件后允许回调买入
+                        if not np.isnan(curr_price) and curr_price > chase_peak_price:
+                            chase_peak_price = curr_price
+
+                        days_in_cooldown = i - chase_start_idx
+                        if days_in_cooldown > chase_cooldown_days:
+                            chase_cooldown_active = False
+                        elif chase_peak_price > 0 and not np.isnan(curr_price):
+                            drop_from_peak = (1 - curr_price / chase_peak_price) * 100
+                            chase_cleared = not is_chase_condition
+                            # 计算回调时成交量比
+                            vol = row.get('volume', np.nan)
+                            vol_ma20 = row.get('volume_ma20', np.nan)
+                            curr_vol_ratio = (vol / vol_ma20) if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0 else 1.0
+                            drop_speed = (drop_from_peak / days_in_cooldown) if days_in_cooldown > 0 else 0
+
+                            # 急跌跌幅上限：回调超过X%视为崩盘，不买入
+                            if chase_max_drop_pct > 0 and drop_from_peak > chase_max_drop_pct:
+                                avoid_extreme_chase = True
+                            # 硬屏蔽：完全不允许回调买入，只能等冷却期结束
+                            elif chase_hard_block:
+                                avoid_extreme_chase = True
+                            else:
+                                # OR逻辑：任一profile满足即允许买入
+                                any_profile_ok = False
+                                for profile in chase_profiles:
+                                    p_pb = profile.get('pullback_pct', 5)
+                                    p_clr = profile.get('require_cleared', True)
+                                    p_vol = profile.get('vol_min_ratio', 0.8)
+                                    p_rvm = profile.get('rise_vol_max', 0)
+                                    p_mds = profile.get('min_drop_speed', 0)
+
+                                    if drop_from_peak < p_pb:
+                                        continue
+                                    if p_clr and not chase_cleared:
+                                        continue
+                                    if p_vol > 0 and curr_vol_ratio < p_vol:
+                                        continue
+                                    if p_rvm > 0 and chase_rise_vol_ratio > p_rvm:
+                                        continue
+                                    if p_mds > 0 and drop_speed < p_mds:
+                                        continue
+                                    any_profile_ok = True
+                                    break
+
+                                if any_profile_ok and entry_active:
+                                    chase_pullback_buy = True
+                                    chase_cooldown_active = False
+                                else:
+                                    avoid_extreme_chase = True
+
+            if not in_position and (entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position):
                 in_position = True
                 entry_flags[i] = 1
-                entry_price = curr_price if not pd.isna(curr_price) else None
+                entry_price = curr_price if not np.isnan(curr_price) else None
                 is_divergence_entry = is_div_entry  # 记录是否为底背离买入
                 is_w_bottom_entry = is_w_entry  # 记录是否为W底买入
                 is_sideways_entry = is_sw_entry  # 记录是否为震荡市场买入
+                # 标记回调买入
+                if chase_pullback_buy and data is not None and 'chase_pullback_entry' in data.columns:
+                    data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
                 hold_days = 0  # 重置持仓天数
                 
                 # 调试W底买入
@@ -1970,8 +2156,11 @@ class RSITrendStrategy(MixedStrategy):
                 row = data.iloc[idx]
                 parts = []
                 
+                # 检查是否为追高回调买入
+                if row.get('chase_pullback_entry', False):
+                    parts.append("追高回调买入")
                 # 检查是否为底背离入场（独立生效）
-                if row.get('bullish_divergence_signal', False):
+                elif row.get('bullish_divergence_signal', False):
                     parts.append("底背离信号（独立生效）")
                 # 检查是否为W底入场（独立生效）
                 elif row.get('w_bottom_signal', False):

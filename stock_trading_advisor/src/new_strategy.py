@@ -564,6 +564,54 @@ class RSITrendStrategy(MixedStrategy):
             (~data['atr_expanding'])
         )
 
+        # 入场质量过滤器（基于多因子分析，按类型选择性应用）
+        # vs_ma60过滤：安全，不损失大赢家；MACD过滤：仅限标准RSI/RSI动量
+        entry_filter_enabled = self.config.get('entry_filter_enabled', True)
+        if entry_filter_enabled:
+            ma60 = data['close'].rolling(60).mean()
+            vs_ma60 = ((data['close'] / ma60 - 1) * 100).fillna(0)
+
+            # 参数（支持优化调参）
+            ef_ma60_max = self.config.get('ef_ma60_max', 22)  # 价格超MA60 X%时过滤
+            ef_macd_filter = self.config.get('ef_macd_filter', False)  # MACD<0时过滤（仅标准RSI）
+            ef_vol_trend_max = self.config.get('ef_vol_trend_max', 0)  # 成交量趋势上限，0=不限
+            ef_up_streak_max = self.config.get('ef_up_streak_max', 5)  # 连涨天数上限，0=不限
+
+            # vs_ma60过滤：应用于所有可安全过滤的类型
+            if ef_ma60_max > 0:
+                ma60_block = vs_ma60 > ef_ma60_max
+                standard_entry = standard_entry & ~ma60_block
+                rsi_momentum_entry = rsi_momentum_entry & ~ma60_block
+                discount_zone_entry = discount_zone_entry & ~ma60_block
+                # 双通道、底背离、W底、震荡不过滤（主升浪风险）
+
+            # MACD过滤：仅限标准RSI和RSI动量（双通道/W底/折价区的大赢家多MACD<0）
+            if ef_macd_filter:
+                macd_block = data['macd_hist'] < 0
+                standard_entry = standard_entry & ~macd_block
+                rsi_momentum_entry = rsi_momentum_entry & ~macd_block
+
+            # 成交量趋势过滤
+            if ef_vol_trend_max > 0 and 'volume' in data.columns:
+                vol_5d = data['volume'].rolling(5).mean()
+                vol_prev_5d = data['volume'].shift(5).rolling(5).mean()
+                vol_trend = (vol_5d / vol_prev_5d).fillna(1.0)
+                vol_trend_block = vol_trend > ef_vol_trend_max
+                standard_entry = standard_entry & ~vol_trend_block
+                rsi_momentum_entry = rsi_momentum_entry & ~vol_trend_block
+
+            # 连涨天数过滤
+            if ef_up_streak_max > 0:
+                up_streak = pd.Series(0, index=data.index)
+                for i in range(1, len(data)):
+                    if data['close'].iloc[i] > data['close'].iloc[i - 1]:
+                        up_streak.iloc[i] = up_streak.iloc[i - 1] + 1
+                    else:
+                        up_streak.iloc[i] = 0
+                streak_block = up_streak > ef_up_streak_max
+                standard_entry = standard_entry & ~streak_block
+                rsi_momentum_entry = rsi_momentum_entry & ~streak_block
+
         entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry | sideways_entry | rsi_momentum_entry
 
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑

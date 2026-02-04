@@ -1806,6 +1806,25 @@ class RSITrendStrategy(MixedStrategy):
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
 
+        # 反弹卖出参数（bounce exit）：避免暴跌中卖出，等待反弹再卖
+        bounce_exit_enabled = bool(self.config.get('bounce_exit_enabled', True))
+        bounce_exit_drop_threshold = float(self.config.get('bounce_exit_drop_threshold', -0.25))  # 触发延迟的当日跌幅阈值%
+        bounce_exit_max_wait = int(self.config.get('bounce_exit_max_wait', 1))  # 最大等待天数
+        bounce_exit_bounce_pct = float(self.config.get('bounce_exit_bounce_pct', 1.0))  # 反弹幅度要求%（vs卖出信号价）
+        pending_exit = False  # 是否处于待卖出状态
+        pending_exit_price = 0  # 触发卖出信号时的价格
+        pending_exit_days = 0  # 等待天数
+
+        # 止盈保护参数（浮盈超过trigger%后，回到入场价+level%就止损保本）
+        trailing_stop_trigger = float(self.config.get('trailing_stop_trigger', 0))  # 0=关闭，浮盈X%后激活保本止损
+        trailing_stop_level = float(self.config.get('trailing_stop_level', 0))  # 回到入场价就卖
+        trailing_stop_active = False  # 当前是否已激活
+        max_profit_in_trade = 0  # 当前交易中的最大浮盈%
+
+        dynamic_profit_trigger = float(self.config.get('dynamic_profit_trigger', 0))  # 浮盈达X%后激活动态止盈,0=关闭
+        dynamic_profit_drawback = float(self.config.get('dynamic_profit_drawback', 0))  # 从最高点回撤Y%就卖
+        dynamic_profit_active = False  # 是否已激活
+
         # 追高冷却期参数（从config读取，支持优化调参）
         chase_cooldown_active = False
         chase_peak_price = 0
@@ -1939,7 +1958,12 @@ class RSITrendStrategy(MixedStrategy):
                 if chase_pullback_buy and data is not None and 'chase_pullback_entry' in data.columns:
                     data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
                 hold_days = 0  # 重置持仓天数
-                
+                pending_exit = False  # 重置反弹卖出状态
+                pending_exit_days = 0
+                trailing_stop_active = False  # 重置止盈保护状态
+                dynamic_profit_active = False
+                max_profit_in_trade = 0
+
                 # 调试W底买入
                 if is_w_entry and data is not None and 'date' in data.columns:
                     buy_date = data['date'].iloc[i]
@@ -1961,7 +1985,56 @@ class RSITrendStrategy(MixedStrategy):
 
             if in_position:
                 hold_days += 1
-                
+
+                # 更新当前交易最大浮盈
+                if entry_price and not pd.isna(curr_price) and entry_price > 0:
+                    curr_profit_pct = (curr_price / entry_price - 1) * 100
+                    if curr_profit_pct > max_profit_in_trade:
+                        max_profit_in_trade = curr_profit_pct
+
+                    # 检查止盈保护（trailing stop）
+                    if trailing_stop_trigger > 0 and not trailing_stop_active:
+                        if max_profit_in_trade >= trailing_stop_trigger:
+                            trailing_stop_active = True
+
+                    if trailing_stop_active and not is_w_bottom_entry and not is_sideways_entry:
+                        trailing_threshold = entry_price * (1 + trailing_stop_level / 100.0)
+                        if curr_price <= trailing_threshold:
+                            in_position = False
+                            exit_flags[i] = 1
+                            if curr_profit_pct < 0:
+                                stop_flags[i] = 1
+                            else:
+                                profit_target_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            position[i] = 0
+                            continue
+
+                    # 检查动态止盈（从最高点回撤X%就卖）
+                    if dynamic_profit_trigger > 0 and not dynamic_profit_active:
+                        if max_profit_in_trade >= dynamic_profit_trigger:
+                            dynamic_profit_active = True
+
+                    if dynamic_profit_active and not is_w_bottom_entry and not is_sideways_entry:
+                        drawback = max_profit_in_trade - curr_profit_pct
+                        if drawback >= dynamic_profit_drawback:
+                            in_position = False
+                            exit_flags[i] = 1
+                            profit_target_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            position[i] = 0
+                            continue
+
                 # W底买入的专属退出逻辑（动态缓冲期内：跌破第二个低点3%止损，涨超15%止盈）
                 # 缓冲期规则：gap ≤ 45天 → 15天；gap > 45天 → gap/3
                 if is_w_bottom_entry and w_bottom_price and entry_price and not pd.isna(curr_price):
@@ -2171,17 +2244,87 @@ class RSITrendStrategy(MixedStrategy):
 
                 # 非底背离、非W底、非震荡市场买入，按正常逻辑处理
                 elif not is_divergence_entry and not is_w_bottom_entry and not is_sideways_entry:
-                    if exit_active:
-                        in_position = False
-                        exit_flags[i] = 1
-                        entry_price = None
-                        hold_days = 0
-                    elif stop_loss_pct > 0 and entry_price and not pd.isna(curr_price):
+                    # 止损始终立即执行（不延迟）
+                    if stop_loss_pct > 0 and entry_price and not pd.isna(curr_price):
                         threshold = entry_price * (1 - stop_loss_pct / 100.0)
                         if curr_price <= threshold:
                             in_position = False
                             exit_flags[i] = 1
                             stop_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            continue
+
+                    # 处理待反弹卖出状态
+                    if pending_exit:
+                        pending_exit_days += 1
+                        # 检查是否满足反弹条件或超时
+                        prev_close = data['close'].iloc[i - 1] if data is not None and i > 0 else curr_price
+                        day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
+                        bounce_from_signal = (curr_price / pending_exit_price - 1) * 100 if pending_exit_price > 0 else 0
+
+                        # 反弹条件：当天收涨 或 价格回到信号价附近/之上 或 超时
+                        bounce_ok = (day_change > 0)  # 阳线
+                        if bounce_exit_bounce_pct > 0:
+                            bounce_ok = bounce_ok or (bounce_from_signal >= -bounce_exit_bounce_pct)
+                        timeout = (pending_exit_days >= bounce_exit_max_wait)
+
+                        if bounce_ok or timeout:
+                            in_position = False
+                            exit_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                        # else: 继续持有等待反弹
+
+                    elif exit_active:
+                        # 反弹卖出逻辑：检查是否在暴跌中
+                        if bounce_exit_enabled and data is not None and i > 0:
+                            prev_close = data['close'].iloc[i - 1]
+                            day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
+
+                            if day_change < bounce_exit_drop_threshold:
+                                # 暴跌中，检查多因子条件决定是否延迟
+                                # 强制立即卖出的条件（基于深度分析）
+                                force_immediate = False
+
+                                # 因子1: 大赢家大跌 - 已经赚了很多，趋势反转
+                                bounce_big_win_exit = float(self.config.get('bounce_big_win_exit', 0))
+                                if bounce_big_win_exit > 0 and entry_price and curr_price > 0:
+                                    curr_pnl = (curr_price / entry_price - 1) * 100
+                                    if curr_pnl > bounce_big_win_exit and day_change < -5:
+                                        force_immediate = True
+
+                                # 因子2: BB高位大跌 - 可能是假突破回落
+                                bounce_bb_immediate = float(self.config.get('bounce_bb_immediate', 0))
+                                if bounce_bb_immediate > 0 and 'bb_percent' in data.columns:
+                                    bb_val = data['bb_percent'].iloc[i] if not pd.isna(data['bb_percent'].iloc[i]) else 0.5
+                                    if bb_val > bounce_bb_immediate:
+                                        force_immediate = True
+
+                                if force_immediate:
+                                    # 强制立即卖出
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    entry_price = None
+                                    hold_days = 0
+                                else:
+                                    # 进入待卖出状态
+                                    pending_exit = True
+                                    pending_exit_price = curr_price
+                                    pending_exit_days = 0
+                            else:
+                                # 非暴跌，正常卖出
+                                in_position = False
+                                exit_flags[i] = 1
+                                entry_price = None
+                                hold_days = 0
+                        else:
+                            in_position = False
+                            exit_flags[i] = 1
                             entry_price = None
                             hold_days = 0
 

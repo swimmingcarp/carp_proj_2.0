@@ -92,6 +92,30 @@ class RSITrendStrategy(MixedStrategy):
             'trend_divergence_ignore_rsi_exit': False,  # 底背离买入是否忽略RSI退出信号
             'trend_divergence_use_rsi_trend': False,  # 底背离买入使用RSI趋势判断（恢复原版，关闭优化）
             'trend_divergence_rsi_decline_threshold': -5.0,  # RSI相对下降阈值（负数表示下降）
+
+            # 高抛低吸参数（HYBRID策略：BB+RSI+涨幅多条件组合）
+            'swing_trade_enabled': True,            # 高抛低吸开关
+            'swing_min_hold_days': 8,               # 最少持仓8天才考虑
+            'swing_min_profit_pct': 3.0,            # 最少浮盈3%才考虑
+            'swing_max_profit_pct': 25.0,           # 浮盈超过此值不高抛（保护大牛股）
+            'swing_sell_gain_threshold': 10.0,      # 涨幅超过10%才允许卖出（必须与RSI同时满足）
+            'swing_aroon_threshold': 25,            # aroon_osc绝对值 < 25 = 震荡市
+            'swing_bb_sell_threshold': 0.80,        # bb_percent > 0.80 = 高位（必须满足）
+            'swing_rsi_sell_threshold': 65,         # fast_rsi > 65 = 超买（必须满足）
+            'swing_volume_surge_block': 1.8,        # 成交量 > 1.8倍均量时不卖（放量突破保护）
+            'swing_bb_rebuy_threshold': 0.50,       # bb_percent < 0.50 = 回到中位买回（放宽阈值）
+            'swing_rsi_rebuy_threshold': 40,        # fast_rsi < 40 = 超卖买回（放宽阈值，RSI<40也有58%胜率）
+            'swing_stoch_k_rebuy_threshold': 30,    # KDJ K线 < 30 = 超卖买回（放宽阈值）
+            'swing_rebuy_drop_pct': 999.0,          # 禁用纯跌幅回买（太弱，没有技术确认）
+            'swing_breakout_chase_pct': 999.0,      # 禁用普通追高买回（分析显示追高胜率低）
+            'swing_breakout_max_gap_pct': 999.0,    # 禁用普通追高买回
+            'swing_breakout_min_wait_days': 999,    # 禁用普通追高买回
+            'swing_next_day_up_rebuy': False,       # 次日收涨立即买回（分析发现容易追高，默认关闭）
+            'swing_volume_breakout_rebuy': True,    # 放量突破买回（真突破信号）
+            'swing_volume_breakout_ratio': 1.8,     # 放量突破的量比阈值
+            'swing_max_wait_days': 12,              # 最多等12天买回
+            'swing_max_loss_from_sell_pct': 5.0,    # 跌超过卖出价5%放弃买回
+            'swing_trend_reversal_giveup': True,    # trend_direction变-1则放弃
         }
         if config:
             defaults.update(config)
@@ -664,7 +688,7 @@ class RSITrendStrategy(MixedStrategy):
         data['chase_pullback_entry'] = False
 
         # 底背离买入和W底买入需要特殊的退出处理
-        position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags, sideways_exit_type = self._build_position_series_with_divergence(
+        position, entry_flags, exit_flags, stop_loss_flags, profit_target_flags, sideways_exit_type, swing_exit_flags, swing_rebuy_reasons = self._build_position_series_with_divergence(
             entry_condition,
             exit_condition,
             divergence_entry,
@@ -681,6 +705,8 @@ class RSITrendStrategy(MixedStrategy):
         data['stop_loss_exit'] = stop_loss_flags
         data['profit_target_exit'] = profit_target_flags  # 添加止盈标记
         data['sideways_exit_type'] = sideways_exit_type  # 震荡退出类型：1=上轨, 2=止盈, 3=止损
+        data['swing_exit_type'] = swing_exit_flags  # 高抛低吸：1=swing sell, 2=swing rebuy, 3=giveup
+        data['swing_rebuy_reason'] = swing_rebuy_reasons  # 高抛低吸回买原因
         data['stop_loss_pct'] = stop_loss_pct if stop_loss_pct > 0 else np.nan
         data['entry_reason'] = self._build_entry_reasons(data, entry_flags)
         data['exit_reason'] = self._build_exit_reasons(data, exit_flags)
@@ -1850,6 +1876,43 @@ class RSITrendStrategy(MixedStrategy):
         chase_hard_block = False  # 当前是否处于硬屏蔽状态
         chase_max_drop_pct = self.config.get('chase_max_drop_pct', 0)  # 急跌跌幅上限，0=不限
 
+        # 高抛低吸参数
+        swing_trade_enabled = bool(self.config.get('swing_trade_enabled', False))
+        swing_min_hold_days = int(self.config.get('swing_min_hold_days', 10))
+        swing_min_profit_pct = float(self.config.get('swing_min_profit_pct', 5.0))
+        swing_max_profit_pct = float(self.config.get('swing_max_profit_pct', 30.0))
+        swing_aroon_threshold = float(self.config.get('swing_aroon_threshold', 25))
+        swing_bb_sell_threshold = float(self.config.get('swing_bb_sell_threshold', 0.85))
+        swing_rsi_sell_threshold = float(self.config.get('swing_rsi_sell_threshold', 68))
+        swing_volume_surge_block = float(self.config.get('swing_volume_surge_block', 1.8))
+        swing_bb_rebuy_threshold = float(self.config.get('swing_bb_rebuy_threshold', 0.40))
+        swing_rsi_rebuy_threshold = float(self.config.get('swing_rsi_rebuy_threshold', 30))
+        swing_stoch_k_rebuy_threshold = float(self.config.get('swing_stoch_k_rebuy_threshold', 20))
+        swing_breakout_chase_pct = float(self.config.get('swing_breakout_chase_pct', 3.0))
+        swing_next_day_up_rebuy = bool(self.config.get('swing_next_day_up_rebuy', True))
+        swing_max_wait_days = int(self.config.get('swing_max_wait_days', 12))
+        swing_max_loss_from_sell_pct = float(self.config.get('swing_max_loss_from_sell_pct', 5.0))
+        swing_trend_reversal_giveup = bool(self.config.get('swing_trend_reversal_giveup', True))
+        swing_breakout_max_gap_pct = float(self.config.get('swing_breakout_max_gap_pct', 7.0))
+        swing_breakout_min_wait_days = int(self.config.get('swing_breakout_min_wait_days', 5))
+        swing_volume_breakout_rebuy = bool(self.config.get('swing_volume_breakout_rebuy', True))
+        swing_volume_breakout_ratio = float(self.config.get('swing_volume_breakout_ratio', 1.8))
+        # 高抛低吸运行时状态
+        swing_state = 0  # 0=无, 1=等待回买
+        swing_sell_price = 0.0
+        swing_sell_idx = 0
+        swing_original_entry_price = 0.0
+        swing_lowest_price = 0.0  # 等待期间的最低价（用于智能回买）
+        swing_exit_flags = np.zeros(n, dtype=int)  # 1=swing sell, 2=swing rebuy, 3=giveup
+        swing_rebuy_reasons = [''] * n  # 记录回买原因
+        swing_giveup_blocking = False  # 放弃后屏蔽买入，直到影子仓位退出
+        # 影子仓位（giveup后概念上仍持有1股，走同样的退出逻辑）
+        shadow_position_active = False
+        shadow_entry_price = 0.0
+        shadow_pending_exit = False
+        shadow_pending_exit_price = 0.0
+        shadow_pending_exit_days = 0
+
         for i in range(n):
             entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
             exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
@@ -1857,6 +1920,65 @@ class RSITrendStrategy(MixedStrategy):
             is_w_entry = bool(w_bottom_entry.iloc[i]) if not pd.isna(w_bottom_entry.iloc[i]) else False
             is_sw_entry = bool(sideways_entry.iloc[i]) if not pd.isna(sideways_entry.iloc[i]) else False
             curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
+
+            # 高抛放弃后的影子仓位处理：模拟原本仓位的退出逻辑
+            if shadow_position_active and swing_giveup_blocking:
+                shadow_should_exit = False
+
+                # 检查止损
+                if stop_loss_pct > 0 and shadow_entry_price > 0 and not pd.isna(curr_price):
+                    threshold = shadow_entry_price * (1 - stop_loss_pct / 100.0)
+                    if curr_price <= threshold:
+                        shadow_should_exit = True
+
+                # 处理待反弹卖出状态
+                if not shadow_should_exit and shadow_pending_exit:
+                    shadow_pending_exit_days += 1
+                    prev_close = data['close'].iloc[i - 1] if data is not None and i > 0 else curr_price
+                    day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
+                    bounce_from_signal = (curr_price / shadow_pending_exit_price - 1) * 100 if shadow_pending_exit_price > 0 else 0
+
+                    bounce_ok = (day_change > 0)
+                    if bounce_exit_bounce_pct > 0:
+                        bounce_ok = bounce_ok or (bounce_from_signal >= -bounce_exit_bounce_pct)
+                    timeout = (shadow_pending_exit_days >= bounce_exit_max_wait)
+
+                    if bounce_ok or timeout:
+                        shadow_should_exit = True
+
+                # 检查正常退出条件
+                elif not shadow_should_exit and exit_active:
+                    if bounce_exit_enabled and data is not None and i > 0:
+                        prev_close = data['close'].iloc[i - 1]
+                        day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
+
+                        if day_change < bounce_exit_drop_threshold:
+                            # 暴跌中，进入待卖出状态
+                            shadow_pending_exit = True
+                            shadow_pending_exit_price = curr_price
+                            shadow_pending_exit_days = 0
+                        else:
+                            # 非暴跌，正常退出
+                            shadow_should_exit = True
+                    else:
+                        # bounce_exit未启用，直接退出
+                        shadow_should_exit = True
+
+                # 影子仓位退出
+                if shadow_should_exit:
+                    shadow_position_active = False
+                    shadow_entry_price = 0.0
+                    shadow_pending_exit = False
+                    shadow_pending_exit_price = 0.0
+                    shadow_pending_exit_days = 0
+                    # 重要：退出当天仍然阻止入场（与非swing场景一致）
+                    # 下一个交易日才会解除阻止（swing_giveup_blocking在shadow不活跃时自动解除）
+                    position[i] = 0
+                    continue
+
+            # 影子仓位已退出但blocking仍生效：解除屏蔽（从下一天开始允许入场）
+            if swing_giveup_blocking and not shadow_position_active:
+                swing_giveup_blocking = False
 
             # 追高冷却期逻辑
             avoid_extreme_chase = False
@@ -1946,6 +2068,156 @@ class RSITrendStrategy(MixedStrategy):
                                     chase_cooldown_active = False
                                 else:
                                     avoid_extreme_chase = True
+
+            # 高抛低吸：等待回买状态处理
+            if swing_state == 1 and not in_position and data is not None:
+                sw_days_waiting = i - swing_sell_idx
+                sw_bb_pct = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else np.nan
+                sw_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else np.nan
+                sw_stoch_k = data['stoch_k'].iloc[i] if 'stoch_k' in data.columns and not pd.isna(data['stoch_k'].iloc[i]) else np.nan
+                sw_macd_hist = data['macd_hist'].iloc[i] if 'macd_hist' in data.columns and not pd.isna(data['macd_hist'].iloc[i]) else np.nan
+                sw_macd_hist_prev = data['macd_hist'].iloc[i-1] if i > 0 and 'macd_hist' in data.columns and not pd.isna(data['macd_hist'].iloc[i-1]) else np.nan
+                sw_trend = data['trend_direction'].iloc[i] if 'trend_direction' in data.columns and not pd.isna(data['trend_direction'].iloc[i]) else 0
+
+                # 更新等待期间的最低价
+                if not np.isnan(curr_price):
+                    if swing_lowest_price == 0 or curr_price < swing_lowest_price:
+                        swing_lowest_price = curr_price
+
+                sw_giveup = False
+                sw_rebuy = False
+
+                # 计算当前价格相对卖出价的变化
+                price_vs_sell = (curr_price / swing_sell_price - 1) * 100 if not np.isnan(curr_price) and swing_sell_price > 0 else 0
+
+                # ===== 低吸条件：价格 <= 卖出价 且 趋势未反转 =====
+                # 关键修复：低吸买回必须检查趋势，避免在趋势反转后买入
+                # （100%的低吸失败都是因为entry_condition=False时强制买入）
+                can_low_rebuy = (price_vs_sell <= 0
+                                 and sw_trend == 1  # 趋势仍向上
+                                 and not exit_active)  # 没有退出信号
+                sw_rebuy_reason = ''  # 记录回买原因
+                if can_low_rebuy:
+                    # 【条件1】RSI超卖（分析显示RSI<30胜率73.7%，是最佳回买指标）
+                    if not sw_rebuy and not np.isnan(sw_rsi) and sw_rsi < swing_rsi_rebuy_threshold:
+                        sw_rebuy = True
+                        sw_rebuy_reason = '持仓做T-低吸'
+
+                    # 【条件2】BB回到中低位
+                    if not sw_rebuy and not np.isnan(sw_bb_pct) and sw_bb_pct < swing_bb_rebuy_threshold:
+                        sw_rebuy = True
+                        sw_rebuy_reason = '持仓做T-低吸'
+
+                    # 【条件3】KDJ K线超卖
+                    if not sw_rebuy and not np.isnan(sw_stoch_k) and sw_stoch_k < swing_stoch_k_rebuy_threshold:
+                        sw_rebuy = True
+                        sw_rebuy_reason = '持仓做T-低吸'
+
+                    # 【条件4】MACD金叉（柱状图由负转正）
+                    if not sw_rebuy and not np.isnan(sw_macd_hist) and not np.isnan(sw_macd_hist_prev):
+                        if sw_macd_hist_prev < 0 and sw_macd_hist > 0:
+                            sw_rebuy = True
+                            sw_rebuy_reason = '持仓做T-低吸'
+
+                    # 【条件5】跌幅够大触发回买
+                    swing_rebuy_drop_pct = float(self.config.get('swing_rebuy_drop_pct', 3.0))
+                    if not sw_rebuy and not np.isnan(curr_price) and swing_sell_price > 0:
+                        drop_pct = (1 - curr_price / swing_sell_price) * 100
+                        if drop_pct >= swing_rebuy_drop_pct:
+                            sw_rebuy = True
+                            sw_rebuy_reason = '持仓做T-低吸'
+
+                    # 【条件6】智能回买：价格已从最低点反弹2%以上，且当前仍低于卖出价
+                    if not sw_rebuy and swing_lowest_price > 0 and not np.isnan(curr_price) and swing_sell_price > 0:
+                        bounce_from_low = (curr_price / swing_lowest_price - 1) * 100
+                        if bounce_from_low >= 2.0 and sw_days_waiting >= 2:
+                            sw_rebuy = True
+                            sw_rebuy_reason = '持仓做T-低吸'
+
+                # ===== 放量突破买回：第二天涨 + 放量 = 真突破，立即买回 =====
+                # 分析显示：放量(量比>1.8)的次日涨是真突破，应该买回
+                # 而普通的次日涨82%会跌回来，不应该追
+                if not sw_rebuy and swing_volume_breakout_rebuy and sw_days_waiting == 1:
+                    if not np.isnan(curr_price) and swing_sell_price > 0 and price_vs_sell > 0:
+                        # 检查今天是否放量
+                        sw_vol = data['volume'].iloc[i] if 'volume' in data.columns else np.nan
+                        sw_vol_ma = data['volume_ma20'].iloc[i] if 'volume_ma20' in data.columns else np.nan
+                        if not np.isnan(sw_vol) and not np.isnan(sw_vol_ma) and sw_vol_ma > 0:
+                            vol_ratio = sw_vol / sw_vol_ma
+                            if vol_ratio >= swing_volume_breakout_ratio:
+                                sw_rebuy = True  # 放量上涨 = 真突破
+                                sw_rebuy_reason = '持仓做T-低吸'
+
+                # ===== 普通追高条件（默认禁用） =====
+                if not sw_rebuy and not np.isnan(curr_price) and swing_sell_price > 0:
+                    if (price_vs_sell > swing_breakout_chase_pct
+                        and price_vs_sell <= swing_breakout_max_gap_pct
+                        and sw_days_waiting >= swing_breakout_min_wait_days):
+                        sw_rebuy = True
+                        sw_rebuy_reason = '持仓做T-低吸'
+
+                # 只有回买条件不满足时，才检查放弃条件
+                if not sw_rebuy:
+                    if sw_days_waiting >= swing_max_wait_days:
+                        sw_giveup = True
+                    if not np.isnan(curr_price) and swing_original_entry_price > 0 and curr_price < swing_original_entry_price:
+                        sw_giveup = True
+                    if swing_trend_reversal_giveup and sw_trend == -1:
+                        sw_giveup = True
+                    if not np.isnan(curr_price) and swing_sell_price > 0:
+                        drop_from_sell = (1 - curr_price / swing_sell_price) * 100
+                        if drop_from_sell > swing_max_loss_from_sell_pct:
+                            sw_giveup = True
+
+                if sw_giveup:
+                    swing_exit_flags[i] = 3
+                    swing_state = 0
+                    swing_sell_price = 0.0
+                    swing_sell_idx = 0
+                    swing_lowest_price = 0.0
+                    # 放弃后启用影子仓位，模拟原本持仓的退出逻辑
+                    swing_giveup_blocking = True
+                    shadow_position_active = True
+                    shadow_entry_price = swing_original_entry_price  # 保存原始入场价用于止损计算
+                    shadow_pending_exit = False
+                    shadow_pending_exit_price = 0.0
+                    shadow_pending_exit_days = 0
+                    swing_original_entry_price = 0.0
+                    position[i] = 0
+                    continue  # 不允许立即入场
+                elif sw_rebuy:
+                    in_position = True
+                    entry_flags[i] = 1
+                    entry_price = curr_price if not np.isnan(curr_price) else None
+                    swing_exit_flags[i] = 2
+                    swing_rebuy_reasons[i] = sw_rebuy_reason  # 记录回买原因
+                    is_divergence_entry = False
+                    is_w_bottom_entry = False
+                    is_sideways_entry = False
+                    hold_days = 0
+                    pending_exit = False
+                    pending_exit_days = 0
+                    trailing_stop_active = False
+                    dynamic_profit_active = False
+                    max_profit_in_trade = 0
+                    swing_state = 0
+                    swing_sell_price = 0.0
+                    swing_sell_idx = 0
+                    swing_original_entry_price = 0.0
+                    swing_lowest_price = 0.0
+                    if data is not None and 'chase_pullback_entry' in data.columns:
+                        data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
+                    position[i] = 1
+                    continue
+                else:
+                    # 继续等待，不进入正常入场逻辑
+                    position[i] = 0
+                    continue
+
+            # 高抛放弃后屏蔽买入（概念上还持有1股，等原本的卖出信号）
+            if swing_giveup_blocking:
+                position[i] = 0
+                continue
 
             if not in_position and (entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position):
                 in_position = True
@@ -2244,6 +2516,74 @@ class RSITrendStrategy(MixedStrategy):
 
                 # 非底背离、非W底、非震荡市场买入，按正常逻辑处理
                 elif not is_divergence_entry and not is_w_bottom_entry and not is_sideways_entry:
+                    # 高抛低吸：检查是否满足swing sell条件
+                    if (swing_trade_enabled and data is not None and not pending_exit
+                            and swing_state == 0 and entry_price and not np.isnan(curr_price)):
+                        sw_profit = (curr_price / entry_price - 1) * 100
+                        sw_aroon = data['aroon_osc'].iloc[i] if 'aroon_osc' in data.columns and not pd.isna(data['aroon_osc'].iloc[i]) else np.nan
+                        sw_bb_pct = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else np.nan
+                        sw_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else np.nan
+                        sw_vol = data['volume'].iloc[i] if 'volume' in data.columns else np.nan
+                        sw_vol_ma = data['volume_ma20'].iloc[i] if 'volume_ma20' in data.columns else np.nan
+                        sw_trend = data['trend_direction'].iloc[i] if 'trend_direction' in data.columns and not pd.isna(data['trend_direction'].iloc[i]) else 0
+                        sw_main_wave = bool(data['main_wave_signal'].iloc[i]) if 'main_wave_signal' in data.columns and not pd.isna(data['main_wave_signal'].iloc[i]) else False
+
+                        sw_can_sell = True
+                        # C1: 最少持仓天数
+                        if hold_days < swing_min_hold_days:
+                            sw_can_sell = False
+                        # C2: 最少浮盈
+                        if sw_profit < swing_min_profit_pct:
+                            sw_can_sell = False
+                        # C2b: 浮盈过高则不高抛（保护大牛股，让利润继续跑）
+                        if sw_profit > swing_max_profit_pct:
+                            sw_can_sell = False
+                        # C3: 震荡市（aroon近零）
+                        if np.isnan(sw_aroon) or abs(sw_aroon) >= swing_aroon_threshold:
+                            sw_can_sell = False
+                        # C4: 价格在BB高位（必须满足）
+                        if np.isnan(sw_bb_pct) or sw_bb_pct < swing_bb_sell_threshold:
+                            sw_can_sell = False
+                        # C5: 严格条件 - RSI超买 且 涨幅够大（必须同时满足）
+                        # 改用AND逻辑，避免在趋势中过早卖出
+                        swing_sell_gain_threshold = float(self.config.get('swing_sell_gain_threshold', 10.0))
+                        rsi_overbought = (not np.isnan(sw_rsi)) and sw_rsi >= swing_rsi_sell_threshold
+                        gain_high = sw_profit >= swing_sell_gain_threshold
+                        if not (rsi_overbought and gain_high):
+                            sw_can_sell = False
+                        # C6: 趋势未反转（只在趋势向上时做波段）
+                        if exit_active:
+                            sw_can_sell = False
+                        # C7: 非放量突破
+                        if (not np.isnan(sw_vol) and not np.isnan(sw_vol_ma)
+                                and sw_vol_ma > 0 and sw_vol / sw_vol_ma > swing_volume_surge_block):
+                            sw_can_sell = False
+                        # C8: 非主升浪
+                        if sw_main_wave:
+                            sw_can_sell = False
+                        # C9: SuperTrend仍看多
+                        if sw_trend != 1:
+                            sw_can_sell = False
+
+                        if sw_can_sell:
+                            swing_state = 1
+                            swing_sell_price = curr_price
+                            swing_sell_idx = i
+                            swing_original_entry_price = entry_price
+                            swing_lowest_price = 0.0  # 重置最低价追踪
+                            in_position = False
+                            exit_flags[i] = 1
+                            swing_exit_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            position[i] = 0
+                            continue
+
                     # 止损始终立即执行（不延迟）
                     if stop_loss_pct > 0 and entry_price and not pd.isna(curr_price):
                         threshold = entry_price * (1 - stop_loss_pct / 100.0)
@@ -2330,7 +2670,7 @@ class RSITrendStrategy(MixedStrategy):
 
             position[i] = 1 if in_position else 0
 
-        return position, entry_flags, exit_flags, stop_flags, profit_target_flags, sideways_exit_type
+        return position, entry_flags, exit_flags, stop_flags, profit_target_flags, sideways_exit_type, swing_exit_flags, swing_rebuy_reasons
 
     @staticmethod
     def _build_entry_reasons(data: pd.DataFrame, entry_flags: np.ndarray) -> pd.Series:
@@ -2347,8 +2687,12 @@ class RSITrendStrategy(MixedStrategy):
                 row = data.iloc[idx]
                 parts = []
                 
+                # 检查是否为高抛低吸回买
+                swing_type = row.get('swing_exit_type', 0)
+                if swing_type == 2:
+                    parts.append("持仓做T-低吸")
                 # 检查是否为追高回调买入
-                if row.get('chase_pullback_entry', False):
+                elif row.get('chase_pullback_entry', False):
                     parts.append("追高回调买入")
                 # 检查是否为底背离入场（独立生效）
                 elif row.get('bullish_divergence_signal', False):
@@ -2386,6 +2730,14 @@ class RSITrendStrategy(MixedStrategy):
         for idx, flag in enumerate(exit_flags):
             if flag:
                 parts = []
+
+                # 优先检查高抛低吸退出
+                swing_exit = data.iloc[idx].get('swing_exit_type', 0)
+                if swing_exit == 1:
+                    # 高抛卖出统一用"持仓做T-高抛"，因为卖出时不知道后续能否接回
+                    parts.append("持仓做T-高抛")
+                    reasons[idx] = ' + '.join(parts)
+                    continue
 
                 # 优先检查震荡退出
                 sw_exit = data.iloc[idx].get('sideways_exit_type', 0)
@@ -2601,5 +2953,82 @@ class RSITrendStrategy(MixedStrategy):
                 
                 # 找到第一个有效的W底后，这个低点1就不再作为起点
                 break
-        
+
         return w_bottom_signals
+
+    def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Dict:
+        """回测（重写父类方法，增加高抛低吸交易合并逻辑）"""
+        # 调用父类的回测方法
+        result = super().backtest(df, initial_capital)
+
+        # 合并高抛低吸交易（将swing sell + rebuy算作一次交易）
+        if 'swing_exit_type' in df.columns:
+            trades = result.get('trades', [])
+            if len(trades) > 1:
+                swing_sell_dates = set(df[df['swing_exit_type'] == 1]['date'].astype(str).tolist())
+                swing_rebuy_dates = set(df[df['swing_exit_type'] == 2]['date'].astype(str).tolist())
+
+                if swing_sell_dates and swing_rebuy_dates:
+                    merged_trades = []
+                    i = 0
+                    while i < len(trades):
+                        trade = trades[i]
+                        sell_date_str = str(trade.get('sell_date', ''))[:10]
+
+                        # 检查是否是高抛卖出
+                        if sell_date_str in [str(d)[:10] for d in swing_sell_dates]:
+                            # 找下一笔低吸买回交易
+                            if i + 1 < len(trades):
+                                next_trade = trades[i + 1]
+                                next_buy_date_str = str(next_trade.get('buy_date', ''))[:10]
+
+                                if next_buy_date_str in [str(d)[:10] for d in swing_rebuy_dates]:
+                                    # 合并两笔交易
+                                    original_buy_price = trade['buy_price']
+                                    final_sell_price = next_trade['sell_price']
+                                    total_commission = trade.get('commission', 0) + next_trade.get('commission', 0)
+
+                                    if original_buy_price > 0:
+                                        gross_profit_rate = (final_sell_price / original_buy_price - 1)
+                                        commission_rate = total_commission / (original_buy_price * 100) if original_buy_price > 0 else 0
+                                        merged_profit_rate = gross_profit_rate - commission_rate
+                                    else:
+                                        merged_profit_rate = 0
+
+                                    merged_trade = {
+                                        'buy_date': trade['buy_date'],
+                                        'buy_price': original_buy_price,
+                                        'sell_date': next_trade['sell_date'],
+                                        'sell_price': final_sell_price,
+                                        'profit_rate': merged_profit_rate,
+                                        'capital': next_trade.get('capital', 0),
+                                        'commission': total_commission,
+                                        'is_swing_merged': True,
+                                    }
+                                    merged_trades.append(merged_trade)
+                                    i += 2
+                                    continue
+
+                        merged_trades.append(trade)
+                        i += 1
+
+                    # 更新trades和相关统计
+                    result['trades'] = merged_trades
+                    if len(merged_trades) > 0:
+                        winning = sum(1 for t in merged_trades if t['profit_rate'] > 0)
+                        result['win_rate'] = winning / len(merged_trades) * 100
+
+        # 计算盈亏比 (Profit Factor) - 用收益率之和
+        trades = result.get('trades', [])
+        win_trades = [t for t in trades if t['profit_rate'] > 0]
+        lose_trades = [t for t in trades if t['profit_rate'] < 0]
+        total_profit_pct = sum(t['profit_rate'] for t in win_trades)
+        total_loss_pct = abs(sum(t['profit_rate'] for t in lose_trades))
+        result['profit_factor'] = total_profit_pct / total_loss_pct if total_loss_pct > 0 else (999.0 if total_profit_pct > 0 else 0.0)
+        # 保存汇总数据，供批量回测使用
+        result['win_count'] = len(win_trades)
+        result['lose_count'] = len(lose_trades)
+        result['total_profit_pct'] = total_profit_pct
+        result['total_loss_pct'] = total_loss_pct
+
+        return result

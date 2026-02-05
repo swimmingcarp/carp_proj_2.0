@@ -688,8 +688,12 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
             'total_return': backtest_result.get('total_return', 0.0),
             'max_drawdown': backtest_result.get('max_drawdown', 0.0),
             'win_rate': backtest_result.get('win_rate', 0.0),
+            'profit_factor': backtest_result.get('profit_factor', 0.0),
             'total_trades': backtest_result.get('total_trades', 0),
             'final_capital': backtest_result.get('final_capital', initial_capital),
+            # 用于汇总计算盈亏比
+            'total_profit_pct': backtest_result.get('total_profit_pct', 0.0),
+            'total_loss_pct': backtest_result.get('total_loss_pct', 0.0),
         }
 
         log_message = (
@@ -739,13 +743,13 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
 
     summary.sort(key=lambda x: x['total_return'], reverse=True)
 
-    header = "{:<8}{:>10}{:>16}{:>10}{:>12}{:>12}".format(
-        "代码", "收益%", "最大回撤%", "胜率%", "交易数", "最终资金"
+    header = "{:<8}{:>10}{:>12}{:>8}{:>8}{:>8}{:>14}".format(
+        "代码", "收益%", "最大回撤%", "胜率%", "盈亏比", "交易数", "最终资金"
     )
-    summary_header = "{:<8}{:>10}{:>12}{:>8}{:>10}{:>10}".format(
-        "股票数量", "平均收益%", "平均最大回撤%", "平均胜率%", "平均交易数", "最终资金"
+    summary_header = "{:<8}{:>10}{:>12}{:>8}{:>8}{:>8}{:>14}".format(
+        "股票数量", "平均收益%", "平均回撤%", "平均胜率%", "盈亏比", "交易数", "最终资金"
     )
-    separator_line = "=" * 82
+    separator_line = "=" * 78
     dash_line = "-" * len(separator_line)
 
     print("\n" + separator_line)
@@ -754,12 +758,15 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
     table_lines = [header, dash_line]
 
     for row in summary:
+        pf = row['profit_factor']
+        pf_str = f"{pf:.2f}" if pf < 100 else "99+"
         line = (
-            "{:<10}{:>14.2f}{:>16.2f}{:>12.2f}{:>12d}{:>18,.2f}".format(
+            "{:<10}{:>10.2f}{:>12.2f}{:>8.2f}{:>8}{:>8d}{:>14,.2f}".format(
                 row['code'],
                 row['total_return'],
                 row['max_drawdown'],
                 row['win_rate'],
+                pf_str,
                 row['total_trades'],
                 row['final_capital'],
             )
@@ -769,14 +776,20 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
     avg_total_return = sum(row['total_return'] for row in summary) / success_count
     avg_max_drawdown = sum(row['max_drawdown'] for row in summary) / success_count
     avg_win_rate = sum(row['win_rate'] for row in summary) / success_count
+    # 盈亏比：各股票盈亏比的平均值（每只股票权重相等，避免大数吞小数）
+    # 排除无亏损(999)的极端值
+    valid_pfs = [row['profit_factor'] for row in summary if row['profit_factor'] < 100]
+    avg_profit_factor = sum(valid_pfs) / len(valid_pfs) if valid_pfs else 99.0
     avg_trades = sum(row['total_trades'] for row in summary) / success_count
     avg_final_capital = sum(row['final_capital'] for row in summary) / success_count
 
-    summary_line = "{:<10}{:>14.2f}{:>16.2f}{:>12.2f}{:>12.2f}{:>18,.2f}".format(
+    pf_str = f"{avg_profit_factor:.2f}" if avg_profit_factor < 100 else "99+"
+    summary_line = "{:<10}{:>10.2f}{:>12.2f}{:>8.2f}{:>8}{:>8.2f}{:>14,.2f}".format(
         success_count,
         avg_total_return,
         avg_max_drawdown,
         avg_win_rate,
+        pf_str,
         avg_trades,
         avg_final_capital,
     )

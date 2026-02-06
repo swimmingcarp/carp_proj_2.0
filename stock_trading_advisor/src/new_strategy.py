@@ -103,17 +103,17 @@ class RSITrendStrategy(MixedStrategy):
             'swing_bb_sell_threshold': 0.80,        # bb_percent > 0.80 = 高位（必须满足）
             'swing_rsi_sell_threshold': 65,         # fast_rsi > 65 = 超买（必须满足）
             'swing_volume_surge_block': 1.8,        # 成交量 > 1.8倍均量时不卖（放量突破保护）
-            'swing_bb_rebuy_threshold': 0.50,       # bb_percent < 0.50 = 回到中位买回（放宽阈值）
-            'swing_rsi_rebuy_threshold': 40,        # fast_rsi < 40 = 超卖买回（放宽阈值，RSI<40也有58%胜率）
-            'swing_stoch_k_rebuy_threshold': 30,    # KDJ K线 < 30 = 超卖买回（放宽阈值）
-            'swing_rebuy_drop_pct': 999.0,          # 禁用纯跌幅回买（太弱，没有技术确认）
+            'swing_bb_rebuy_threshold': 0.35,       # bb_percent < 0.35 = 回到低位买回（优化：0.50→0.35⭐）
+            'swing_rsi_rebuy_threshold': 40,        # fast_rsi < 40 = 超卖买回
+            'swing_stoch_k_rebuy_threshold': 30,    # KDJ K线 < 30 = 超卖买回
+            'swing_rebuy_drop_pct': 999.0,          # 禁用纯跌幅回买（优化：4.0→禁用，提升胜率⭐）
             'swing_breakout_chase_pct': 999.0,      # 禁用普通追高买回（分析显示追高胜率低）
             'swing_breakout_max_gap_pct': 999.0,    # 禁用普通追高买回
             'swing_breakout_min_wait_days': 999,    # 禁用普通追高买回
             'swing_next_day_up_rebuy': False,       # 次日收涨立即买回（分析发现容易追高，默认关闭）
             'swing_volume_breakout_rebuy': True,    # 放量突破买回（真突破信号）
             'swing_volume_breakout_ratio': 1.8,     # 放量突破的量比阈值
-            'swing_max_wait_days': 12,              # 最多等12天买回
+            'swing_max_wait_days': 8,               # 最多等8天买回（优化：12→8⭐）
             'swing_max_loss_from_sell_pct': 5.0,    # 跌超过卖出价5%放弃买回
             'swing_trend_reversal_giveup': True,    # trend_direction变-1则放弃
         }
@@ -2119,13 +2119,13 @@ class RSITrendStrategy(MixedStrategy):
                             sw_rebuy = True
                             sw_rebuy_reason = '持仓做T-低吸'
 
-                    # 【条件5】跌幅够大触发回买
-                    swing_rebuy_drop_pct = float(self.config.get('swing_rebuy_drop_pct', 3.0))
+                    # 【条件5】极端下跌触发回买，博反弹
+                    swing_rebuy_drop_pct = float(self.config.get('swing_rebuy_drop_pct', 4.0))
                     if not sw_rebuy and not np.isnan(curr_price) and swing_sell_price > 0:
                         drop_pct = (1 - curr_price / swing_sell_price) * 100
                         if drop_pct >= swing_rebuy_drop_pct:
                             sw_rebuy = True
-                            sw_rebuy_reason = '持仓做T-低吸'
+                            sw_rebuy_reason = f'持仓做T-低吸(跌{drop_pct:.1f}%博反弹)'
 
                     # 【条件6】智能回买：价格已从最低点反弹2%以上，且当前仍低于卖出价
                     if not sw_rebuy and swing_lowest_price > 0 and not np.isnan(curr_price) and swing_sell_price > 0:

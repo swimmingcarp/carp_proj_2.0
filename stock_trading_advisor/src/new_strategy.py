@@ -563,6 +563,48 @@ class RSITrendStrategy(MixedStrategy):
         data['bb_width'] = bb_width
         data['bb_percent'] = bb_percent
 
+        # EH做T多因子指标计算（用于多因子评分高抛判定）
+        # Stochastic K/D (14-period)
+        _stoch_lowest = data['low'].rolling(14).min()
+        _stoch_highest = data['high'].rolling(14).max()
+        _stoch_denom = (_stoch_highest - _stoch_lowest).replace(0, np.nan)
+        data['stoch_k'] = 100 * (data['close'] - _stoch_lowest) / _stoch_denom
+        data['stoch_d'] = data['stoch_k'].rolling(3).mean()
+
+        # Williams %R (14-period, same window as Stochastic)
+        data['williams_r'] = -100 * (_stoch_highest - data['close']) / _stoch_denom
+
+        # CCI (20-period)
+        _cci_tp = (data['high'] + data['low'] + data['close']) / 3
+        _cci_ma = _cci_tp.rolling(20).mean()
+        _cci_md = _cci_tp.rolling(20).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+        data['cci_20'] = (_cci_tp - _cci_ma) / (0.015 * _cci_md.replace(0, np.nan))
+
+        # Distance from MA20 (%) - bb_middle is the 20-day SMA
+        data['dist_ma20'] = (data['close'] - bb_middle) / bb_middle.replace(0, np.nan) * 100
+
+        # MA60 and distance from it (%)
+        data['ma_60'] = data['close'].rolling(60).mean()
+        data['dist_ma60'] = (data['close'] - data['ma_60']) / data['ma_60'].replace(0, np.nan) * 100
+
+        # RSI 14-period (for scoring, separate from fast_rsi which may be 5-period)
+        data['rsi_14'] = rsi_indicator(data['close'], period=14)
+
+        # Linear regression slope (10-day, normalized % per day)
+        def _lr_slope_norm(x):
+            if np.any(np.isnan(x)):
+                return np.nan
+            slope = np.polyfit(np.arange(len(x)), x, 1)[0]
+            mean_val = np.mean(x)
+            return slope / mean_val * 100 if mean_val != 0 else 0
+        data['lr_slope_10'] = data['close'].rolling(10).apply(_lr_slope_norm, raw=True)
+
+        # EH做T反转确认指标
+        data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
+        # StochK死叉：K线下穿D线（从高位区域）
+        data['stk_prev'] = data['stoch_k'].shift(1)
+        data['std_prev'] = data['stoch_d'].shift(1)
+
         sideways_entry = (
             data['is_sideways'] &           # Aroon震荡
             (data['bb_percent'] <= 0.20) &  # 价格接近下轨
@@ -590,6 +632,9 @@ class RSITrendStrategy(MixedStrategy):
 
         # 入场质量过滤器（基于多因子分析，按类型选择性应用）
         # vs_ma60过滤：安全，不损失大赢家；MACD过滤：仅限标准RSI/RSI动量
+        # 默认保存过滤前的标准入场（可能在entry_filter中被覆盖）
+        data['standard_entry_raw'] = standard_entry.copy()
+
         entry_filter_enabled = self.config.get('entry_filter_enabled', True)
         if entry_filter_enabled:
             ma60 = data['close'].rolling(60).mean()
@@ -1851,6 +1896,82 @@ class RSITrendStrategy(MixedStrategy):
         dynamic_profit_drawback = float(self.config.get('dynamic_profit_drawback', 0))  # 从最高点回撤Y%就卖
         dynamic_profit_active = False  # 是否已激活
 
+        # 主升浪延长持仓：退出信号时浮盈>35%+MA120上升+持仓>25天 → 改用MA120退出线
+        extended_hold_active = False
+        extended_hold_trigger_profit = 0.0  # 触发时的浮盈%（用于计算回撤底线）
+        extended_hold_max_profit = 0.0  # 延长持仓期间最高浮盈
+        eh_profit_threshold = float(self.config.get('extended_hold_profit_threshold', 35))
+        eh_drawdown_limit = float(self.config.get('extended_hold_drawdown', 5))  # 从触发浮盈回撤X%后退出（R7最优：5）
+        eh_peak_trailing = float(self.config.get('extended_hold_peak_trailing', 20))  # 从最高浮盈回撤X%后退出
+        eh_peak_activation_offset = float(self.config.get('extended_hold_peak_activation_offset', 20))  # 峰值回撤激活：浮盈超过触发浮盈+Xpp后启动
+        eh_gain_protection_ratio = float(self.config.get('extended_hold_gain_protection_ratio', 0))  # 比例保护：保护已有增益的X%（0=关闭）
+        eh_swing_enabled = bool(self.config.get('extended_hold_swing_enabled', True))  # EH期间做T开关（R7最优：开启）
+        eh_swing_rsi_threshold = float(self.config.get('eh_swing_rsi_threshold', 50))  # EH做T卖出RSI阈值（R7最优：50）
+        eh_swing_bb_threshold = float(self.config.get('eh_swing_bb_threshold', 0.50))  # EH做T卖出BB阈值（R7最优：0.50）
+        eh_swing_min_gain_above_trigger = float(self.config.get('eh_swing_min_gain_above_trigger', 10))  # 浮盈超过触发值Xpp才允许卖出（R7最优：10）
+        eh_swing_volume_surge_block = float(self.config.get('eh_swing_volume_surge_block', 2.5))  # 放量突破不卖
+        eh_swing_rebuy_rsi = float(self.config.get('eh_swing_rebuy_rsi', 45))  # EH做T回买RSI阈值
+        eh_swing_rebuy_bb = float(self.config.get('eh_swing_rebuy_bb', 0.35))  # EH做T回买BB阈值
+        eh_swing_rebuy_max_above = float(self.config.get('eh_swing_rebuy_max_above', 0))  # 允许回买价超过卖价的最大百分比（0=只允许低于卖价回买）
+        eh_swing_max_wait_days = int(self.config.get('eh_swing_max_wait_days', 0))  # EH做T最长等待天数（R7最优：0=无限）
+        eh_swing_force_rebuy_premium = float(self.config.get('eh_swing_force_rebuy_premium', 999))  # 股价涨超卖价X%时强制回买（R7最优：999=关闭）
+        eh_swing_rebuy_pullback_pct = float(self.config.get('eh_swing_rebuy_pullback_pct', 0))  # 回调低吸：股价从T卖后高点回撤X%时买回（0=关闭）
+        eh_swing_peak_drawdown = float(self.config.get('eh_swing_peak_drawdown', 0))  # 从峰值回撤Xpp触发做T卖出（0=关闭，只用RSI/BB卖）
+        eh_swing_score_threshold = int(self.config.get('eh_swing_score_threshold', 0))  # 多因子评分阈值（0=使用旧RSI+BB逻辑，>=1使用评分系统）
+        # 超买收紧止盈参数（不增加交易，只在超买后收紧trailing stop）
+        eh_overbought_trailing = float(self.config.get('eh_overbought_trailing', 0))  # 超买后收紧trailing到X%（0=关闭）
+        # EH做T运行时状态
+        _eh_swing_active = False  # EH做T等待回买中
+        _eh_swing_sell_price = 0.0  # EH做T卖出价格
+        _eh_swing_original_entry = 0.0  # EH做T前的原始入场价（用于计算底线）
+        _eh_swing_floor_price = 0.0  # EH底线的绝对价格
+        _eh_swing_sell_idx = 0  # EH做T卖出位置索引（用于等待天数计算）
+        _eh_swing_peak_after_sell = 0.0  # T卖后的最高价（用于回调低吸判断）
+        _eh_swing_used = False  # 当前EH周期是否已使用过做T（限制每个EH只做一次）
+        _eh_swing_rebuy_idx = 0  # 上次T-rebuy的索引（冷却期控制）
+        # T-sell时保存的原始交易状态（T-rebuy时恢复，做T不影响原始交易逻辑）
+        _eh_swing_saved_entry_price = 0.0
+        _eh_swing_saved_hold_days = 0
+        _eh_swing_saved_pending_exit = False
+        _eh_swing_saved_trailing_stop_active = False
+        _eh_swing_saved_dynamic_profit_active = False
+        _eh_swing_saved_max_profit_in_trade = 0.0
+        _eh_swing_saved_is_divergence_entry = False
+        _eh_swing_saved_is_w_bottom_entry = False
+        _eh_swing_saved_is_sideways_entry = False
+        _eh_swing_saved_eh_trigger_profit = 0.0
+        _eh_swing_saved_eh_max_profit = 0.0
+        eh_swing_cooldown_days = int(self.config.get('eh_swing_cooldown_days', 10))  # T-rebuy后N天内不允许再次T-sell（R7最优：10）
+        # 确认后卖出参数（等待确认再高抛，避免卖飞）
+        eh_swing_confirm_days = int(self.config.get('eh_swing_confirm_days', 0))  # 确认等待天数（0=立即卖出，不等确认）
+        eh_swing_confirm_drop_pct = float(self.config.get('eh_swing_confirm_drop_pct', 2.0))  # 从信号日回撤X%确认为高点
+        _eh_swing_confirming = False  # 正在等待确认中
+        _eh_swing_signal_idx = 0  # 超买信号触发日的索引
+        _eh_swing_signal_price = 0.0  # 信号日的价格（用于判断回撤）
+        _eh_overbought_seen = False  # 当前EH周期是否已检测到超买（粘性标记，用于收紧trailing）
+        # 多模式T-sell参数（基于海量EH峰值数据分析）
+        eh_swing_armed_mode = bool(self.config.get('eh_swing_armed_mode', True))  # 武装模式：信号后追踪峰值，回撤时卖出（R7最优：开启）
+        eh_swing_trailing_drop_pct = float(self.config.get('eh_swing_trailing_drop_pct', 2.7))  # 武装峰值回撤X%触发卖出（R7最优：2.7）
+        eh_swing_armed_max_days = int(self.config.get('eh_swing_armed_max_days', 20))  # 武装状态最大天数
+        eh_swing_ob_stk_threshold = float(self.config.get('eh_swing_ob_stk_threshold', 70))  # StochK超买阈值（R7最优：70）
+        eh_swing_ob_min_count = int(self.config.get('eh_swing_ob_min_count', 2))  # 超买集群最少指标数（N of 3）
+        eh_swing_dev_ma20_pct = float(self.config.get('eh_swing_dev_ma20_pct', 0))  # MA20偏离%触发（0=关闭）
+        eh_swing_dev_ma60_pct = float(self.config.get('eh_swing_dev_ma60_pct', 0))  # MA60偏离%触发（0=关闭）
+        # 武装模式运行时状态
+        _eh_swing_armed = False  # 武装模式激活中
+        _eh_swing_armed_idx = 0  # 武装模式开始索引
+        _eh_swing_armed_peak = 0.0  # 武装后最高价格
+
+        # 主升浪再入场：高盈利退出后120天内，绕过ef_ma60_max过滤
+        post_wave_reentry_countdown = 0  # >0时允许再入场
+        post_wave_reentry_window = int(self.config.get('post_wave_reentry_window', 120))
+        pw_profit_threshold = float(self.config.get('post_wave_profit_threshold', 35))
+        pw_min_hold = int(self.config.get('post_wave_min_hold', 35))
+        pw_price_confirm_pct = float(self.config.get('post_wave_price_confirm_pct', 0))  # 价格突破确认：股价>退场价×(1+X%)才回补
+        _pw_last_trade_profit = 0.0  # 持仓中的实时利润，退出后保持最后值
+        _pw_last_trade_hold = 0  # 持仓天数，退出后保持最后值
+        _pw_exit_price = 0.0  # EH退出时的价格（用于价格突破确认）
+
         # 追高冷却期参数（从config读取，支持优化调参）
         chase_cooldown_active = False
         chase_peak_price = 0
@@ -2069,6 +2190,101 @@ class RSITrendStrategy(MixedStrategy):
                                 else:
                                     avoid_extreme_chase = True
 
+            # EH做T：等待回买状态处理（EH期间卖出后等回补）
+            if _eh_swing_active and not in_position and data is not None:
+                _ehs_rebuy = False
+                _ehs_giveup = False
+                _ehs_wait_days = i - _eh_swing_sell_idx
+                _ehs_bb = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else np.nan
+                _ehs_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else np.nan
+                _ehs_stoch_k = data['stoch_k'].iloc[i] if 'stoch_k' in data.columns and not pd.isna(data['stoch_k'].iloc[i]) else np.nan
+                _ehs_ma120 = data['ma_120'].iloc[i] if 'ma_120' in data.columns else np.nan
+
+                # 追踪T卖后的最高价（用于回调低吸判断）
+                if not np.isnan(curr_price) and curr_price > _eh_swing_peak_after_sell:
+                    _eh_swing_peak_after_sell = curr_price
+
+                # 回买路径1：超卖低吸（传统做T：RSI超卖 + 价格在允许范围内）
+                _ehs_max_rebuy_price = _eh_swing_sell_price * (1 + eh_swing_rebuy_max_above / 100) if eh_swing_rebuy_max_above > 0 else _eh_swing_sell_price
+                _ehs_price_ok = not np.isnan(curr_price) and _eh_swing_sell_price > 0 and curr_price <= _ehs_max_rebuy_price
+                if _ehs_price_ok:
+                    if (not np.isnan(_ehs_rsi) and _ehs_rsi < eh_swing_rebuy_rsi):
+                        _ehs_rebuy = True
+                    elif (not np.isnan(_ehs_bb) and _ehs_bb < eh_swing_rebuy_bb):
+                        _ehs_rebuy = True
+                    elif (not np.isnan(_ehs_stoch_k) and _ehs_stoch_k < swing_stoch_k_rebuy_threshold):
+                        _ehs_rebuy = True
+
+                # 回买路径2：回调接回（T飞后找机会接回：股价从T卖后高点回撤X%）
+                if not _ehs_rebuy and eh_swing_rebuy_pullback_pct > 0 and _eh_swing_peak_after_sell > 0:
+                    if not np.isnan(curr_price) and curr_price > _eh_swing_sell_price:
+                        # 只在股价高于卖价时触发（真正卖飞的情况）
+                        _ehs_pullback_threshold = _eh_swing_peak_after_sell * (1 - eh_swing_rebuy_pullback_pct / 100)
+                        if curr_price <= _ehs_pullback_threshold:
+                            _ehs_rebuy = True  # 回调接回
+
+                # 回买路径3：强制回买（兜底：股价大幅高于卖价 → 无条件接回）
+                if not _ehs_rebuy and eh_swing_force_rebuy_premium > 0 and not np.isnan(curr_price):
+                    _ehs_force_price = _eh_swing_sell_price * (1 + eh_swing_force_rebuy_premium / 100)
+                    if curr_price > _ehs_force_price:
+                        _ehs_rebuy = True
+
+                # 放弃条件
+                if not _ehs_rebuy:
+                    # 底线被击穿 或 MA120跌破 → 彻底退出
+                    if not np.isnan(curr_price) and _eh_swing_floor_price > 0 and curr_price < _eh_swing_floor_price:
+                        _ehs_giveup = True
+                    if not np.isnan(_ehs_ma120) and _ehs_ma120 > 0 and not np.isnan(curr_price) and curr_price < _ehs_ma120:
+                        _ehs_giveup = True
+                    # 等待超时 → 放弃做T，让普通策略自然接管
+                    if not _ehs_giveup and eh_swing_max_wait_days > 0 and _ehs_wait_days >= eh_swing_max_wait_days:
+                        _ehs_giveup = True
+
+                if _ehs_rebuy:
+                    # EH做T回买成功 — 恢复原始交易状态（做T不影响原始买卖逻辑）
+                    in_position = True
+                    entry_flags[i] = 1
+                    entry_price = _eh_swing_saved_entry_price  # 恢复原始买入价（止损等基于原始价格）
+                    swing_exit_flags[i] = 2
+                    _ehs_is_above_sell = curr_price > _eh_swing_sell_price if _eh_swing_sell_price > 0 else False
+                    if _ehs_is_above_sell:
+                        swing_rebuy_reasons[i] = 'EH做T-回调接回'
+                    else:
+                        swing_rebuy_reasons[i] = 'EH做T-低吸'
+                    # 恢复所有原始交易状态变量
+                    is_divergence_entry = _eh_swing_saved_is_divergence_entry
+                    is_w_bottom_entry = _eh_swing_saved_is_w_bottom_entry
+                    is_sideways_entry = _eh_swing_saved_is_sideways_entry
+                    hold_days = _eh_swing_saved_hold_days + (i - _eh_swing_sell_idx)  # 持仓天数连续计算
+                    pending_exit = _eh_swing_saved_pending_exit
+                    trailing_stop_active = _eh_swing_saved_trailing_stop_active
+                    dynamic_profit_active = _eh_swing_saved_dynamic_profit_active
+                    max_profit_in_trade = _eh_swing_saved_max_profit_in_trade
+                    _eh_swing_active = False
+                    _eh_swing_used = False  # 允许后续继续做T（冷却期控制防连续触发）
+                    _eh_swing_rebuy_idx = i  # 记录回买位置用于冷却期计算
+                    # 恢复EH状态（extended_hold_active仍为True）
+                    extended_hold_trigger_profit = _eh_swing_saved_eh_trigger_profit
+                    extended_hold_max_profit = _eh_swing_saved_eh_max_profit
+                    position[i] = 1
+                    continue
+                elif _ehs_giveup:
+                    # EH做T放弃，完全退出
+                    _eh_swing_active = False
+                    extended_hold_active = False
+                    extended_hold_trigger_profit = 0.0
+                    extended_hold_max_profit = 0.0
+                    _eh_swing_sell_price = 0.0
+                    _eh_swing_original_entry = 0.0
+                    _eh_swing_floor_price = 0.0
+                    _eh_swing_sell_idx = 0
+                    position[i] = 0
+                    continue
+                else:
+                    # 继续等待回买
+                    position[i] = 0
+                    continue
+
             # 高抛低吸：等待回买状态处理
             if swing_state == 1 and not in_position and data is not None:
                 sw_days_waiting = i - swing_sell_idx
@@ -2219,6 +2435,22 @@ class RSITrendStrategy(MixedStrategy):
                 position[i] = 0
                 continue
 
+            # 主升浪再入场：EH止盈退出后，股价突破退场价确认新高时回补
+            if not in_position and post_wave_reentry_countdown > 0:
+                post_wave_reentry_countdown -= 1
+                if not entry_active and _pw_exit_price > 0 and not np.isnan(curr_price):
+                    _pw_confirm_price = _pw_exit_price * (1 + pw_price_confirm_pct / 100)
+                    if curr_price > _pw_confirm_price:
+                        # 检查MA120仍在上升
+                        _pw_ma120_still_rising = False
+                        if data is not None and 'ma_120' in data.columns and i >= 40:
+                            _pw_m = data['ma_120'].iloc[i]
+                            _pw_ma120_still_rising = not np.isnan(_pw_m) and _pw_m > data['ma_120'].iloc[i - 40]
+                        if _pw_ma120_still_rising:
+                            entry_active = True
+                            avoid_extreme_chase = False
+                            post_wave_reentry_countdown = 0  # 回补后停止（后续由新的退出重新激活）
+
             if not in_position and (entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position):
                 in_position = True
                 entry_flags[i] = 1
@@ -2235,6 +2467,14 @@ class RSITrendStrategy(MixedStrategy):
                 trailing_stop_active = False  # 重置止盈保护状态
                 dynamic_profit_active = False
                 max_profit_in_trade = 0
+                extended_hold_active = False  # 重置延长持仓
+                extended_hold_trigger_profit = 0.0
+                extended_hold_max_profit = 0.0
+                _eh_swing_used = False  # 重置做T标记
+                _eh_swing_confirming = False  # 重置确认状态
+                _eh_swing_armed = False  # 重置武装模式
+                _eh_overbought_seen = False  # 重置超买标记
+                # post_wave_reentry_countdown 不重置：允许跨多笔交易持续生效
 
                 # 调试W底买入
                 if is_w_entry and data is not None and 'date' in data.columns:
@@ -2255,14 +2495,207 @@ class RSITrendStrategy(MixedStrategy):
                 else:
                     entry_rsi = None
 
+            # 刚退出后评估是否激活主升浪再入场窗口（检查前一天是否退出）
+            if not in_position and i > 0 and exit_flags[i - 1] == 1 and post_wave_reentry_countdown == 0:
+                if _pw_last_trade_profit > pw_profit_threshold and _pw_last_trade_hold >= pw_min_hold:
+                    # 检查MA120是否上升
+                    _pw_ma120_ok = False
+                    if data is not None and 'ma_120' in data.columns and i >= 40:
+                        _pw_ma120_v = data['ma_120'].iloc[i]
+                        _pw_ma120_ok = not np.isnan(_pw_ma120_v) and _pw_ma120_v > data['ma_120'].iloc[i - 40]
+                    if _pw_ma120_ok:
+                        post_wave_reentry_countdown = post_wave_reentry_window
+                        # 记录退场价（用于价格突破确认回补）
+                        if _pw_exit_price <= 0 and data is not None:
+                            _pw_exit_price = data['close'].iloc[i - 1]
+
             if in_position:
                 hold_days += 1
+                _pw_last_trade_profit = 0.0  # 初始值，每天更新
+                _pw_last_trade_hold = hold_days
 
                 # 更新当前交易最大浮盈
                 if entry_price and not pd.isna(curr_price) and entry_price > 0:
                     curr_profit_pct = (curr_price / entry_price - 1) * 100
+                    _pw_last_trade_profit = curr_profit_pct  # 追踪实时利润
                     if curr_profit_pct > max_profit_in_trade:
                         max_profit_in_trade = curr_profit_pct
+
+                    # 延长持仓每日安全检查：价格跌破MA120 或 利润回撤超限 或 从峰值回撤过多 → 退出
+                    # 注意：对所有入场类型生效（包括底背离/W底/震荡）
+                    if extended_hold_active:
+                        if curr_profit_pct > extended_hold_max_profit:
+                            extended_hold_max_profit = curr_profit_pct
+                        _eh_ma120 = data['ma_120'].iloc[i] if data is not None and 'ma_120' in data.columns else np.nan
+                        _eh_profit_floor = extended_hold_trigger_profit - eh_drawdown_limit
+                        # 比例保护底线：保护已有增益的ratio%（随浮盈自动上升）
+                        if eh_gain_protection_ratio > 0 and extended_hold_max_profit > extended_hold_trigger_profit:
+                            _eh_gain = extended_hold_max_profit - extended_hold_trigger_profit
+                            _eh_proportional_floor = extended_hold_trigger_profit + _eh_gain * eh_gain_protection_ratio
+                            _eh_profit_floor = max(_eh_profit_floor, _eh_proportional_floor)
+                        # 超买收紧检测（粘性标记：一旦超买，本EH周期内持续收紧trailing）
+                        if eh_overbought_trailing > 0 and not _eh_overbought_seen and data is not None:
+                            _eht_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else np.nan
+                            _eht_bb = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else np.nan
+                            if (not np.isnan(_eht_rsi) and _eht_rsi >= eh_swing_rsi_threshold
+                                    and not np.isnan(_eht_bb) and _eht_bb >= eh_swing_bb_threshold):
+                                _eh_overbought_seen = True
+
+                        # 峰值回撤止损：浮盈超过触发浮盈+offset后激活（相对阈值）
+                        _eh_peak_act_level = extended_hold_trigger_profit + eh_peak_activation_offset
+                        _eh_trailing_val = eh_peak_trailing  # 默认20%
+
+                        # 超买自适应：检测到超买后立即激活peak trailing并收紧
+                        if _eh_overbought_seen and eh_overbought_trailing > 0:
+                            _eh_peak_act_level = extended_hold_trigger_profit  # 立即激活（offset=0）
+                            _eh_trailing_val = eh_overbought_trailing  # 收紧trailing
+
+                        if extended_hold_max_profit > _eh_peak_act_level:
+                            _eh_peak_floor = extended_hold_max_profit - _eh_trailing_val
+                            _eh_effective_floor = max(_eh_profit_floor, _eh_peak_floor)
+                        else:
+                            _eh_effective_floor = _eh_profit_floor
+                        if (not np.isnan(_eh_ma120) and _eh_ma120 > 0 and curr_price < _eh_ma120) or curr_profit_pct < _eh_effective_floor:
+                            _pw_exit_price = curr_price  # 记录EH退出价格用于回补确认
+                            extended_hold_active = False
+                            in_position = False
+                            exit_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            position[i] = 0
+                            continue
+
+                        # EH做T高抛：在EH期间超买时卖出，等待回调再接回（支持多次做T，冷却期控制）
+                        _ehs_cooldown_ok = (i - _eh_swing_rebuy_idx >= eh_swing_cooldown_days) if _eh_swing_rebuy_idx > 0 else True
+                        if (eh_swing_enabled and not _eh_swing_active and not _eh_swing_used
+                                and _ehs_cooldown_ok and swing_state == 0 and data is not None and entry_price and not np.isnan(curr_price)):
+                            _ehs_profit_above_trigger = curr_profit_pct - extended_hold_trigger_profit
+                            if _ehs_profit_above_trigger >= eh_swing_min_gain_above_trigger:
+                                _ehs_rsi_val = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else np.nan
+                                _ehs_bb_val = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else np.nan
+                                _ehs_vol_val = data['volume'].iloc[i] if 'volume' in data.columns else np.nan
+                                _ehs_vol_ma_val = data['volume_ma20'].iloc[i] if 'volume_ma20' in data.columns else np.nan
+                                _ehs_vol_ratio = _ehs_vol_val / _ehs_vol_ma_val if (not np.isnan(_ehs_vol_val) and not np.isnan(_ehs_vol_ma_val) and _ehs_vol_ma_val > 0) else 0
+
+                                _ehs_can_sell = False
+                                _ehs_stk = data['stoch_k'].iloc[i] if 'stoch_k' in data.columns and not pd.isna(data['stoch_k'].iloc[i]) else np.nan
+                                _ehs_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns and not pd.isna(data['dist_ma20'].iloc[i]) else 0
+                                _ehs_dist_ma60 = data['dist_ma60'].iloc[i] if 'dist_ma60' in data.columns and not pd.isna(data['dist_ma60'].iloc[i]) else 0
+
+                                # ===== 武装模式：信号后追踪峰值，峰值回撤时卖出 =====
+                                if eh_swing_armed_mode and _eh_swing_armed:
+                                    # 追踪武装后最高价
+                                    if curr_price > _eh_swing_armed_peak:
+                                        _eh_swing_armed_peak = curr_price
+                                    _armed_elapsed = i - _eh_swing_armed_idx
+                                    # 卖出触发：价格从武装峰值回撤X%
+                                    if _eh_swing_armed_peak > 0 and eh_swing_trailing_drop_pct > 0:
+                                        _armed_drop_pct = (_eh_swing_armed_peak - curr_price) / _eh_swing_armed_peak * 100
+                                        if _armed_drop_pct >= eh_swing_trailing_drop_pct:
+                                            _ehs_can_sell = True
+                                            _eh_swing_armed = False
+                                    # 解除武装：超过最大天数
+                                    if not _ehs_can_sell and _armed_elapsed > eh_swing_armed_max_days:
+                                        _eh_swing_armed = False
+                                    # 解除武装：RSI回归正常区间（不再超买）
+                                    if not _ehs_can_sell and not np.isnan(_ehs_rsi_val) and _ehs_rsi_val < 40:
+                                        _eh_swing_armed = False
+
+                                # ===== 多模式信号检测（不在武装状态时） =====
+                                if not _ehs_can_sell and not _eh_swing_armed:
+
+                                    # 确认卖出逻辑（兼容旧模式）
+                                    if _eh_swing_confirming:
+                                        _confirm_elapsed = i - _eh_swing_signal_idx
+                                        if _confirm_elapsed >= 1 and _confirm_elapsed <= eh_swing_confirm_days:
+                                            _confirm_drop = (curr_price / _eh_swing_signal_price - 1) * 100
+                                            if _confirm_drop <= -eh_swing_confirm_drop_pct:
+                                                _ehs_can_sell = True
+                                                _eh_swing_confirming = False
+                                        elif _confirm_elapsed > eh_swing_confirm_days:
+                                            _eh_swing_confirming = False
+                                    else:
+                                        _ehs_signal_detected = False
+
+                                        # --- 模式1: 超买集群（N of 3: RSI + BB + StochK） ---
+                                        _ehs_ob_count = 0
+                                        if not np.isnan(_ehs_rsi_val) and _ehs_rsi_val >= eh_swing_rsi_threshold:
+                                            _ehs_ob_count += 1
+                                        if not np.isnan(_ehs_bb_val) and _ehs_bb_val >= eh_swing_bb_threshold:
+                                            _ehs_ob_count += 1
+                                        if not np.isnan(_ehs_stk) and _ehs_stk >= eh_swing_ob_stk_threshold:
+                                            _ehs_ob_count += 1
+                                        if _ehs_ob_count >= eh_swing_ob_min_count and _ehs_vol_ratio <= eh_swing_volume_surge_block:
+                                            _ehs_signal_detected = True
+
+                                        # --- 模式2: MA偏离（价格远离均线 → 回归风险） ---
+                                        if not _ehs_signal_detected and eh_swing_dev_ma20_pct > 0:
+                                            if _ehs_dist_ma20 >= eh_swing_dev_ma20_pct:
+                                                _ehs_signal_detected = True
+                                            elif eh_swing_dev_ma60_pct > 0 and _ehs_dist_ma60 >= eh_swing_dev_ma60_pct:
+                                                _ehs_signal_detected = True
+
+                                        # --- 信号处理：武装模式 or 立即卖出 ---
+                                        if _ehs_signal_detected:
+                                            if eh_swing_armed_mode:
+                                                # 进入武装模式，追踪峰值
+                                                _eh_swing_armed = True
+                                                _eh_swing_armed_idx = i
+                                                _eh_swing_armed_peak = curr_price
+                                            elif eh_swing_confirm_days > 0 and not _eh_swing_confirming:
+                                                # 旧确认模式
+                                                _eh_swing_confirming = True
+                                                _eh_swing_signal_idx = i
+                                                _eh_swing_signal_price = curr_price
+                                            else:
+                                                # 立即卖出
+                                                _ehs_can_sell = True
+
+                                # 触发条件2：从峰值回撤Xpp（安全网：非超买峰值的回撤保护）
+                                if not _ehs_can_sell and not _eh_swing_confirming and not _eh_swing_armed and eh_swing_peak_drawdown > 0:
+                                    _ehs_drawdown = extended_hold_max_profit - curr_profit_pct
+                                    _ehs_peak_above_trigger = extended_hold_max_profit - extended_hold_trigger_profit
+                                    if (_ehs_drawdown >= eh_swing_peak_drawdown
+                                            and _ehs_peak_above_trigger >= eh_swing_min_gain_above_trigger):
+                                        _ehs_can_sell = True
+
+                                if _ehs_can_sell:
+                                    # 计算EH底线的绝对价格
+                                    _eh_swing_floor_price = entry_price * (1 + _eh_effective_floor / 100)
+                                    _eh_swing_sell_price = curr_price
+                                    _eh_swing_original_entry = entry_price
+                                    _eh_swing_sell_idx = i
+                                    _eh_swing_peak_after_sell = curr_price  # 初始化T卖后的最高价
+                                    _eh_swing_active = True
+                                    _eh_swing_used = True  # 标记已使用，本EH周期不再做T
+                                    # 保存原始交易状态（做T不影响原始买卖逻辑）
+                                    _eh_swing_saved_entry_price = entry_price
+                                    _eh_swing_saved_hold_days = hold_days
+                                    _eh_swing_saved_pending_exit = pending_exit
+                                    _eh_swing_saved_trailing_stop_active = trailing_stop_active
+                                    _eh_swing_saved_dynamic_profit_active = dynamic_profit_active
+                                    _eh_swing_saved_max_profit_in_trade = max_profit_in_trade
+                                    _eh_swing_saved_is_divergence_entry = is_divergence_entry
+                                    _eh_swing_saved_is_w_bottom_entry = is_w_bottom_entry
+                                    _eh_swing_saved_is_sideways_entry = is_sideways_entry
+                                    _eh_swing_saved_eh_trigger_profit = extended_hold_trigger_profit
+                                    _eh_swing_saved_eh_max_profit = extended_hold_max_profit
+                                    # 卖出但保持extended_hold_active=True
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    swing_exit_flags[i] = 1
+                                    entry_price = None
+                                    hold_days = 0
+                                    pending_exit = False
+                                    trailing_stop_active = False
+                                    dynamic_profit_active = False
+                                    max_profit_in_trade = 0
+                                    position[i] = 0
+                                    continue
 
                     # 检查止盈保护（trailing stop）
                     if trailing_stop_trigger > 0 and not trailing_stop_active:
@@ -2621,8 +3054,30 @@ class RSITrendStrategy(MixedStrategy):
                         # else: 继续持有等待反弹
 
                     elif exit_active:
+                        # 延长持仓：浮盈>35%且持仓>25天且MA120上升 → 改用MA120退出线
+                        _eh_profit = ((curr_price / entry_price - 1) * 100) if entry_price and not np.isnan(curr_price) and entry_price > 0 else 0
+                        _eh_ma120_rising = False
+                        if data is not None and 'ma_120' in data.columns and i >= 40:
+                            _eh_ma120_val = data['ma_120'].iloc[i]
+                            _eh_ma120_rising = not np.isnan(_eh_ma120_val) and _eh_ma120_val > data['ma_120'].iloc[i - 40]
+                        _eh_min_hold = int(self.config.get('extended_hold_min_days', 35))
+                        _eh_profit_cap = float(self.config.get('extended_hold_profit_cap', 150))
+                        if (not extended_hold_active and _eh_profit > eh_profit_threshold
+                                and _eh_profit < _eh_profit_cap
+                                and hold_days >= _eh_min_hold and _eh_ma120_rising):
+                            extended_hold_active = True
+                            extended_hold_trigger_profit = _eh_profit
+                            extended_hold_max_profit = _eh_profit  # 从触发时开始追踪峰值
+                            _eh_swing_used = False  # 新EH周期重置做T标记
+                            _eh_swing_confirming = False  # 新EH周期重置确认状态
+                            _eh_swing_armed = False  # 新EH周期重置武装模式
+                            _eh_overbought_seen = False  # 新EH周期重置超买标记
+                            if data is not None and 'date' in data.columns:
+                                logger.debug(f"[EH_ACTIVATE] {data['date'].iloc[i]} profit={_eh_profit:.1f}% hold={hold_days}d")
+                        elif extended_hold_active:
+                            pass  # 由每日MA120检查处理退出
                         # 反弹卖出逻辑：检查是否在暴跌中
-                        if bounce_exit_enabled and data is not None and i > 0:
+                        elif bounce_exit_enabled and data is not None and i > 0:
                             prev_close = data['close'].iloc[i - 1]
                             day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
 
@@ -2961,53 +3416,108 @@ class RSITrendStrategy(MixedStrategy):
         # 调用父类的回测方法
         result = super().backtest(df, initial_capital)
 
-        # 合并高抛低吸交易（将swing sell + rebuy算作一次交易）
+        # 合并高抛低吸交易（将持仓周期内所有做T算作一笔交易）
+        # 支持多次做T链：entry→sell1→rebuy1→sell2→rebuy2→...→final_exit 合并为一笔
         if 'swing_exit_type' in df.columns:
             trades = result.get('trades', [])
             if len(trades) > 1:
-                swing_sell_dates = set(df[df['swing_exit_type'] == 1]['date'].astype(str).tolist())
-                swing_rebuy_dates = set(df[df['swing_exit_type'] == 2]['date'].astype(str).tolist())
+                swing_sell_dates = set(str(d)[:10] for d in df[df['swing_exit_type'] == 1]['date'].astype(str).tolist())
+                swing_rebuy_dates = set(str(d)[:10] for d in df[df['swing_exit_type'] == 2]['date'].astype(str).tolist())
 
-                if swing_sell_dates and swing_rebuy_dates:
+                if swing_sell_dates or swing_rebuy_dates:
                     merged_trades = []
                     i = 0
                     while i < len(trades):
                         trade = trades[i]
                         sell_date_str = str(trade.get('sell_date', ''))[:10]
 
-                        # 检查是否是高抛卖出
-                        if sell_date_str in [str(d)[:10] for d in swing_sell_dates]:
-                            # 找下一笔低吸买回交易
-                            if i + 1 < len(trades):
-                                next_trade = trades[i + 1]
-                                next_buy_date_str = str(next_trade.get('buy_date', ''))[:10]
+                        # 检查是否是做T卖出（高抛）
+                        if sell_date_str in swing_sell_dates:
+                            # 开始合并链：追踪原始入场，累计做T利润，直到最终退出
+                            original_buy_price = trade['buy_price']
+                            original_buy_date = trade['buy_date']
+                            total_commission = trade.get('commission', 0)
+                            # 做T利润累计：每次卖出-买回的价差
+                            swing_profit_sum = 0.0
+                            last_swing_sell_price = trade['sell_price']
+                            j = i + 1
 
-                                if next_buy_date_str in [str(d)[:10] for d in swing_rebuy_dates]:
-                                    # 合并两笔交易
-                                    original_buy_price = trade['buy_price']
-                                    final_sell_price = next_trade['sell_price']
-                                    total_commission = trade.get('commission', 0) + next_trade.get('commission', 0)
+                            # 沿着做T链向前走：rebuy→再sell→rebuy→...→final_exit
+                            while j < len(trades):
+                                next_trade = trades[j]
+                                next_buy_str = str(next_trade.get('buy_date', ''))[:10]
 
+                                if next_buy_str in swing_rebuy_dates:
+                                    # 这是一次做T回买
+                                    rebuy_price = next_trade['buy_price']
+                                    # 做T利润 = 高抛价 - 低吸价（相对于原始入场价的比率）
                                     if original_buy_price > 0:
-                                        gross_profit_rate = (final_sell_price / original_buy_price - 1)
-                                        commission_rate = total_commission / (original_buy_price * 100) if original_buy_price > 0 else 0
-                                        merged_profit_rate = gross_profit_rate - commission_rate
+                                        swing_profit_sum += (last_swing_sell_price - rebuy_price) / original_buy_price
+                                    total_commission += next_trade.get('commission', 0)
+
+                                    next_sell_str = str(next_trade.get('sell_date', ''))[:10]
+                                    if next_sell_str in swing_sell_dates:
+                                        # 又一次做T卖出，继续链
+                                        last_swing_sell_price = next_trade['sell_price']
+                                        j += 1
+                                        continue
+                                    else:
+                                        # 最终退出：链结束
+                                        final_sell_price = next_trade['sell_price']
+                                        final_sell_date = next_trade['sell_date']
+                                        final_capital = next_trade.get('capital', 0)
+
+                                        if original_buy_price > 0:
+                                            # 总利润 = 最终退出利润 + 所有做T累计利润
+                                            base_profit_rate = (final_sell_price / original_buy_price - 1)
+                                            commission_rate = total_commission / (original_buy_price * 100)
+                                            merged_profit_rate = base_profit_rate + swing_profit_sum - commission_rate
+                                        else:
+                                            merged_profit_rate = 0
+
+                                        merged_trade = {
+                                            'buy_date': original_buy_date,
+                                            'buy_price': original_buy_price,
+                                            'sell_date': final_sell_date,
+                                            'sell_price': final_sell_price,
+                                            'profit_rate': merged_profit_rate,
+                                            'capital': final_capital,
+                                            'commission': total_commission,
+                                            'is_swing_merged': True,
+                                            'swing_count': j - i,  # 做T次数
+                                        }
+                                        merged_trades.append(merged_trade)
+                                        i = j + 1
+                                        break
+                                else:
+                                    # 非做T回买（可能是做T放弃后的新交易）
+                                    # 终止链：用最后一次做T卖出作为退出
+                                    if original_buy_price > 0:
+                                        base_profit_rate = (last_swing_sell_price / original_buy_price - 1)
+                                        commission_rate = total_commission / (original_buy_price * 100)
+                                        merged_profit_rate = base_profit_rate - commission_rate
                                     else:
                                         merged_profit_rate = 0
 
                                     merged_trade = {
-                                        'buy_date': trade['buy_date'],
+                                        'buy_date': original_buy_date,
                                         'buy_price': original_buy_price,
-                                        'sell_date': next_trade['sell_date'],
-                                        'sell_price': final_sell_price,
+                                        'sell_date': trade['sell_date'],
+                                        'sell_price': last_swing_sell_price,
                                         'profit_rate': merged_profit_rate,
-                                        'capital': next_trade.get('capital', 0),
+                                        'capital': trade.get('capital', 0),
                                         'commission': total_commission,
                                         'is_swing_merged': True,
+                                        'swing_count': j - i - 1,
                                     }
                                     merged_trades.append(merged_trade)
-                                    i += 2
-                                    continue
+                                    i = j  # 从下一笔非做T交易开始
+                                    break
+                            else:
+                                # 做T卖出后没有更多交易（数据结束）
+                                merged_trades.append(trade)
+                                i = j
+                            continue
 
                         merged_trades.append(trade)
                         i += 1

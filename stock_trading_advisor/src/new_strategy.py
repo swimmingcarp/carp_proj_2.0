@@ -1908,7 +1908,7 @@ class RSITrendStrategy(MixedStrategy):
         eh_swing_enabled = bool(self.config.get('extended_hold_swing_enabled', True))  # EH期间做T开关（R7最优：开启）
         eh_swing_rsi_threshold = float(self.config.get('eh_swing_rsi_threshold', 50))  # EH做T卖出RSI阈值（R7最优：50）
         eh_swing_bb_threshold = float(self.config.get('eh_swing_bb_threshold', 0.50))  # EH做T卖出BB阈值（R7最优：0.50）
-        eh_swing_min_gain_above_trigger = float(self.config.get('eh_swing_min_gain_above_trigger', 10))  # 浮盈超过触发值Xpp才允许卖出（R7最优：10）
+        eh_swing_min_gain_above_trigger = float(self.config.get('eh_swing_min_gain_above_trigger', 0))  # 浮盈超过触发值Xpp才允许卖出（R8最优：0=无门槛）
         eh_swing_volume_surge_block = float(self.config.get('eh_swing_volume_surge_block', 2.5))  # 放量突破不卖
         eh_swing_rebuy_rsi = float(self.config.get('eh_swing_rebuy_rsi', 45))  # EH做T回买RSI阈值
         eh_swing_rebuy_bb = float(self.config.get('eh_swing_rebuy_bb', 0.35))  # EH做T回买BB阈值
@@ -1916,6 +1916,9 @@ class RSITrendStrategy(MixedStrategy):
         eh_swing_max_wait_days = int(self.config.get('eh_swing_max_wait_days', 0))  # EH做T最长等待天数（R7最优：0=无限）
         eh_swing_force_rebuy_premium = float(self.config.get('eh_swing_force_rebuy_premium', 999))  # 股价涨超卖价X%时强制回买（R7最优：999=关闭）
         eh_swing_rebuy_pullback_pct = float(self.config.get('eh_swing_rebuy_pullback_pct', 0))  # 回调低吸：股价从T卖后高点回撤X%时买回（0=关闭）
+        eh_swing_rebuy_min_drop = float(self.config.get('eh_swing_rebuy_min_drop', 0))  # 最小跌幅%：价格需低于卖价X%才允许低吸接回（0=无要求）
+        eh_swing_rebuy_min_wait = int(self.config.get('eh_swing_rebuy_min_wait', 0))  # 最少等待天数：T-sell后至少等N天再接回（0=无要求）
+        eh_swing_rebuy_stk = float(self.config.get('eh_swing_rebuy_stk', 0))  # StochK接回阈值：StK<X时触发接回（0=不用StK判断）
         eh_swing_peak_drawdown = float(self.config.get('eh_swing_peak_drawdown', 0))  # 从峰值回撤Xpp触发做T卖出（0=关闭，只用RSI/BB卖）
         eh_swing_score_threshold = int(self.config.get('eh_swing_score_threshold', 0))  # 多因子评分阈值（0=使用旧RSI+BB逻辑，>=1使用评分系统）
         # 超买收紧止盈参数（不增加交易，只在超买后收紧trailing stop）
@@ -1954,7 +1957,7 @@ class RSITrendStrategy(MixedStrategy):
         eh_swing_trailing_drop_pct = float(self.config.get('eh_swing_trailing_drop_pct', 2.7))  # 武装峰值回撤X%触发卖出（R7最优：2.7）
         eh_swing_armed_max_days = int(self.config.get('eh_swing_armed_max_days', 20))  # 武装状态最大天数
         eh_swing_ob_stk_threshold = float(self.config.get('eh_swing_ob_stk_threshold', 70))  # StochK超买阈值（R7最优：70）
-        eh_swing_ob_min_count = int(self.config.get('eh_swing_ob_min_count', 2))  # 超买集群最少指标数（N of 3）
+        eh_swing_ob_min_count = int(self.config.get('eh_swing_ob_min_count', 1))  # 超买集群最少指标数（R8最优：1 of 3）
         eh_swing_dev_ma20_pct = float(self.config.get('eh_swing_dev_ma20_pct', 0))  # MA20偏离%触发（0=关闭）
         eh_swing_dev_ma60_pct = float(self.config.get('eh_swing_dev_ma60_pct', 0))  # MA60偏离%触发（0=关闭）
         # 武装模式运行时状态
@@ -2207,12 +2210,18 @@ class RSITrendStrategy(MixedStrategy):
                 # 回买路径1：超卖低吸（传统做T：RSI超卖 + 价格在允许范围内）
                 _ehs_max_rebuy_price = _eh_swing_sell_price * (1 + eh_swing_rebuy_max_above / 100) if eh_swing_rebuy_max_above > 0 else _eh_swing_sell_price
                 _ehs_price_ok = not np.isnan(curr_price) and _eh_swing_sell_price > 0 and curr_price <= _ehs_max_rebuy_price
-                if _ehs_price_ok:
+                # 最小等待天数和最小跌幅前置条件
+                _ehs_wait_ok = _ehs_wait_days >= eh_swing_rebuy_min_wait
+                _ehs_drop_pct = (curr_price / _eh_swing_sell_price - 1) * 100 if _eh_swing_sell_price > 0 and not np.isnan(curr_price) else 0
+                _ehs_drop_ok = eh_swing_rebuy_min_drop <= 0 or _ehs_drop_pct <= -eh_swing_rebuy_min_drop
+                if _ehs_price_ok and _ehs_wait_ok and _ehs_drop_ok:
                     if (not np.isnan(_ehs_rsi) and _ehs_rsi < eh_swing_rebuy_rsi):
                         _ehs_rebuy = True
                     elif (not np.isnan(_ehs_bb) and _ehs_bb < eh_swing_rebuy_bb):
                         _ehs_rebuy = True
                     elif (not np.isnan(_ehs_stoch_k) and _ehs_stoch_k < swing_stoch_k_rebuy_threshold):
+                        _ehs_rebuy = True
+                    elif (eh_swing_rebuy_stk > 0 and not np.isnan(_ehs_stoch_k) and _ehs_stoch_k < eh_swing_rebuy_stk):
                         _ehs_rebuy = True
 
                 # 回买路径2：回调接回（T飞后找机会接回：股价从T卖后高点回撤X%）

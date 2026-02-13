@@ -1987,26 +1987,26 @@ class DataFetcher:
             logger.debug(f"东方财富港股信息接口失败: {e}")
             return None
 
+    def _load_hk_stock_names(self) -> dict:
+        """从配置文件加载港股名称映射表"""
+        names_file = Path(__file__).parent.parent / 'config' / 'hk_stock_names.txt'
+        hk_stock_names = {}
+        try:
+            with open(names_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.split('#')[0].strip()
+                    if not line:
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        hk_stock_names[parts[0]] = parts[1]
+        except FileNotFoundError:
+            logger.warning(f"港股名称映射文件不存在: {names_file}")
+        return hk_stock_names
+
     def _get_hk_name_from_cache(self, code: str) -> Optional[dict]:
-        """从静态映射获取港股名称"""
-        # 常见港股的静态映射表
-        hk_stock_names = {
-            '00700': '腾讯控股', '09988': '阿里巴巴-SW', '00941': '中国移动',
-            '03690': '美团-W', '01810': '小米集团-W', '09618': '京东集团-SW',
-            '09888': '百度集团-SW', '09999': '网易-S', '01024': '快手-W',
-            '00388': '香港交易所', '01398': '工商银行', '03988': '中国银行',
-            '00939': '建设银行', '01288': '农业银行', '02318': '中国平安',
-            '00883': '中国海洋石油', '00386': '中国石油化工', '02628': '中国人寿',
-            '01299': '友邦保险', '00175': '吉利汽车', '02333': '长城汽车',
-            '01211': '比亚迪股份', '02015': '理想汽车-W', '09868': '小鹏汽车-W',
-            '09866': '蔚来-SW', '01772': '赣锋锂业', '06862': '海底捞',
-            '09961': '携程集团-S', '00981': '中芯国际', '00992': '联想集团',
-            '02269': '药明生物', '00857': '中国石油股份', '01093': '石药集团',
-            '02382': '舜宇光学科技', '02020': '安踏体育', '01177': '中国生物制药',
-            '02367': '巨子生物', '06690': '海尔智家', '01347': '华虹半导体',
-            '01585': '雅迪控股', '06682': '第四范式', '03692': '翰森制药',
-            '09660': '地平线机器人-W',
-        }
+        """从配置文件获取港股名称"""
+        hk_stock_names = self._load_hk_stock_names()
 
         name = hk_stock_names.get(code)
         if name:
@@ -2081,21 +2081,26 @@ class DataFetcher:
                 pass
             return None
 
+    def _load_cn_stock_names(self) -> dict:
+        """从配置文件加载A股名称映射表"""
+        names_file = Path(__file__).parent.parent / 'config' / 'cn_stock_names.txt'
+        cn_stock_names = {}
+        try:
+            with open(names_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.split('#')[0].strip()
+                    if not line:
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        cn_stock_names[parts[0]] = parts[1]
+        except FileNotFoundError:
+            logger.warning(f"A股名称映射文件不存在: {names_file}")
+        return cn_stock_names
+
     def _get_stock_name_from_cache(self, code: str) -> Optional[dict]:
-        """从缓存或静态映射获取股票名称"""
-        # 常见股票的静态映射表
-        stock_names = {
-            '600519': '贵州茅台', '601318': '中国平安', '600036': '招商银行',
-            '000858': '五粮液', '000651': '格力电器', '601398': '工商银行',
-            '600276': '恒瑞医药', '000333': '美的集团', '002415': '海康威视',
-            '600887': '伊利股份', '000002': '万科A', '600030': '中信证券',
-            '601166': '兴业银行', '600016': '民生银行', '000001': '平安银行',
-            '600000': '浦发银行', '601328': '交通银行', '601288': '农业银行',
-            '601939': '建设银行', '601988': '中国银行', '600885': '宏发股份',
-            '000034': '神州数码', '002920': '德赛西威', '300293': '蓝英装备',
-            '300476': '胜宏科技', '001279': '强邦新材', '605117': '德业股份',
-            '603501': '韦尔股份', '688981': '中芯国际',
-        }
+        """从配置文件获取A股名称"""
+        stock_names = self._load_cn_stock_names()
 
         name = stock_names.get(code)
         if name:

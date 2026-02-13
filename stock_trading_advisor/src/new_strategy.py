@@ -1896,6 +1896,26 @@ class RSITrendStrategy(MixedStrategy):
         dynamic_profit_drawback = float(self.config.get('dynamic_profit_drawback', 0))  # 从最高点回撤Y%就卖
         dynamic_profit_active = False  # 是否已激活
 
+        # 成交量分布退出：在超买区间检测到机构派发时提前退出
+        dist_exit_enabled = bool(self.config.get('dist_exit_enabled', False))
+        dist_exit_min_profit = float(self.config.get('dist_exit_min_profit', 22))
+        dist_exit_lookback = int(self.config.get('dist_exit_lookback', 20))
+        dist_exit_vol_threshold = float(self.config.get('dist_exit_vol_threshold', 2.2))
+        dist_exit_count = int(self.config.get('dist_exit_count', 3))
+
+        # 滞涨退出：浮盈达标后连续N天未创新高 → 动量耗尽信号
+        stale_peak_enabled = bool(self.config.get('stale_peak_enabled', False))
+        stale_peak_min_profit = float(self.config.get('stale_peak_min_profit', 38))
+        stale_peak_max_days = int(self.config.get('stale_peak_max_days', 25))
+        _days_since_peak = 0
+
+        # 放量阴线+均线偏离退出：高位出货信号（放量阴线+价格远离MA）
+        dist_madev_exit_enabled = bool(self.config.get('dist_madev_exit_enabled', False))
+        dist_madev_exit_min_profit = float(self.config.get('dist_madev_exit_min_profit', 15))
+        dist_madev_exit_vol_mult = float(self.config.get('dist_madev_exit_vol_mult', 2.2))
+        dist_madev_exit_ma_period = int(self.config.get('dist_madev_exit_ma_period', 20))
+        dist_madev_exit_dev_pct = float(self.config.get('dist_madev_exit_dev_pct', 15))
+
         # 主升浪延长持仓：退出信号时浮盈>35%+MA120上升+持仓>25天 → 改用MA120退出线
         extended_hold_active = False
         extended_hold_trigger_profit = 0.0  # 触发时的浮盈%（用于计算回撤底线）
@@ -2529,6 +2549,9 @@ class RSITrendStrategy(MixedStrategy):
                     _pw_last_trade_profit = curr_profit_pct  # 追踪实时利润
                     if curr_profit_pct > max_profit_in_trade:
                         max_profit_in_trade = curr_profit_pct
+                        _days_since_peak = 0  # 创新高，重置滞涨计数
+                    else:
+                        _days_since_peak += 1  # 未创新高，累计天数
 
                     # 延长持仓每日安全检查：价格跌破MA120 或 利润回撤超限 或 从峰值回撤过多 → 退出
                     # 注意：对所有入场类型生效（包括底背离/W底/震荡）
@@ -2748,6 +2771,84 @@ class RSITrendStrategy(MixedStrategy):
                             pending_exit = False
                             position[i] = 0
                             continue
+
+                    # 成交量分布退出：窗口内多次放量阴线=机构派发
+                    if (dist_exit_enabled and not extended_hold_active and not exit_active
+                            and not is_w_bottom_entry and not is_sideways_entry
+                            and curr_profit_pct >= dist_exit_min_profit
+                            and data is not None and 'volume' in data.columns and 'volume_ma20' in data.columns):
+                        _dist_days = 0
+                        for _dk in range(max(0, i - dist_exit_lookback + 1), i + 1):
+                            _dv = data['volume'].iloc[_dk]
+                            _dv_ma = data['volume_ma20'].iloc[_dk]
+                            _dc = data['close'].iloc[_dk]
+                            _do = data['open'].iloc[_dk] if 'open' in data.columns else _dc
+                            if (not np.isnan(_dv) and not np.isnan(_dv_ma) and _dv_ma > 0
+                                    and _dv > _dv_ma * dist_exit_vol_threshold and _dc < _do):
+                                _dist_days += 1
+                        if _dist_days >= dist_exit_count:
+                            in_position = False
+                            exit_flags[i] = 1
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            position[i] = 0
+                            continue
+
+                    # 滞涨退出：浮盈达标后连续N天未创新高=动量耗尽
+                    if (stale_peak_enabled and not extended_hold_active and not exit_active
+                            and not is_w_bottom_entry and not is_sideways_entry
+                            and curr_profit_pct >= stale_peak_min_profit
+                            and _days_since_peak >= stale_peak_max_days):
+                        in_position = False
+                        exit_flags[i] = 1
+                        entry_price = None
+                        hold_days = 0
+                        trailing_stop_active = False
+                        dynamic_profit_active = False
+                        max_profit_in_trade = 0
+                        _days_since_peak = 0
+                        pending_exit = False
+                        pending_exit_days = 0
+                        position[i] = 0
+                        continue
+
+                    # 放量阴线+均线偏离退出：高位出货信号
+                    if (dist_madev_exit_enabled and not extended_hold_active and not exit_active
+                            and not is_w_bottom_entry and not is_sideways_entry
+                            and curr_profit_pct >= dist_madev_exit_min_profit
+                            and data is not None and 'volume' in data.columns
+                            and 'volume_ma20' in data.columns and 'open' in data.columns):
+                        _dm_vol = data['volume'].iloc[i]
+                        _dm_vol_ma = data['volume_ma20'].iloc[i]
+                        _dm_close = data['close'].iloc[i]
+                        _dm_open = data['open'].iloc[i]
+                        _dm_is_dist = (not np.isnan(_dm_vol) and not np.isnan(_dm_vol_ma)
+                                       and _dm_vol_ma > 0
+                                       and _dm_vol > _dm_vol_ma * dist_madev_exit_vol_mult
+                                       and _dm_close < _dm_open)
+                        if _dm_is_dist:
+                            _dm_ma_period = dist_madev_exit_ma_period
+                            if i >= _dm_ma_period - 1:
+                                _dm_ma = np.mean(data['close'].iloc[i - _dm_ma_period + 1:i + 1].values)
+                                if _dm_ma > 0:
+                                    _dm_dev = (_dm_close - _dm_ma) / _dm_ma * 100
+                                    if _dm_dev >= dist_madev_exit_dev_pct:
+                                        in_position = False
+                                        exit_flags[i] = 1
+                                        entry_price = None
+                                        hold_days = 0
+                                        trailing_stop_active = False
+                                        dynamic_profit_active = False
+                                        max_profit_in_trade = 0
+                                        pending_exit = False
+                                        pending_exit_days = 0
+                                        position[i] = 0
+                                        continue
 
                 # W底买入的专属退出逻辑（动态缓冲期内：跌破第二个低点3%止损，涨超15%止盈）
                 # 缓冲期规则：gap ≤ 45天 → 15天；gap > 45天 → gap/3

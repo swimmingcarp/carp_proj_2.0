@@ -743,14 +743,14 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
 
     summary.sort(key=lambda x: x['total_return'], reverse=True)
 
-    header = "{:<8}{:>10}{:>12}{:>8}{:>8}{:>8}{:>14}".format(
+    header = "{:<8}{:>10}{:>12}{:>10}{:>10}{:>8}{:>14}".format(
         "代码", "收益%", "最大回撤%", "胜率%", "盈亏比", "交易数", "最终资金"
     )
-    summary_header = "{:<8}{:>10}{:>12}{:>8}{:>8}{:>8}{:>14}".format(
-        "股票数量", "平均收益%", "平均回撤%", "平均胜率%", "盈亏比", "交易数", "最终资金"
+    summary_header = "{:<8}{:>10}{:>12}{:>10}{:>10}{:>10}{:>8}{:>14}".format(
+        "股票数量", "平均收益%", "平均回撤%", "平均胜率%", "总盈亏比", "平均盈亏比", "交易数", "最终资金"
     )
-    separator_line = "=" * 78
-    dash_line = "-" * len(separator_line)
+    separator_line = "=" * 88
+    dash_line = "-" * 88
 
     print("\n" + separator_line)
     print("📊 缓存回测报告（按收益率排序）")
@@ -761,7 +761,7 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
         pf = row['profit_factor']
         pf_str = f"{pf:.2f}" if pf < 100 else "99+"
         line = (
-            "{:<10}{:>10.2f}{:>12.2f}{:>8.2f}{:>8}{:>8d}{:>14,.2f}".format(
+            "{:<10}{:>10.2f}{:>12.2f}{:>10.2f}{:>10}{:>8d}{:>14,.2f}".format(
                 row['code'],
                 row['total_return'],
                 row['max_drawdown'],
@@ -776,20 +776,25 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
     avg_total_return = sum(row['total_return'] for row in summary) / success_count
     avg_max_drawdown = sum(row['max_drawdown'] for row in summary) / success_count
     avg_win_rate = sum(row['win_rate'] for row in summary) / success_count
-    # 盈亏比：各股票盈亏比的平均值（每只股票权重相等，避免大数吞小数）
-    # 排除无亏损(999)的极端值
+    # 总盈亏比：汇总所有股票的总盈利/总亏损
+    all_profit = sum(row['total_profit_pct'] for row in summary)
+    all_loss = sum(row['total_loss_pct'] for row in summary)
+    total_profit_factor = all_profit / all_loss if all_loss > 0 else 99.0
+    # 平均盈亏比：各股票盈亏比的平均值（排除无亏损的极端值）
     valid_pfs = [row['profit_factor'] for row in summary if row['profit_factor'] < 100]
     avg_profit_factor = sum(valid_pfs) / len(valid_pfs) if valid_pfs else 99.0
     avg_trades = sum(row['total_trades'] for row in summary) / success_count
     avg_final_capital = sum(row['final_capital'] for row in summary) / success_count
 
-    pf_str = f"{avg_profit_factor:.2f}" if avg_profit_factor < 100 else "99+"
-    summary_line = "{:<10}{:>10.2f}{:>12.2f}{:>8.2f}{:>8}{:>8.2f}{:>14,.2f}".format(
+    total_pf_str = f"{total_profit_factor:.2f}" if total_profit_factor < 100 else "99+"
+    avg_pf_str = f"{avg_profit_factor:.2f}" if avg_profit_factor < 100 else "99+"
+    summary_line = "{:<10}{:>10.2f}{:>12.2f}{:>10.2f}{:>10}{:>10}{:>8.2f}{:>14,.2f}".format(
         success_count,
         avg_total_return,
         avg_max_drawdown,
         avg_win_rate,
-        pf_str,
+        total_pf_str,
+        avg_pf_str,
         avg_trades,
         avg_final_capital,
     )

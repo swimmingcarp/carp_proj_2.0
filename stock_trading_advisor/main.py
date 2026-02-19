@@ -494,7 +494,7 @@ def format_stock_report(stock_code: str, current_price: float, signal_data: Opti
     lines.append(f"当前价格: {current_price:.2f}")
     lines.append("=" * 60)
     lines.append("━━━ 交易对收益分析 ━━━")
-    lines.append("说明: 买入价和卖出价均为次日开盘价")
+    lines.append("说明: 买入价和卖出价均为当日收盘价")
     lines.append("      剩余本金已扣除交易手续费和印花税")
 
     header = "{:<6} {:<15} {:>12} {:<15} {:>10} {:>12} {:>15}".format(
@@ -788,7 +788,7 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
 
     total_pf_str = f"{total_profit_factor:.2f}" if total_profit_factor < 100 else "99+"
     avg_pf_str = f"{avg_profit_factor:.2f}" if avg_profit_factor < 100 else "99+"
-    summary_line = "{:<10}{:>10.2f}{:>12.2f}{:>10.2f}{:>10}{:>10}{:>8.2f}{:>14,.2f}".format(
+    summary_line = "{:<10}{:>14.2f}{:>16.2f}{:>14.2f}{:>14}{:>14}{:>14.2f}{:>17,.2f}".format(
         success_count,
         avg_total_return,
         avg_max_drawdown,

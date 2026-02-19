@@ -2805,7 +2805,7 @@ class MixedStrategy:
 
                 buy_points.append({
                     'date': buy_date,
-                    'price': trade['buy_price'],  # 使用实际买入价（次日开盘价）
+                    'price': trade['buy_price'],  # 使用实际买入价（当日收盘价）
                     'reason': ', '.join(reason) if reason else '满足买入条件',
                     'k': buy_row.get('k', 0),
                     'd': buy_row.get('d', 0),
@@ -2918,7 +2918,7 @@ class MixedStrategy:
 
                 sell_points.append({
                     'date': sell_date,
-                    'price': trade['sell_price'],  # 使用实际卖出价（次日开盘价或收盘价）
+                    'price': trade['sell_price'],  # 使用实际卖出价（当日收盘价）
                     'reason': reason,
                     'k': sell_row.get('k', 0),
                     'd': sell_row.get('d', 0),

@@ -425,7 +425,7 @@ class SignalAnalyzer:
         # 计算交易对收益
         if buy_points and sell_points:
             output.append(f"\n{Fore.CYAN}━━━ 交易对收益分析 ━━━{Style.RESET_ALL}")
-            output.append(f"{Fore.YELLOW}说明: 买入价和卖出价均为次日开盘价{Style.RESET_ALL}")
+            output.append(f"{Fore.YELLOW}说明: 买入价和卖出价均为当日收盘价{Style.RESET_ALL}")
             output.append(f"{Fore.YELLOW}      剩余本金已扣除交易手续费和印花税{Style.RESET_ALL}")
 
             # 获取初始资金和trades数据

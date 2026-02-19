@@ -51,19 +51,19 @@ class RSITrendStrategy(MixedStrategy):
     def __init__(self, config: Optional[Dict] = None, market: str = 'CN-A',
                  stock_code: str = ''):
         defaults = {
-            'trend_rsi_fast_period': 25,
-            'trend_rsi_slow_period': 70,  # 优化：100→70，+4.02%收益
+            'trend_rsi_fast_period': 29,
+            'trend_rsi_slow_period': 65,
             'trend_atr_period': 20,
             'trend_atr_multiplier': 3.0,
             'trend_use_close_for_extrema': True,
             'trend_relaxed_entry': True,
-            'trend_relaxed_min_gap': 1.2,  # 优化：1.0→1.2，+0.69%收益
+            'trend_relaxed_min_gap': 1.5,
 
             'trend_stop_loss_pct': 8.5,  # 优化：7.0→8.5，+4.70%收益，+1.30%胜率
             'trend_exit_use_ma_filter': True,
-            'trend_exit_fast_ema_period': 22,  # 优化：16→22，+6.5%收益
-            'trend_exit_slow_ma_period': 35,  # 优化：45→35，配合EMA22最优
-            'trend_exit_confirm_ma_period': 16,
+            'trend_exit_fast_ema_period': 20,
+            'trend_exit_slow_ma_period': 40,
+            'trend_exit_confirm_ma_period': 21,
             'trend_lr_filter_enabled': True,
             'trend_lr_lookback': 30,
             'trend_lr_max_slope_pct': 1.5,
@@ -105,7 +105,7 @@ class RSITrendStrategy(MixedStrategy):
             'swing_sell_gain_threshold': 10.0,      # 涨幅超过10%才允许卖出（必须与RSI同时满足）
             'swing_aroon_threshold': 25,            # aroon_osc绝对值 < 25 = 震荡市
             'swing_bb_sell_threshold': 0.80,        # bb_percent > 0.80 = 高位（必须满足）
-            'swing_rsi_sell_threshold': 60,         # fast_rsi > 60 = 超买（优化：65→60）
+            'swing_rsi_sell_threshold': 65,         # fast_rsi > 65 = 超买
             'swing_volume_surge_block': 1.8,        # 成交量 > 1.8倍均量时不卖（放量突破保护）
             'swing_bb_rebuy_threshold': 0.35,       # bb_percent < 0.35 = 回到低位买回（优化：0.50→0.35⭐）
             'swing_rsi_rebuy_threshold': 40,        # fast_rsi < 40 = 超卖买回
@@ -122,10 +122,10 @@ class RSITrendStrategy(MixedStrategy):
             'swing_trend_reversal_giveup': True,    # trend_direction变-1则放弃
 
             # W底形态配置
-            'trend_w_bottom_enabled': False,       # W底信号（优化后关闭）
+            'trend_w_bottom_enabled': True,
             'trend_w_bottom_lookback': 20,
-            'trend_w_bottom_min_gap': 30,
-            'trend_w_bottom_price_tolerance': 0.05,
+            'trend_w_bottom_min_gap': 25,
+            'trend_w_bottom_price_tolerance': 0.016,
 
             # 主升浪延长持仓（Extended Hold）
             'extended_hold_profit_threshold': 30, # 浮盈>X%时触发延长持仓
@@ -143,7 +143,7 @@ class RSITrendStrategy(MixedStrategy):
 
             # 滞涨退出（浮盈达标后连续N天未创新高）
             'stale_peak_enabled': True,
-            'stale_peak_min_profit': 38,          # 浮盈>X%时才检查
+            'stale_peak_min_profit': 40,          # 浮盈>X%时才检查
             'stale_peak_max_days': 25,            # 未创新高天数阈值
 
             # 早期止损收紧
@@ -151,7 +151,7 @@ class RSITrendStrategy(MixedStrategy):
             'early_stop_loss_pct': 5.0,           # 早期止损百分比
 
             # 入场成交量确认
-            'entry_vol_confirm_mult': 0.65,       # 要求入场日成交量达均量X倍（0=关闭）
+            'entry_vol_confirm_mult': 0,          # 要求入场日成交量达均量X倍（0=关闭）
 
             # EH做T放量阴线信号
             'eh_swing_vol_signal_enabled': True,
@@ -160,28 +160,68 @@ class RSITrendStrategy(MixedStrategy):
             'eh_swing_vol_signal_count': 1,       # 需要N根放量阴线
 
             # 止盈保护（trailing stop）
-            'trailing_stop_trigger': 8,           # 浮盈X%后激活保本止损（0=关闭）
-            'trailing_stop_level': -2,            # 回到入场价+level%就卖
-            'trailing_stop_trigger2': 26,         # 双层trailing: 更高利润时使用更紧floor（0=关闭）
+            'trailing_stop_trigger': 6,           # 浮盈X%后激活保本止损（0=关闭）
+            'trailing_stop_level': 0,             # 回到入场价+level%就卖
+            'trailing_stop_trigger2': 0,          # 双层trailing: 更高利润时使用更紧floor（0=关闭）
             'trailing_stop_level2': 8,            # 高层trailing floor
             'trailing_stop_confirm': 0,           # 确认K线数（0=立即卖出）
             'trailing_stop_panic_skip': 0,        # 恐慌过滤（0=关闭）
-            'trailing_stop_calm_threshold': -2.5, # 平稳期突跌过滤（0=关闭）
+            'trailing_stop_calm_threshold': 0,    # 平稳期突跌过滤（0=关闭）
             'trailing_stop_calm_lookback': 5,     # 平稳期回看天数
 
             # 成交量分布退出（窗口内多次放量阴线=机构派发）
             'dist_exit_enabled': True,
-            'dist_exit_min_profit': 22,           # 浮盈>X%时才检查
-            'dist_exit_lookback': 20,             # 回看窗口天数
-            'dist_exit_vol_threshold': 2.2,       # 放量阈值（倍均量）
+            'dist_exit_min_profit': 20,           # 浮盈>X%时才检查
+            'dist_exit_lookback': 30,             # 回看窗口天数
+            'dist_exit_vol_threshold': 2.5,       # 放量阈值（倍均量）
             'dist_exit_count': 3,                 # 窗口内需要N次放量阴线
 
             # 放量阴线+均线偏离退出
             'dist_madev_exit_enabled': True,
-            'dist_madev_exit_min_profit': 15,     # 浮盈>X%时才检查
+            'dist_madev_exit_min_profit': 20,     # 浮盈>X%时才检查
             'dist_madev_exit_ma_period': 20,      # 均线周期
-            'dist_madev_exit_dev_pct': 15,        # 偏离均线>X%
+            'dist_madev_exit_dev_pct': 18,        # 偏离均线>X%
             'dist_madev_exit_vol_mult': 2.2,      # 放量阈值（倍均量）
+
+            # Hurst Exponent趋势过滤器
+            'hurst_enabled': True,                  # 启用Hurst指数动态切换
+            'hurst_window': 100,                    # Hurst计算窗口期
+            'hurst_mean_revert_threshold': 0.45,    # <0.45使用均值回归策略
+            'hurst_trending_threshold': 0.65,       # >0.65使用趋势跟踪策略
+
+            # Volume Quality Filter（成交量质量过滤）
+            'volume_quality_enabled': True,         # 启用成交量质量评分
+            'vq_min_score': 50,                     # 最低成交量质量评分（0-100）
+
+            # Slope-Pearson Downtrend Filter（斜率+确定性下跌过滤）
+            'slope_downtrend_filter_enabled': True,   # 启用斜率下跌过滤
+            'slope_downtrend_period': 180,            # 超长期斜率周期（天）
+            'slope_downtrend_threshold': -0.0042,     # 斜率阈值（负数，越小=越严格）
+            'slope_downtrend_pearson': 0.70,          # Pearson R²最低确定性
+
+            # Hard Loss Cap（硬性最大亏损上限）
+            'hard_loss_cap_enabled': True,            # 启用硬性亏损上限
+            'hard_loss_cap_pct': 8.5,                 # 最大允许亏损百分比
+
+            # W底缓冲期参数
+            'wb_buffer_stop_pct': 8,                  # W底缓冲期止损：跌破W2低点X%
+            'wb_buffer_profit_pct': 999,              # W底缓冲期止盈：涨幅X%（999=禁用）
+
+            # Gap Fade（跳空回补入场）
+            'gap_fade_enabled': True,                 # 启用跳空回补策略
+            'gap_fade_threshold': 3.0,                # 跳空阈值%（向下跳空）
+
+            # 底背离质量过滤器
+            'trend_divergence_min_drop_pct': 15,      # 底背离需要从近期高点下跌 > X%(0=关闭)
+
+            # 追涨/跳空参数（a6d优化值）
+            'chase_rise_vol_max': 2.5,                # 追涨最大量比
+            'chase_min_drop_speed': 0.8,              # 追跌最小下跌速度
+            'chase_max_drop_pct': 15,                 # 追跌最大跌幅%
+
+            # 反弹卖出参数（a6d优化值）
+            'bounce_exit_drop_threshold': -2.2,       # 触发延迟的当日跌幅阈值%
+            'bounce_exit_max_wait': 2,                # 最大等待天数
         }
         if config:
             defaults.update(config)
@@ -452,8 +492,10 @@ class RSITrendStrategy(MixedStrategy):
         data['dual_channel_signal'] = ultra_long_uptrend & very_long_uptrend & long_uptrend & price_near_lower
         data['ultra_long_channel_uptrend'] = ultra_long_uptrend
         data['ultra_long_channel_pearson'] = ultra_long_pearson
+        data['ultra_long_slope'] = ultra_long_slope
         data['very_long_channel_uptrend'] = very_long_uptrend
         data['very_long_channel_pearson'] = very_long_pearson
+        data['very_long_slope'] = very_long_slope
         data['long_channel_uptrend'] = long_uptrend
         data['long_channel_pearson'] = long_pearson
         data['short_channel_lower'] = short_lower
@@ -787,6 +829,92 @@ class RSITrendStrategy(MixedStrategy):
                 rsi_momentum_entry = rsi_momentum_entry & ~streak_block
 
         entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry | sideways_entry | rsi_momentum_entry
+
+        # Gap Fade — 跳空回补入场（大幅低开时均值回归买入）
+        if bool(self.config.get('gap_fade_enabled', False)):
+            _, gap_down = self._detect_gap(data)
+            fade_threshold = float(self.config.get('gap_fade_threshold', 3.0))
+            gap_fade_entry = (
+                (gap_down.abs() >= fade_threshold) &
+                (direction == 1) &
+                (data['fast_rsi'] < 35) &
+                lr_filter_condition
+            )
+            entry_condition = entry_condition | gap_fade_entry
+            logger.info(f"[Gap Fade] 跳空回补入场: {gap_fade_entry.sum()}条")
+
+        # Hurst Exponent策略选择器 — 根据市场状态过滤不适合的入场类型
+        hurst_enabled = bool(self.config['hurst_enabled'])
+        if hurst_enabled:
+            hurst_window = int(self.config['hurst_window'])
+            mean_revert_threshold = float(self.config['hurst_mean_revert_threshold'])
+            trending_threshold = float(self.config['hurst_trending_threshold'])
+
+            # 每隔20天重新计算Hurst指数
+            hurst_vals = pd.Series(0.5, index=data.index)
+            for i in range(hurst_window, len(data), 20):
+                h = self._calculate_hurst_exponent(data['close'].iloc[:i], hurst_window)
+                hurst_vals.iloc[i:min(i+20, len(data))] = h
+
+            data['hurst_exponent'] = hurst_vals
+
+            # H < 0.45: 均值回归 → 只允许震荡入场、底背离、W底
+            # H > trending_threshold: 趋势跟踪 → 只允许标准入场、双通道、RSI动量
+            # 中间: 随机游走 → 全部允许
+            for i in range(len(data)):
+                if not entry_condition.iloc[i]:
+                    continue
+                h = hurst_vals.iloc[i]
+                if h < mean_revert_threshold:
+                    if standard_entry.iloc[i] or dual_channel_entry.iloc[i] or rsi_momentum_entry.iloc[i]:
+                        entry_condition.iloc[i] = False
+                elif h > trending_threshold:
+                    if sideways_entry.iloc[i] or discount_zone_entry.iloc[i]:
+                        entry_condition.iloc[i] = False
+
+        # Volume Quality Filter — 过滤成交量质量差的入场
+        vq_enabled = bool(self.config['volume_quality_enabled'])
+        if vq_enabled and 'volume' in data.columns:
+            min_score = int(self.config['vq_min_score'])
+            vq_scores = pd.Series(0.0, index=data.index)
+            for i in range(len(data)):
+                vq_scores.iloc[i] = self._calculate_volume_quality_score(data, i)
+            for i in range(len(data)):
+                if entry_condition.iloc[i] and vq_scores.iloc[i] < min_score:
+                    if divergence_entry.iloc[i] or w_bottom_entry.iloc[i]:
+                        continue
+                    entry_condition.iloc[i] = False
+            data['volume_quality_score'] = vq_scores
+            logger.info(f"[VQ Filter] 评分过滤后入场数: {entry_condition.sum()}")
+
+        # Slope-Pearson Downtrend Filter — 过滤确定性持续下跌趋势
+        slope_dt_enabled = bool(self.config['slope_downtrend_filter_enabled'])
+        if slope_dt_enabled:
+            slope_dt_period = int(self.config['slope_downtrend_period'])
+            slope_dt_threshold = float(self.config['slope_downtrend_threshold'])
+            slope_dt_pearson = float(self.config['slope_downtrend_pearson'])
+            if slope_dt_period >= 180 and 'ultra_long_slope' in data.columns:
+                slope_col = 'ultra_long_slope'
+                pearson_col = 'ultra_long_channel_pearson'
+            elif 'very_long_slope' in data.columns:
+                slope_col = 'very_long_slope'
+                pearson_col = 'very_long_channel_pearson'
+            else:
+                slope_col = None
+                pearson_col = None
+            if slope_col and pearson_col:
+                before_count = entry_condition.sum()
+                for i in range(len(data)):
+                    if entry_condition.iloc[i]:
+                        slope_val = data[slope_col].iloc[i]
+                        pearson_val = data[pearson_col].iloc[i]
+                        if not pd.isna(slope_val) and not pd.isna(pearson_val):
+                            if slope_val < slope_dt_threshold and pearson_val > slope_dt_pearson:
+                                if divergence_entry.iloc[i] or w_bottom_entry.iloc[i]:
+                                    continue
+                                entry_condition.iloc[i] = False
+                after_count = entry_condition.sum()
+                logger.info(f"[Slope DT] period={slope_dt_period} slope<{slope_dt_threshold} pearson>{slope_dt_pearson}: {before_count}->{after_count}")
 
         # 底背离买入保护：标记底背离买入，用于后续退出逻辑
         data['divergence_entry'] = divergence_entry
@@ -1246,8 +1374,17 @@ class RSITrendStrategy(MixedStrategy):
                                 logger.info(f"[斜率过滤] {self.stock_code} {signal_date}: "
                                           f"底背离被过滤 (斜率={normalized_slope:.6f} < {slope_threshold})")
                     
-                    # 只有通过斜率过滤才发出信号
-                    if pass_slope_filter:
+                    # 底背离质量过滤：要求从近期高点下跌超过min_drop_pct%
+                    div_min_drop = float(self.config.get('trend_divergence_min_drop_pct', 0))
+                    pass_quality_filter = True
+                    if div_min_drop > 0 and signal_idx >= lookback:
+                        recent_high = np.max(close[signal_idx - lookback:signal_idx])
+                        if recent_high > 0:
+                            drop_pct = (recent_high - close[signal_idx]) / recent_high * 100
+                            if drop_pct < div_min_drop:
+                                pass_quality_filter = False
+
+                    if pass_slope_filter and pass_quality_filter:
                         # 当天立即发出买入信号
                         divergence_signals.iloc[signal_idx] = True
                         # 信号持续2天，便于触发买入
@@ -1738,6 +1875,81 @@ class RSITrendStrategy(MixedStrategy):
             logger.warning(f"多时间框架计算失败: {e}")
             return pd.Series(True, index=data.index), {'status': 'calculation_error', 'error': str(e)}
 
+    def _calculate_hurst_exponent(self, prices: pd.Series, window: int = 100) -> float:
+        """计算Hurst指数 (R/S分析法)
+
+        H < 0.5: 均值回归, H = 0.5: 随机游走, H > 0.5: 趋势性
+        """
+        if len(prices) < window:
+            return 0.5
+        prices_arr = prices.iloc[-window:].values
+        returns = np.diff(np.log(prices_arr))
+        if len(returns) < 10:
+            return 0.5
+        lags = range(2, min(20, len(returns)//2))
+        rs_vals = []
+        for lag in lags:
+            rs = []
+            for i in range(0, len(returns), lag):
+                if i + lag > len(returns):
+                    break
+                subset = returns[i:i+lag]
+                if len(subset) < 2:
+                    continue
+                mean_ret = np.mean(subset)
+                cumdev = np.cumsum(subset - mean_ret)
+                r = np.max(cumdev) - np.min(cumdev)
+                s = np.std(subset)
+                if s > 0:
+                    rs.append(r / s)
+            if rs:
+                rs_vals.append(np.mean(rs))
+        if len(rs_vals) < 2:
+            return 0.5
+        log_lags = np.log(list(lags)[:len(rs_vals)])
+        log_rs = np.log(rs_vals)
+        coeffs = np.polyfit(log_lags, log_rs, 1)
+        return max(0.0, min(1.0, coeffs[0]))
+
+    def _detect_gap(self, data: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+        """检测跳空百分比 (向上, 向下)"""
+        gap_pct = ((data['open'] - data['close'].shift(1)) / data['close'].shift(1) * 100).fillna(0)
+        gap_up = gap_pct.clip(lower=0)
+        gap_down = gap_pct.clip(upper=0)
+        return gap_up, gap_down
+
+    def _calculate_volume_quality_score(self, data: pd.DataFrame, idx: int) -> float:
+        """计算成交量质量评分（0-100）: 一致性(40分) + 强度(60分)"""
+        if idx < 10:
+            return 50
+        volume = data.get('volume', pd.Series([0]*len(data), index=data.index))
+        close = data['close']
+        window_start = max(0, idx - 9)
+        window_close = close.iloc[window_start:idx+1]
+        window_volume = volume.iloc[window_start:idx+1]
+        consistency_score = 0
+        for i in range(1, len(window_close)):
+            price_up = window_close.iloc[i] > window_close.iloc[i-1]
+            vol_up = window_volume.iloc[i] > window_volume.iloc[i-1]
+            if (price_up and vol_up) or (not price_up and not vol_up):
+                consistency_score += 1
+        consistency_score = (consistency_score / (len(window_close) - 1)) * 40
+        vol_ma = window_volume.mean()
+        current_vol = volume.iloc[idx]
+        if vol_ma > 0:
+            vol_ratio = current_vol / vol_ma
+            if vol_ratio >= 2.0:
+                strength_score = 60
+            elif vol_ratio >= 1.5:
+                strength_score = 50 + (vol_ratio - 1.5) * 20
+            elif vol_ratio >= 1.0:
+                strength_score = 40 + (vol_ratio - 1.0) * 20
+            else:
+                strength_score = vol_ratio * 40
+        else:
+            strength_score = 0
+        return min(100, max(0, consistency_score + strength_score))
+
     def _compute_trend_levels(self, data: pd.DataFrame, atr_values: pd.Series,
                               period: int, use_close: bool) -> Tuple[pd.Series, pd.Series, pd.Series]:
         """计算ATR止损线与趋势方向"""
@@ -1985,6 +2197,12 @@ class RSITrendStrategy(MixedStrategy):
         _adaptive_sl_enabled = bool(self.config.get('adaptive_stop_loss_enabled', False))
         _adaptive_sl_bear_pct = float(self.config.get('adaptive_stop_loss_bear_pct', 5.0))  # 熊市止损%
         _trade_stop_loss = stop_loss_pct  # 每笔交易的实际止损（可能被regime调整）
+        # Hard Loss Cap — 硬性最大亏损上限
+        hard_loss_cap_enabled = bool(self.config['hard_loss_cap_enabled'])
+        hard_loss_cap_pct = float(self.config['hard_loss_cap_pct'])
+        # W底缓冲期参数
+        wb_buffer_stop_pct = float(self.config['wb_buffer_stop_pct'])
+        wb_buffer_profit_pct = float(self.config['wb_buffer_profit_pct'])
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
 
@@ -2778,6 +2996,25 @@ class RSITrendStrategy(MixedStrategy):
                     else:
                         _days_since_peak += 1  # 未创新高，累计天数
 
+                    # Hard Loss Cap — 硬性最大亏损上限（所有入场类型生效）
+                    if hard_loss_cap_enabled and curr_profit_pct <= -hard_loss_cap_pct:
+                        in_position = False
+                        exit_flags[i] = 1
+                        stop_flags[i] = 1
+                        entry_price = None
+                        is_divergence_entry = False
+                        is_w_bottom_entry = False
+                        is_sideways_entry = False
+                        w_bottom_price = None
+                        w_bottom_gap = None
+                        hold_days = 0
+                        trailing_stop_active = False
+                        dynamic_profit_active = False
+                        max_profit_in_trade = 0
+                        pending_exit = False
+                        position[i] = 0
+                        continue
+
                     # 延长持仓每日安全检查：价格跌破MA120 或 利润回撤超限 或 从峰值回撤过多 → 退出
                     # 注意：对所有入场类型生效（包括底背离/W底/震荡）
                     if extended_hold_active:
@@ -3182,7 +3419,7 @@ class RSITrendStrategy(MixedStrategy):
                         # 止损：跌破第二个低点的3%（第二个低点是确认买入的关键支撑位）
                         # 【关键】使用当天最低价判断止损，而不是收盘价，这样更接近实际交易
                         curr_low = data['low'].iloc[i] if 'low' in data.columns else curr_price
-                        stop_threshold = w_bottom_price * 0.97
+                        stop_threshold = w_bottom_price * (1 - wb_buffer_stop_pct / 100.0)
                         if curr_low <= stop_threshold:
                             if data is not None and 'date' in data.columns:
                                 sell_date = data['date'].iloc[i]
@@ -3202,8 +3439,8 @@ class RSITrendStrategy(MixedStrategy):
                             position[i] = 0  # 【修复】在continue前设置position
                             continue
                         
-                        # 止盈：涨超15%
-                        profit_threshold = entry_price * 1.15
+                        # 止盈：涨超wb_buffer_profit_pct%
+                        profit_threshold = entry_price * (1 + wb_buffer_profit_pct / 100.0)
                         if curr_price >= profit_threshold:
                             if data is not None and 'date' in data.columns:
                                 sell_date = data['date'].iloc[i]
@@ -3349,9 +3586,9 @@ class RSITrendStrategy(MixedStrategy):
                             logger.info(f"[Aroon震荡上轨退出] {sell_date} 触及上轨+RSI超买，卖出价格{curr_price:.2f}")
                         continue
 
-                    # 出场条件2：固定止盈 8.5%（最优参数）
+                    # 出场条件2：固定止盈
                     profit_pct = (curr_price / entry_price - 1) * 100
-                    if profit_pct >= 8.5:
+                    if profit_pct >= 999:
                         in_position = False
                         exit_flags[i] = 1
                         profit_target_flags[i] = 1
@@ -3364,8 +3601,8 @@ class RSITrendStrategy(MixedStrategy):
                             logger.info(f"[Aroon震荡止盈] {sell_date} 达到8.5%止盈目标，卖出价格{curr_price:.2f}")
                         continue
 
-                    # 出场条件3：固定止损 1.0%（最优参数）
-                    if profit_pct <= -1.0:
+                    # 出场条件3：固定止损 2.0%
+                    if profit_pct <= -2.0:
                         in_position = False
                         exit_flags[i] = 1
                         stop_flags[i] = 1

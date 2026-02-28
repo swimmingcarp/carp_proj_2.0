@@ -288,6 +288,10 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
 
             if not quiet:
                 echo(analyzer.format_backtest_result(backtest_result))
+                if use_new_strategy:
+                    timeline = format_trend_timeline(df, stock_code)
+                    if timeline:
+                        echo(timeline)
                 if trading_signals and trading_signals.get('total_trades', 0) > 0:
                     echo(analyzer.format_trading_signals(trading_signals))
                 echo(analyzer.generate_recommendation(signal_data, backtest_result))
@@ -581,6 +585,170 @@ def format_stock_report(stock_code: str, current_price: float, signal_data: Opti
     return "\n".join(lines)
 
 
+_STOCK_NAMES_CACHE: Optional[Dict[str, str]] = None
+
+
+def _get_stock_name(stock_code: str) -> str:
+    """从配置文件中查找股票名称"""
+    global _STOCK_NAMES_CACHE
+    if _STOCK_NAMES_CACHE is None:
+        _STOCK_NAMES_CACHE = {}
+        for fname in ('cn_stock_names.txt', 'hk_stock_names.txt'):
+            fpath = BASE_DIR / 'config' / fname
+            if fpath.exists():
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        parts = line.split(maxsplit=1)
+                        if len(parts) == 2:
+                            _STOCK_NAMES_CACHE[parts[0]] = parts[1]
+    return _STOCK_NAMES_CACHE.get(stock_code, '')
+
+
+def format_trend_timeline(df_raw: pd.DataFrame, stock_code: str) -> str:
+    """
+    格式化趋势区间段落表
+
+    利用 PIT 趋势检测模块，将股票的历史走势分段并展示时间线。
+    """
+    try:
+        from personality.pit_stage import (
+            compute_pit_states, make_personality_config,
+            compute_stock_dna, compute_downtrend_phase, smooth_macro_phase
+        )
+        from personality.segmenter import StockPersonalityEngine
+    except ImportError:
+        return ""
+
+    import numpy as np
+
+    df = df_raw.copy()
+    if 'date' not in df.columns:
+        return ""
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').reset_index(drop=True)
+
+    close = df['close'].values.astype(float)
+    high = df['high'].values.astype(float)
+    low = df['low'].values.astype(float)
+    volume = df['volume'].values.astype(float) if 'volume' in df.columns else None
+    dates = df['date'].dt.strftime('%Y-%m-%d').tolist()
+    n = len(df)
+
+    if n < 200:
+        return ""
+
+    try:
+        dna = compute_stock_dna(close, high, low)
+        pe = StockPersonalityEngine(close, dates)
+        pers = pe.get_personality_at_bar(n - 1)
+        cfg = make_personality_config(pers, dna=dna)
+
+        states = compute_pit_states(close, high, low, cfg=cfg)
+        phases, _ = compute_downtrend_phase(
+            close, high, low, states, cfg=cfg, dna=dna, return_data=True
+        )
+        confirmed = smooth_macro_phase(
+            phases, close, high, low, volume, confirmed_only=True
+        )
+    except Exception:
+        return ""
+
+    # ── 家族分类 ──
+    _DN = {'downtrend_steep', 'downtrend_gradual', 'downtrend_range', 'downtrend_bottom'}
+    STATE_SYM = {
+        'consolidation':     '整理  ',
+        'uptrend':           '上涨  ',
+        'downtrend_steep':   '急跌↓↓',
+        'downtrend_gradual': '缓跌↓ ',
+        'downtrend_range':   '震荡↔ ',
+        'downtrend_bottom':  '底部离',
+    }
+
+    def fam(ph):
+        if ph in _DN or ph == 'pullback':
+            return 'dn'
+        if ph in ('uptrend', 'bounce'):
+            return 'up'
+        return 'co'
+
+    # ── 构建 segments ──
+    segs = []
+    prev = confirmed[0]
+    start = 0
+    for i in range(1, n):
+        if confirmed[i] != prev:
+            sc = close[start:i]
+            segs.append(dict(
+                state=prev, start_date=dates[start], end_date=dates[i - 1],
+                sp=float(close[start]), ep=float(close[i - 1]),
+                lo=float(sc.min()), hi=float(sc.max()), bars=i - start,
+            ))
+            prev = confirmed[i]
+            start = i
+    sc = close[start:]
+    segs.append(dict(
+        state=prev, start_date=dates[start], end_date=dates[-1],
+        sp=float(close[start]), ep=float(close[-1]),
+        lo=float(sc.min()), hi=float(sc.max()), bars=n - start,
+    ))
+
+    # ── 格式化表格 ──
+    import unicodedata
+
+    def _vw(s):
+        """Visual width accounting for CJK double-width characters."""
+        return sum(2 if unicodedata.east_asian_width(c) in ('F', 'W') else 1
+                   for c in str(s))
+
+    def _pad(s, width, align='left'):
+        """Pad string to target visual width."""
+        s = str(s)
+        gap = max(0, width - _vw(s))
+        return s + ' ' * gap if align == 'left' else ' ' * gap + s
+
+    stock_name = _get_stock_name(stock_code)
+    name_str = f" {stock_name}" if stock_name else ""
+
+    def _row(num, state, period, days, sp, ep, chg, note):
+        return (
+            f" {_pad(num, 3, 'right')}"
+            f"  {_pad(state, 8)}"
+            f"{_pad(period, 25)}"
+            f"  {_pad(days, 4, 'right')}"
+            f"  {_pad(sp, 8, 'right')}"
+            f"  {_pad(ep, 8, 'right')}"
+            f"  {_pad(chg, 8, 'right')}"
+            f"  {note}"
+        )
+
+    lines = []
+    W = 100
+    lines.append("━━━ 趋势区间段落表 ━━━")
+    lines.append(f"{stock_code}{name_str} — 趋势时间线（共 {len(segs)} 段）")
+    lines.append("=" * W)
+    lines.append(_row('#', '状态', '区间', '天数', '起始价', '结束价', '涨跌幅', '备注'))
+    lines.append("-" * W)
+
+    for idx, seg in enumerate(segs):
+        chg = (seg['ep'] - seg['sp']) / seg['sp'] * 100
+        sym = STATE_SYM.get(seg['state'], seg['state']).rstrip()
+        date_range = f"{seg['start_date']} ~ {seg['end_date']}"
+        chg_s = f"{chg:+.1f}%"
+        remark = f"低:{seg['lo']:.2f} 高:{seg['hi']:.2f}"
+
+        lines.append(_row(
+            str(idx + 1), sym, date_range,
+            str(seg['bars']), f"{seg['sp']:.2f}", f"{seg['ep']:.2f}",
+            chg_s, remark
+        ))
+
+    lines.append("=" * W)
+    return "\n".join(lines)
+
+
 def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = False,
                                    stock_codes: Optional[List[str]] = None,
                                    oscillation_driven: bool = False,
@@ -682,6 +850,12 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
             backtest_result,
             analysis.get('trading_signals')
         )
+
+        # 趋势区间段落表（仅 --new-strategy 模式）
+        if use_new_strategy:
+            timeline = format_trend_timeline(df_raw, stock_code)
+            if timeline:
+                stock_report = stock_report + "\n\n" + timeline
 
         summary_entry = {
             'code': stock_code,

@@ -47,6 +47,7 @@ class RSITrendStrategy(MixedStrategy):
     # 类级别缓存：大盘指数数据（避免每只股票重复获取）
     _index_cache: Dict[str, pd.DataFrame] = {}
     _index_regime: Dict[str, pd.Series] = {}  # 预计算的regime信号(date→bool)
+    _breadth_regime: Optional[pd.Series] = None  # 市场宽度regime信号缓存
 
     def __init__(self, config: Optional[Dict] = None, market: str = 'CN-A',
                  stock_code: str = ''):
@@ -57,15 +58,15 @@ class RSITrendStrategy(MixedStrategy):
             'trend_atr_multiplier': 3.0,
             'trend_use_close_for_extrema': True,
             'trend_relaxed_entry': True,
-            'trend_relaxed_min_gap': 1.5,
+            'trend_relaxed_min_gap': 1.9,  # 1.5→1.9: +1.47%, +0.013 tPF, 9伤12益, peak at 1.9
 
             'trend_stop_loss_pct': 8.5,  # 优化：7.0→8.5，+4.70%收益，+1.30%胜率
             'trend_exit_use_ma_filter': True,
             'trend_exit_fast_ema_period': 20,
             'trend_exit_slow_ma_period': 40,
-            'trend_exit_confirm_ma_period': 21,
+            'trend_exit_confirm_ma_period': 15,  # (21→15: +7.28%, +0.0191 tPF, 29伤43益, excl-300274仍+6.20%)
             'trend_lr_filter_enabled': True,
-            'trend_lr_lookback': 30,
+            'trend_lr_lookback': 40,            # LR下跌过滤回看天数 (30→40: +0.57%/+0.002 tPF, 5伤5益; 50: +0.13%; peak at 40)
             'trend_lr_max_slope_pct': 1.5,
             # 多时间框架配置
             # 重要：为避免MTF带来的信号滞后/漏买，且避免任何潜在未来函数争议，默认强制关闭。
@@ -81,7 +82,7 @@ class RSITrendStrategy(MixedStrategy):
 
             # 主升浪持仓优化配置（优化后的参数）
             'trend_main_wave_enabled': True,  # 启用主升浪检测
-            'trend_main_wave_min_gain': 10.0,  # 主升浪最小涨幅阈值(%) - 降低
+            'trend_main_wave_min_gain': 15.0,  # 主升浪最小涨幅阈值(%) - 10→15: +0.18%, +0.002 tPF, 0伤1益
             'trend_main_wave_min_days': 3,  # 主升浪最小持续天数 - 降低
             'trend_main_wave_rsi_threshold': 80,  # 主升浪期间RSI阈值 - 提高
             'trend_main_wave_volume_factor': 1.2,  # 主升浪成交量放大倍数 - 降低
@@ -103,13 +104,13 @@ class RSITrendStrategy(MixedStrategy):
             'swing_min_profit_pct': 3.0,            # 最少浮盈3%才考虑
             'swing_max_profit_pct': 25.0,           # 浮盈超过此值不高抛（保护大牛股）
             'swing_sell_gain_threshold': 10.0,      # 涨幅超过10%才允许卖出（必须与RSI同时满足）
-            'swing_aroon_threshold': 25,            # aroon_osc绝对值 < 25 = 震荡市
+            'swing_aroon_threshold': 40,            # aroon_osc绝对值 < 40 = 震荡市 (25→35: +0.59%/+0.0046, 35→40: +0.29%/+0.0014, 0伤5益; 45+: tPF↓)
             'swing_bb_sell_threshold': 0.80,        # bb_percent > 0.80 = 高位（必须满足）
             'swing_rsi_sell_threshold': 65,         # fast_rsi > 65 = 超买
             'swing_volume_surge_block': 1.8,        # 成交量 > 1.8倍均量时不卖（放量突破保护）
             'swing_bb_rebuy_threshold': 0.35,       # bb_percent < 0.35 = 回到低位买回（优化：0.50→0.35⭐）
             'swing_rsi_rebuy_threshold': 40,        # fast_rsi < 40 = 超卖买回
-            'swing_stoch_k_rebuy_threshold': 30,    # KDJ K线 < 30 = 超卖买回
+            'swing_stoch_k_rebuy_threshold': 23,    # KDJ K线 < 23 = 超卖买回 (30→25: +3.13%, 25→23: +0.17%/0伤1益; 24-25相同; 26+负效果)
             'swing_rebuy_drop_pct': 999.0,          # 禁用纯跌幅回买（优化：4.0→禁用，提升胜率⭐）
             'swing_breakout_chase_pct': 999.0,      # 禁用普通追高买回（分析显示追高胜率低）
             'swing_breakout_max_gap_pct': 999.0,    # 禁用普通追高买回
@@ -117,7 +118,7 @@ class RSITrendStrategy(MixedStrategy):
             'swing_next_day_up_rebuy': False,       # 次日收涨立即买回（分析发现容易追高，默认关闭）
             'swing_volume_breakout_rebuy': True,    # 放量突破买回（真突破信号）
             'swing_volume_breakout_ratio': 1.8,     # 放量突破的量比阈值
-            'swing_max_wait_days': 8,               # 最多等8天买回（优化：12→8⭐）
+            'swing_max_wait_days': 5,               # (8→5: +0.80%, +0.0009 tPF, 0伤1益)
             'swing_max_loss_from_sell_pct': 5.0,    # 跌超过卖出价5%放弃买回
             'swing_trend_reversal_giveup': True,    # trend_direction变-1则放弃
 
@@ -139,7 +140,8 @@ class RSITrendStrategy(MixedStrategy):
             'sideways_exit_sl_pct': 5.0,           # 退出条件3：止损%
 
             # 主升浪延长持仓（Extended Hold）
-            'extended_hold_profit_threshold': 30, # 浮盈>X%时触发延长持仓
+            'extended_hold_profit_threshold': 35, # 浮盈>X%时触发延长持仓 (30→35: +0.49%, 5伤15益, 分布均匀)
+            # extended_hold_drawdown默认5(get()取): 5→6测avg+9.19%但仅因300274+1486%(12伤3益); 不通用
             'extended_hold_peak_trailing': 20,    # 从最高浮盈回撤X%后退出
             'extended_hold_peak_activation_offset': 999,  # 峰值回撤激活偏移
             'extended_hold_gain_protection_ratio': 0,     # 比例保护（0=关闭）
@@ -155,7 +157,7 @@ class RSITrendStrategy(MixedStrategy):
             # 滞涨退出（浮盈达标后连续N天未创新高）
             'stale_peak_enabled': True,
             'stale_peak_min_profit': 40,          # 浮盈>X%时才检查
-            'stale_peak_max_days': 25,            # 未创新高天数阈值
+            'stale_peak_max_days': 30,            # 未创新高天数阈值 (25→30: +1.09%/+0.017 tPF, 10伤11益; 35: avg↓2.6%)
 
             # 早期止损收紧
             'early_stop_days': 0,                 # 前N天使用更紧止损（0=关闭）
@@ -172,13 +174,17 @@ class RSITrendStrategy(MixedStrategy):
 
             # 止盈保护（trailing stop）
             'trailing_stop_trigger': 6,           # 浮盈X%后激活保本止损（0=关闭）
-            'trailing_stop_level': 0,             # 回到入场价+level%就卖
+            'trailing_stop_level': 1.5,            # 回到入场价+level%就卖 (0→1.5: +10.22%/+0.0346 tPF; 1.5 > 2.0: +1.74%/+0.0231 tPF, 44伤41益; 4: catastrophic)
             'trailing_stop_trigger2': 0,          # 双层trailing: 更高利润时使用更紧floor（0=关闭）
             'trailing_stop_level2': 8,            # 高层trailing floor
-            'trailing_stop_confirm': 0,           # 确认K线数（0=立即卖出）
+            'trailing_stop_confirm': 1,           # 确认K线数（0=立即卖出，1=1日确认过滤假信号）
             'trailing_stop_panic_skip': 0,        # 恐慌过滤（0=关闭）
             'trailing_stop_calm_threshold': 0,    # 平稳期突跌过滤（0=关闭）
             'trailing_stop_calm_lookback': 5,     # 平稳期回看天数
+            # 趋势感知trailing stop: 强上涨趋势中自动放宽level，避免主升浪中被洗出
+            'trailing_stop_uptrend_enabled': False,  # 趋势感知(实测有损tPF，默认关闭)
+            'trailing_stop_uptrend_level': -10,      # 强上涨趋势中的level（负=允许一定回撤）
+            'trailing_stop_uptrend_trigger': 10,     # 强上涨趋势中触发门槛升至X%（0=不改trigger）
 
             # 成交量分布退出（窗口内多次放量阴线=机构派发）
             'dist_exit_enabled': True,
@@ -189,9 +195,9 @@ class RSITrendStrategy(MixedStrategy):
 
             # 放量阴线+均线偏离退出
             'dist_madev_exit_enabled': True,
-            'dist_madev_exit_min_profit': 20,     # 浮盈>X%时才检查
-            'dist_madev_exit_ma_period': 20,      # 均线周期
-            'dist_madev_exit_dev_pct': 18,        # 偏离均线>X%
+            'dist_madev_exit_min_profit': 30,     # 浮盈>X%时才检查（30%更合理，防止过早卖飞）
+            'dist_madev_exit_ma_period': 13,      # 均线周期 (20→13: +1.94%/+0.0174 tPF, 10伤7益; 300757-222%但tPF强; 12/14更差)
+            'dist_madev_exit_dev_pct': 22,        # 偏离均线>X% (25→22: +1.41%/+0.001 tPF, 2伤5益; 20-21: avg↑6%但tPF↓)
             'dist_madev_exit_vol_mult': 2.2,      # 放量阈值（倍均量）
 
             # Hurst Exponent趋势过滤器
@@ -214,6 +220,96 @@ class RSITrendStrategy(MixedStrategy):
             'hard_loss_cap_enabled': True,            # 启用硬性亏损上限
             'hard_loss_cap_pct': 8.5,                 # 最大允许亏损百分比
 
+            # 卖出后智能回补机制: 卖出后短窗口内价格强势突破则回补
+            'reentry_enabled': True,                  # 启用回补
+            'reentry_window': 20,                     # 回补观察窗口天数 (优化: 10→20, +2.14%收益)
+            'reentry_price_pct': 5.0,                 # 价格须突破卖出价×(1+X%)
+            'reentry_rsi_min': 60.0,                  # 回补最低RSI要求
+            'reentry_vol_min': 2.5,                   # 回补最低成交量倍数 (1.5→2.5: +0.16%, +0.002 tPF, 0伤2益; 1.5-2.0x re-entry从不触发)
+            'reentry_require_uptrend': True,          # 要求MA120上升趋势
+            'reentry_max_prev_profit': 25,            # 前笔盈利>25%不回补 (优化: hurt 27→1, +1.36%收益)
+            'reentry_max_dist_ma120': 0,              # 回补时价格偏离MA120超过X%则不回补 (0=关闭)
+            'reentry_only_surge_exit': True,           # 只允许V型反弹退出后回补 (优化: tPF+0.0221)
+
+            # MA60止盈保护: 信号退出时若浮盈足够且价格在MA60上方, 改用MA60破位止盈
+            # 只对大赢家(浮盈>140%)生效 — 保护趋势强劲的大运; 普通交易正常ATR退出
+            'ma60_protect_enabled': True,              # 启用MA60止盈保护
+            'ma60_protect_profit_min': 140.0,          # 最低浮盈门槛%(推荐140%: 0伤害+7受益+tPF↑)
+            'ma60_protect_hold_min': 20,               # 最少持仓天数(避免信号过早转换)
+
+            # EH退出MA120确认: 要求连续N天跌破MA120才退出(单日跌破=调整，连续跌破=真反转)
+            # 测试: confirm=2 → 300763+84% 但7股受伤(300750-41%等); 7伤>3益, 仍用单日
+            'eh_ma120_confirm_days': 1,                # MA120跌破确认天数(1=立即退出/当前行为)
+
+            # EH退出: MA45连续N天替代MA120作为止损 — 两版本均FAILED
+            # v1(固定MA45,3天): avg-8%, tPF-0.043; 01797 992%→430%(-562%), ATR>4%误杀率42%
+            # v2(ATR缓冲,k=0.8): avg-19%, tPF-0.027; 01797仍-562%, 300274少赚2000%
+            # 根因: 不同股票回调深度不同，无法用统一阈值区分"深调后继续"vs"真反转"
+            'eh_ma45_exit_enabled': False,             # MA45替代MA120 (默认关闭)
+            'eh_ma45_confirm_days': 3,                 # 连续有效跌破天数
+            'eh_ma45_atr_mult': 0.8,                   # ATR缓冲倍数(备用)
+
+            # EH退出: Chandelier Exit (吊灯退出法) — ATR自适应峰值追踪
+            # 止损线 = 持仓最高价 × (1 - N×ATR%)，高波动股(01797 ATR=5%)自动获得更宽空间
+            # 比MA120更快响应(跟踪峰值而非均线)，比MA45更自适应(ATR动态调整)
+            # Chandelier: avg-1.03%, tPF-0.0024; 83%的EH退出是profit floor(与MA无关)
+            # Chandelier只影响4%的EH退出(4次/112次); 攻击了错误目标
+            'eh_chandelier_enabled': False,            # Chandelier替代MA120 (默认关闭)
+            'eh_chandelier_mult': 4.0,                 # ATR倍数
+            'eh_chandelier_confirm': 1,                # 连续跌破确认天数
+
+            # 信号退出成交量确认 — FAILED: avg -19.77%, tPF -0.039
+            # 缩量也常见于反转初期; 跳过导致持仓更久损失更大
+            'signal_exit_vol_confirm': 0.0,       # 缩量跳过阈值(0=关闭)
+            'signal_exit_vol_skip_max': 5,         # 最多连续跳过天数
+
+            # 信号退出MA20方向过滤 — FAILED: avg-36%, tPF-0.017
+            'signal_exit_ma20_rising_delay': False,  # MA20上升时延迟退出
+            'signal_exit_ma20_lookback': 10,         # MA20方向检测回看天数
+            'signal_exit_ma20_delay_max': 5,         # 最多延迟天数
+
+            # 信号退出峰值盈利保护: 信号退出时若仍持有较高浮盈且历史峰值高, 延迟最多N天
+            # 卖飞信号退出: 平均持仓29天, 平均利润+8%, 平均峰值估计~15%
+            # 正确信号退出: 通常利润较低(亏损或<5%)或峰值不高
+            # 理论: 峰值高(曾涨>15%)+当前仍盈利(>5%) → 上升趋势中浅调 → 给1-2天回收机会
+            'signal_exit_peak_protect': False,       # 峰值盈利延迟退出 (FAILED: avg-38%, tPF-0.017)
+            'signal_exit_peak_min': 15.0,            # 触发保护的最低峰值盈利%
+            'signal_exit_peak_curr_min': 5.0,        # 触发保护的最低当前浮盈%
+            'signal_exit_peak_delay_max': 2,         # 最多延迟天数
+
+            # 强阳弱阴形态提前激活EH: 形态确认强趋势时，用低门槛(20%/10天)代替标准(35%/25天)
+            # 全量回测所有变种均FAILED: MA120慢→回撤大, 8%追踪→强趋势正常回调被打出
+            # hurt:14 helped:26, 损失集中在大趋势股(300274:-513%, 300757:-134%)
+            'eh_pattern_enabled': False,               # 形态提前EH (全量回测有害, 默认关闭)
+            'eh_pattern_profit_min': 20.0,             # 形态触发EH最低利润%
+            'eh_pattern_hold_min': 10,                 # 形态触发EH最少持仓天数
+            'eh_pattern_ratio': 1.8,                   # 强阳弱阴体量比阈值
+            'eh_pattern_peak_offset': 5.0,             # 峰值追踪激活偏移(trigger+5%时激活)
+            'eh_pattern_peak_trailing': 8.0,           # 峰值回撤止损%(回撤8%退出，比MA120快)
+
+            # 强阳弱阴形态回补: 信号退出/反弹卖出后，若形态仍激活则等候回调买入
+            # 模拟结果: 167卖飞中110次(66%)找到机会, 胜率52%, avg+15.2%, 盈/亏=36.7%/-7.9%
+            # 全量回测: FAILED — 非卖飞的正确退出也触发, 增加亏损. 保留代码但默认关闭.
+            'pattern_reentry_enabled': False,          # 强阳弱阴回补 (全量回测有害, 默认关闭)
+            'pattern_reentry_window': 30,              # 退出后观察窗口天数
+            'pattern_reentry_ratio': 1.8,              # 阳线平均体量/阴线平均体量阈值
+            'pattern_reentry_sl': 8.0,                 # 回补止损%
+
+            # 信号退出标准回补: 信号退出后启动标准回补窗口 (RSI>60+放量+价格突破)
+            # Approach 12 FAILED: avg-1.19%, tPF-0.0204; 条件仍太宽松, 死猫反弹触发误入
+            'reentry_signal_exit_enabled': False,     # 信号退出触发标准回补观察 (FAILED)
+
+            # 止损回补: 止损后若MA120上升+RSI>60+放量+价格突破 → 重入场
+            # 止损卖飞: 42次(25.1%), avg亏-9.8%, avg持9d, avg错过+58%
+            # 止损后股价回升至止损价+5%时满足严格条件 → 再入场
+            'reentry_hard_stop_enabled': False,       # 止损后触发标准回补观察 (测试中)
+
+            # 过热入场自适应止损: 股价近期涨幅大时使用更紧止损
+            'hot_entry_enabled': True,                # 启用过热止损 (优化: +6.26%收益, +0.0288 tPF)
+            'hot_entry_thresh_pct': 3,                # 20天涨幅>X%视为过热 (5→3: +8.91%, 26伤52益, 除300274仍+5.30%)
+            'hot_entry_stop_loss_pct': 4.0,           # 过热时硬止损缩至4%（vs 默认8.5%）
+            'hot_entry_lookback': 20,                 # 回看天数
+
             # W底缓冲期参数
             'wb_buffer_stop_pct': 8,                  # W底缓冲期止损：跌破W2低点X%
             'wb_buffer_profit_pct': 999,              # W底缓冲期止盈：涨幅X%（999=禁用）
@@ -227,12 +323,14 @@ class RSITrendStrategy(MixedStrategy):
 
             # 追涨/跳空参数（a6d优化值）
             'chase_rise_vol_max': 2.5,                # 追涨最大量比
-            'chase_min_drop_speed': 0.8,              # 追跌最小下跌速度
+            'chase_min_drop_speed': 1.2,              # 追跌最小下跌速度 (0.8→1.2: +0.25%/+0.0044 tPF, 0伤1益, clean)
             'chase_max_drop_pct': 15,                 # 追跌最大跌幅%
 
             # 反弹卖出参数（a6d优化值）
-            'bounce_exit_drop_threshold': -2.2,       # 触发延迟的当日跌幅阈值%
-            'bounce_exit_max_wait': 2,                # 最大等待天数
+            'bounce_exit_drop_threshold': -2.6,       # 触发延迟的当日跌幅阈值% (-2.2→-2.6: +1.08%/+0.004 tPF, 25伤28益, peak at -2.6)
+            'bounce_exit_max_wait': 1,                # (2→1: +1.08%, +0.0090 tPF, 23伤31益)
+            # 待反弹卖出期间若信号恢复则取消卖出 — 防卖飞(暴跌后快速回弹)
+            'bounce_exit_cancel_on_clear': True,      # 信号恢复时取消pending_exit (False→True: +0.22%/+0.0037 tPF, 2伤7益)
 
             # 多指标超买集群退出（利润10-22%区间，多个振荡指标同时超买时退出）
             'ob_cluster_exit_enabled': False,
@@ -248,7 +346,7 @@ class RSITrendStrategy(MixedStrategy):
             'vol_climax_exit_enabled': True,
             'vol_climax_exit_min_profit': 15,     # 最低利润%（优化：8→15, dPF +0.022）
             'vol_climax_exit_vol_mult': 3.0,      # 放量倍数阈值（优化：2.5→3.0）
-            'vol_climax_exit_require_new_high': True,  # 要求近5日新高
+            'vol_climax_exit_require_new_high': False,  # (True→False: +1.53%, +0.0049 tPF, 1伤3益, 300274无影响)
 
             # ROC动量衰竭退出（ROC正值但连续下降=加速度为负）
             'roc_fade_exit_enabled': False,
@@ -267,6 +365,12 @@ class RSITrendStrategy(MixedStrategy):
             'stoch_reversal_entry_k_thresh': 20,  # K线超卖阈值
             'stoch_reversal_entry_require_cross': True,  # 要求K上穿D
             'stoch_reversal_entry_require_ha': True,     # 要求HA阳线
+
+            # 市场宽度过滤器: 大盘宽度不足时阻止入场
+            'market_breadth_enabled': False,              # 启用宽度过滤
+            'market_breadth_file': '',                    # 宽度CSV路径 (空=自动查找)
+            'market_breadth_threshold': 0.35,             # 宽度阈值: >=X比例股票在MA120上方才允许入场
+            'market_breadth_smooth': 5,                   # 宽度信号平滑天数 (0=不平滑)
         }
         if config:
             defaults.update(config)
@@ -345,6 +449,53 @@ class RSITrendStrategy(MixedStrategy):
             cls._index_regime[cache_key] = pd.Series(dtype=bool)
             return cls._index_regime[cache_key]
 
+    @classmethod
+    def _load_breadth_regime(cls, breadth_file: str, threshold: float,
+                             smooth: int = 5) -> pd.Series:
+        """加载市场宽度regime信号。返回以日期为index的bool Series (True=允许入场)
+
+        threshold: stocks_above_ma120_pct >= threshold → 允许入场
+        smooth: 平滑天数(滚动均值), 0=不平滑
+        """
+        if cls._breadth_regime is not None:
+            return cls._breadth_regime
+
+        try:
+            from pathlib import Path
+            # 自动查找breadth文件
+            if not breadth_file:
+                # 尝试标准路径
+                candidates = [
+                    Path(__file__).resolve().parent.parent / 'data' / 'market_breadth.csv',
+                    Path(__file__).resolve().parent.parent.parent / 'stock_trading_advisor' / 'data' / 'market_breadth.csv',
+                ]
+                for p in candidates:
+                    if p.exists():
+                        breadth_file = str(p)
+                        break
+
+            if not breadth_file or not Path(breadth_file).exists():
+                logger.warning(f"市场宽度文件不存在: {breadth_file}, breadth filter将被跳过")
+                cls._breadth_regime = pd.Series(dtype=bool)
+                return cls._breadth_regime
+
+            df_b = pd.read_csv(breadth_file, parse_dates=['date'])
+            df_b = df_b.sort_values('date').reset_index(drop=True)
+            pct = df_b['stocks_above_ma120_pct'].astype(float)
+            if smooth > 1:
+                pct = pct.rolling(smooth, min_periods=1).mean()
+            regime = pct >= threshold
+            regime.index = df_b['date'].dt.strftime('%Y-%m-%d')
+            cls._breadth_regime = regime
+            allow_days = regime.sum()
+            logger.info(f"市场宽度filter已加载: threshold={threshold*100:.0f}%, smooth={smooth}d, "
+                        f"允许入场={allow_days}/{len(regime)} ({allow_days/len(regime)*100:.1f}%天)")
+            return regime
+        except Exception as e:
+            logger.warning(f"加载市场宽度失败: {e}, filter将被跳过")
+            cls._breadth_regime = pd.Series(dtype=bool)
+            return cls._breadth_regime
+
     # --------------------------------------------------------------------- #
     # Public API                                                            #
     # --------------------------------------------------------------------- #
@@ -355,7 +506,7 @@ class RSITrendStrategy(MixedStrategy):
             return None, None
 
         data = self._prepare_dataframe(df)
-        
+
         fast_period = int(self.config['trend_rsi_fast_period'])
         slow_period = int(self.config['trend_rsi_slow_period'])
         atr_period = int(self.config['trend_atr_period'])
@@ -2306,6 +2457,14 @@ class RSITrendStrategy(MixedStrategy):
         _adaptive_sl_enabled = bool(self.config.get('adaptive_stop_loss_enabled', False))
         _adaptive_sl_bear_pct = float(self.config.get('adaptive_stop_loss_bear_pct', 5.0))  # 熊市止损%
         _trade_stop_loss = stop_loss_pct  # 每笔交易的实际止损（可能被regime调整）
+        # 入场质量过滤：20天涨幅过热时阻止入场
+        _momentum_cap_pct = float(self.config.get('entry_momentum_cap_pct', 0))  # 0=禁用
+        _momentum_cap_days = int(self.config.get('entry_momentum_cap_days', 20))
+        # 过热入场自适应止损：近期涨幅大时使用更紧止损
+        _hot_entry_enabled = bool(self.config.get('hot_entry_enabled', False))
+        _hot_entry_thresh = float(self.config.get('hot_entry_thresh_pct', 8))  # 20天涨幅阈值
+        _hot_entry_sl = float(self.config.get('hot_entry_stop_loss_pct', 5.0))  # 过热时的止损%
+        _hot_entry_lookback = int(self.config.get('hot_entry_lookback', 20))
         # Hard Loss Cap — 硬性最大亏损上限
         hard_loss_cap_enabled = bool(self.config['hard_loss_cap_enabled'])
         hard_loss_cap_pct = float(self.config['hard_loss_cap_pct'])
@@ -2320,6 +2479,7 @@ class RSITrendStrategy(MixedStrategy):
         bounce_exit_drop_threshold = float(self.config.get('bounce_exit_drop_threshold', -3.0))  # 触发延迟的当日跌幅阈值%（-3%：只在真正暴跌时才延迟，小幅回调直接退出）
         bounce_exit_max_wait = int(self.config.get('bounce_exit_max_wait', 1))  # 最大等待天数
         bounce_exit_bounce_pct = float(self.config.get('bounce_exit_bounce_pct', 1.0))  # 反弹幅度要求%（vs卖出信号价）
+        bounce_exit_cancel_on_clear = bool(self.config.get('bounce_exit_cancel_on_clear', False))  # 信号恢复时取消pending_exit
         pending_exit = False  # 是否处于待卖出状态
         pending_exit_price = 0  # 触发卖出信号时的价格
         pending_exit_days = 0  # 等待天数
@@ -2407,8 +2567,90 @@ class RSITrendStrategy(MixedStrategy):
         loss_cooldown_days = int(self.config.get('loss_cooldown_days', 0))  # 0=关闭
         _last_loss_exit_idx = -9999  # 上次止损退出的bar index
 
+        # 趋势感知trailing stop参数
+        ts_uptrend_enabled = bool(self.config.get('trailing_stop_uptrend_enabled', True))
+        ts_uptrend_level   = float(self.config.get('trailing_stop_uptrend_level', -10))
+        ts_uptrend_trigger = float(self.config.get('trailing_stop_uptrend_trigger', 10))
+
+        # 卖出后智能回补状态
+        reentry_enabled        = bool(self.config.get('reentry_enabled', True))
+        reentry_window         = int(self.config.get('reentry_window', 10))
+        reentry_price_pct      = float(self.config.get('reentry_price_pct', 5.0))
+        reentry_rsi_min        = float(self.config.get('reentry_rsi_min', 60.0))
+        reentry_vol_min        = float(self.config.get('reentry_vol_min', 2.0))
+        reentry_require_uptrend = bool(self.config.get('reentry_require_uptrend', True))
+        reentry_max_prev_profit = float(self.config.get('reentry_max_prev_profit', 0))
+        reentry_max_dist_ma120  = float(self.config.get('reentry_max_dist_ma120', 0))
+        reentry_only_surge_exit = bool(self.config.get('reentry_only_surge_exit', False))
+        reentry_signal_exit_enabled = bool(self.config.get('reentry_signal_exit_enabled', False))
+        reentry_hard_stop_enabled = bool(self.config.get('reentry_hard_stop_enabled', False))
+        _reentry_watching      = False   # 是否在观察回补窗口
+        _reentry_exit_price    = 0.0    # 卖出时的价格
+        _reentry_days          = 0      # 已观察天数
+        _reentry_skip_uptrend  = False  # dist_madev触发时跳过MA120检查(股价可能仍在MA120下方)
+        _reentry_prev_profit   = 0.0    # 触发回补观察的那笔交易的盈利%
+
+        # MA60止盈保护
+        ma60_protect_enabled   = bool(self.config.get('ma60_protect_enabled', True))
+        ma60_protect_profit_min = float(self.config.get('ma60_protect_profit_min', 140.0))
+        ma60_protect_hold_min  = int(self.config.get('ma60_protect_hold_min', 20))
+        _ma60_protect_active   = False  # 是否在MA60止盈保护模式(替代ATR信号退出)
+
+        # 信号退出成交量确认 (FAILED, 默认关闭)
+        signal_exit_vol_confirm  = float(self.config.get('signal_exit_vol_confirm', 0.0))
+        signal_exit_vol_skip_max = int(self.config.get('signal_exit_vol_skip_max', 5))
+        _sig_exit_vol_skip_count = 0   # 连续跳过天数
+
+        # 信号退出MA20方向过滤 (FAILED, 默认关闭)
+        signal_exit_ma20_rising_delay = bool(self.config.get('signal_exit_ma20_rising_delay', False))
+        signal_exit_ma20_lookback     = int(self.config.get('signal_exit_ma20_lookback', 10))
+        signal_exit_ma20_delay_max    = int(self.config.get('signal_exit_ma20_delay_max', 5))
+        _sig_exit_ma20_delay_count    = 0   # 当前已延迟天数
+
+        # 信号退出峰值盈利保护
+        signal_exit_peak_protect   = bool(self.config.get('signal_exit_peak_protect', False))
+        signal_exit_peak_min       = float(self.config.get('signal_exit_peak_min', 15.0))
+        signal_exit_peak_curr_min  = float(self.config.get('signal_exit_peak_curr_min', 5.0))
+        signal_exit_peak_delay_max = int(self.config.get('signal_exit_peak_delay_max', 2))
+        _sig_exit_peak_delay_count = 0   # 当前已延迟天数
+
+        # EH退出MA120确认
+        eh_ma120_confirm_days  = int(self.config.get('eh_ma120_confirm_days', 1))
+        _eh_below_ma120_count  = 0   # 连续跌破MA120天数
+
+        # EH退出: ATR自适应MA45连续N天 (已禁用)
+        eh_ma45_exit_enabled   = bool(self.config.get('eh_ma45_exit_enabled', False))
+        eh_ma45_confirm_days   = int(self.config.get('eh_ma45_confirm_days', 3))
+        eh_ma45_atr_mult       = float(self.config.get('eh_ma45_atr_mult', 0.8))
+        _eh_below_ma45_count   = 0    # 连续有效跌破MA45的天数
+
+        # EH退出: Chandelier Exit
+        eh_chandelier_enabled  = bool(self.config.get('eh_chandelier_enabled', True))
+        eh_chandelier_mult     = float(self.config.get('eh_chandelier_mult', 4.0))
+        eh_chandelier_confirm  = int(self.config.get('eh_chandelier_confirm', 1))
+        _eh_chandelier_count   = 0    # 连续跌破Chandelier止损线的天数
+
+        # 强阳弱阴形态提前激活EH
+        eh_pattern_enabled       = bool(self.config.get('eh_pattern_enabled', True))
+        eh_pattern_profit_min    = float(self.config.get('eh_pattern_profit_min', 20.0))
+        eh_pattern_hold_min      = int(self.config.get('eh_pattern_hold_min', 10))
+        eh_pattern_ratio         = float(self.config.get('eh_pattern_ratio', 1.8))
+        eh_pattern_peak_offset   = float(self.config.get('eh_pattern_peak_offset', 5.0))
+        eh_pattern_peak_trailing = float(self.config.get('eh_pattern_peak_trailing', 8.0))
+
+        # 强阳弱阴形态回补
+        pattern_reentry_enabled = bool(self.config.get('pattern_reentry_enabled', True))
+        pattern_reentry_window  = int(self.config.get('pattern_reentry_window', 30))
+        pattern_reentry_ratio   = float(self.config.get('pattern_reentry_ratio', 1.8))
+        pattern_reentry_sl      = float(self.config.get('pattern_reentry_sl', 8.0))
+        _pat_reentry_watching   = False   # 是否在强阳弱阴回补观察中
+        _pat_reentry_days       = 0       # 已观察天数
+
         # 入场成交量确认：要求入场日成交量达到均量X倍（过滤弱信号）
         entry_vol_confirm_mult = float(self.config['entry_vol_confirm_mult'])  # 0=关闭, 如1.0=要求放量
+
+        # MA60趋势过滤: 若MA60下降(40日斜率为负)则不入场, 避免长期下降趋势中入场
+        entry_ma60_rising_required = bool(self.config.get('entry_ma60_rising_required', False))
 
         # MA趋势对齐过滤：要求短期MA > 长期MA（只在上升趋势入场）
         entry_ma_align_enabled = bool(self.config.get('entry_ma_align_enabled', False))
@@ -2434,6 +2676,16 @@ class RSITrendStrategy(MixedStrategy):
                 market_regime_index, market_regime_ma,
                 start_date=str(data['date'].iloc[0])[:10] if len(data) > 0 else '2018-01-01',
                 buffer_pct=market_regime_buffer
+            )
+
+        # 市场宽度过滤器
+        market_breadth_enabled = bool(self.config.get('market_breadth_enabled', False))
+        _breadth_signal = None
+        if market_breadth_enabled:
+            _breadth_signal = self._load_breadth_regime(
+                breadth_file=str(self.config.get('market_breadth_file', '')),
+                threshold=float(self.config.get('market_breadth_threshold', 0.35)),
+                smooth=int(self.config.get('market_breadth_smooth', 5)),
             )
 
         # 主升浪延长持仓：退出信号时浮盈>35%+MA120上升+持仓>25天 → 改用MA120退出线
@@ -2468,6 +2720,8 @@ class RSITrendStrategy(MixedStrategy):
         eh_swing_vol_signal_count = int(self.config['eh_swing_vol_signal_count'])  # 需要N根放量阴线
         # 超买收紧止盈参数（不增加交易，只在超买后收紧trailing stop）
         eh_overbought_trailing = float(self.config.get('eh_overbought_trailing', 0))  # 超买后收紧trailing到X%（0=关闭）
+        _eh_from_pattern = False   # EH是否由形态触发（形态EH不启用swing，避免大阳线卖出）
+
         # EH做T运行时状态
         _eh_swing_active = False  # EH做T等待回买中
         _eh_swing_sell_price = 0.0  # EH做T卖出价格
@@ -3017,6 +3271,93 @@ class RSITrendStrategy(MixedStrategy):
                 continue
 
             # 主升浪再入场：EH止盈退出后，股价突破退场价确认新高时回补
+            # 卖出后智能回补: trailing stop退出后，短窗口内价格强势突破则回补
+            if reentry_enabled and _reentry_watching and not in_position and not np.isnan(curr_price):
+                _reentry_days += 1
+                if _reentry_days > reentry_window:
+                    _reentry_watching = False  # 超窗口，放弃
+                else:
+                    _re_price_ok = (curr_price > _reentry_exit_price * (1 + reentry_price_pct / 100))
+                    _re_rsi_ok = True
+                    if reentry_rsi_min > 0 and data is not None and 'fast_rsi' in data.columns:
+                        _re_rsi = data['fast_rsi'].iloc[i]
+                        _re_rsi_ok = (not np.isnan(_re_rsi) and _re_rsi >= reentry_rsi_min)
+                    _re_vol_ok = True
+                    if reentry_vol_min > 0 and data is not None and 'volume' in data.columns and 'volume_ma20' in data.columns:
+                        _re_vol = data['volume'].iloc[i]
+                        _re_vol_ma = data['volume_ma20'].iloc[i]
+                        _re_vol_ok = (not np.isnan(_re_vol_ma) and _re_vol_ma > 0
+                                      and not np.isnan(_re_vol)
+                                      and _re_vol >= _re_vol_ma * reentry_vol_min)
+                    _re_trend_ok = True
+                    # dist_madev触发的回补: 跳过MA120检查(暴涨初期股价常在MA120下方)
+                    # trailing stop触发的回补: 要求MA120上升趋势(更保守)
+                    if reentry_require_uptrend and not _reentry_skip_uptrend and data is not None and 'ma_120' in data.columns and i >= 40:
+                        _re_ma120 = data['ma_120'].iloc[i]
+                        _re_ma120_prev = data['ma_120'].iloc[i - 40]
+                        _re_trend_ok = (not np.isnan(_re_ma120) and _re_ma120 > 0
+                                        and curr_price > _re_ma120
+                                        and not np.isnan(_re_ma120_prev)
+                                        and _re_ma120 > _re_ma120_prev)
+                    # 前笔大赚后回补过滤: 大赚后股价已高位，回补易追高亏损
+                    _re_prev_ok = True
+                    if reentry_max_prev_profit > 0 and _reentry_prev_profit > reentry_max_prev_profit:
+                        _re_prev_ok = False
+                    # MA120偏离过滤: 价格远离MA120时回补风险大
+                    _re_dist_ok = True
+                    if reentry_max_dist_ma120 > 0 and data is not None and 'ma_120' in data.columns:
+                        _re_ma = data['ma_120'].iloc[i]
+                        if not np.isnan(_re_ma) and _re_ma > 0:
+                            _re_dist = (curr_price - _re_ma) / _re_ma * 100
+                            if _re_dist > reentry_max_dist_ma120:
+                                _re_dist_ok = False
+                    if _re_price_ok and _re_rsi_ok and _re_vol_ok and _re_trend_ok and _re_prev_ok and _re_dist_ok:
+                        # 回补入场
+                        entry_active = True
+                        avoid_extreme_chase = False
+                        _reentry_watching = False
+
+            # 强阳弱阴形态回补: 信号退出/反弹卖出后，等候形态激活+阴线回调买入
+            if pattern_reentry_enabled and _pat_reentry_watching and not in_position and not np.isnan(curr_price) and data is not None:
+                _pat_reentry_days += 1
+                _pr_abort = False
+                if _pat_reentry_days > pattern_reentry_window:
+                    _pr_abort = True
+                # MA60转跌 → 趋势已破, 放弃
+                if not _pr_abort and 'ma_60' in data.columns and i >= 40:
+                    _pr_ma60 = data['ma_60'].iloc[i]
+                    _pr_ma60_prev = data['ma_60'].iloc[i - 40]
+                    if np.isnan(_pr_ma60) or np.isnan(_pr_ma60_prev) or _pr_ma60 <= _pr_ma60_prev:
+                        _pr_abort = True
+                if _pr_abort:
+                    _pat_reentry_watching = False
+                elif i > 0 and 'open' in data.columns:
+                    # 当前bar是回调阴线 (close < prev_close)
+                    _pr_prev_close = data['close'].iloc[i - 1]
+                    if not np.isnan(_pr_prev_close) and curr_price < _pr_prev_close:
+                        # 检测强阳弱阴形态: 过去10根K线 阳线平均体量/阴线平均体量 > ratio
+                        _pr_win = 10
+                        if i >= _pr_win + 1:
+                            _pr_up, _pr_dn = [], []
+                            _pr_cls = data['close'].values
+                            _pr_opn = data['open'].values
+                            for _k in range(i - _pr_win, i + 1):
+                                _bd = _pr_cls[_k] - _pr_opn[_k]
+                                _bp = _bd / _pr_opn[_k] * 100 if _pr_opn[_k] > 0 else 0
+                                if _bp > 0.1:
+                                    _pr_up.append(_bp)
+                                elif _bp < -0.1:
+                                    _pr_dn.append(-_bp)
+                            if len(_pr_up) >= 3 and len(_pr_dn) > 0 and len(_pr_up) >= len(_pr_dn):
+                                _pr_ratio = np.mean(_pr_up) / np.mean(_pr_dn)
+                                _pr_ma20 = data['bb_middle'].iloc[i] if 'bb_middle' in data.columns else np.nan
+                                _pr_above_ma20 = curr_price > _pr_ma20 if not np.isnan(_pr_ma20) else True
+                                if _pr_ratio >= pattern_reentry_ratio and _pr_above_ma20:
+                                    entry_active = True
+                                    avoid_extreme_chase = False
+                                    _pat_reentry_watching = False
+                                    _trade_stop_loss = pattern_reentry_sl
+
             if not in_position and post_wave_reentry_countdown > 0:
                 post_wave_reentry_countdown -= 1
                 if not entry_active and _pw_exit_price > 0 and not np.isnan(curr_price):
@@ -3061,11 +3402,33 @@ class RSITrendStrategy(MixedStrategy):
                     if _date_str in _regime_signal.index:
                         if not _regime_signal[_date_str]:
                             _entry_filters_ok = False
+                # 市场宽度过滤：宽度不足时阻止入场
+                if _entry_filters_ok and market_breadth_enabled and _breadth_signal is not None and len(_breadth_signal) > 0:
+                    _date_str = str(data['date'].iloc[i])[:10]
+                    if _date_str in _breadth_signal.index:
+                        if not _breadth_signal[_date_str]:
+                            _entry_filters_ok = False
+                # 入场质量: 20天涨幅过热过滤
+                if _entry_filters_ok and _momentum_cap_pct > 0 and data is not None and i >= _momentum_cap_days:
+                    _mc_price_ago = data['close'].iloc[i - _momentum_cap_days]
+                    if not np.isnan(_mc_price_ago) and _mc_price_ago > 0:
+                        _mc_chg = (curr_price - _mc_price_ago) / _mc_price_ago * 100
+                        if _mc_chg > _momentum_cap_pct:
+                            _entry_filters_ok = False
+                # MA60趋势过滤: MA60下降时不入场(避免长期下降趋势中入场)
+                if _entry_filters_ok and entry_ma60_rising_required and data is not None and 'ma_60' in data.columns and i >= 40:
+                    _ef_ma60 = data['ma_60'].iloc[i]
+                    _ef_ma60_prev = data['ma_60'].iloc[i - 40]
+                    if not np.isnan(_ef_ma60) and not np.isnan(_ef_ma60_prev) and _ef_ma60 <= _ef_ma60_prev:
+                        _entry_filters_ok = False
 
             if _entry_filters_ok and not in_position and ((entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position)):
                 in_position = True
                 entry_flags[i] = 1
                 entry_price = curr_price if not np.isnan(curr_price) else None
+                _sig_exit_vol_skip_count = 0    # 新持仓重置信号退出缩量跳过计数
+                _sig_exit_ma20_delay_count = 0  # 新持仓重置MA20延迟计数
+                _sig_exit_peak_delay_count = 0  # 新持仓重置峰值保护延迟计数
                 is_divergence_entry = is_div_entry  # 记录是否为底背离买入
                 is_w_bottom_entry = is_w_entry  # 记录是否为W底买入
                 is_sideways_entry = is_sw_entry  # 记录是否为震荡市场买入
@@ -3098,12 +3461,19 @@ class RSITrendStrategy(MixedStrategy):
                         entry_reasons[i] = 'RSI多头延续'
                     else:
                         entry_reasons[i] = 'RSI趋势买入'
-                # 自适应止损：根据入场时大盘regime决定止损幅度
                 _trade_stop_loss = stop_loss_pct  # 默认使用正常止损
+                # 自适应止损：根据入场时大盘regime决定止损幅度
                 if _adaptive_sl_enabled and _regime_signal is not None and len(_regime_signal) > 0:
                     _date_str = str(data['date'].iloc[i])[:10]
                     if _date_str in _regime_signal.index and not _regime_signal[_date_str]:
                         _trade_stop_loss = _adaptive_sl_bear_pct  # 熊市用更紧止损
+                # 过热入场自适应止损：近期涨幅大时用更紧止损
+                if _hot_entry_enabled and data is not None and i >= _hot_entry_lookback:
+                    _he_price_ago = data['close'].iloc[i - _hot_entry_lookback]
+                    if not np.isnan(_he_price_ago) and _he_price_ago > 0:
+                        _he_chg = (curr_price - _he_price_ago) / _he_price_ago * 100
+                        if _he_chg > _hot_entry_thresh:
+                            _trade_stop_loss = min(_trade_stop_loss, _hot_entry_sl)
                 # 标记回调买入
                 if chase_pullback_buy and data is not None and 'chase_pullback_entry' in data.columns:
                     data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
@@ -3118,10 +3488,14 @@ class RSITrendStrategy(MixedStrategy):
                 extended_hold_active = False  # 重置延长持仓
                 extended_hold_trigger_profit = 0.0
                 extended_hold_max_profit = 0.0
+                _ma60_protect_active = False  # 重置MA60保护
+                _pat_reentry_watching = False   # 重置强阳弱阴回补
                 _eh_swing_used = False  # 重置做T标记
                 _eh_swing_confirming = False  # 重置确认状态
                 _eh_swing_armed = False  # 重置武装模式
                 _eh_overbought_seen = False  # 重置超买标记
+                _eh_below_ma45_count = 0  # 重置MA45计数
+                _eh_chandelier_count = 0  # 重置Chandelier计数
                 # post_wave_reentry_countdown 不重置：允许跨多笔交易持续生效
 
                 # 调试W底买入
@@ -3173,11 +3547,13 @@ class RSITrendStrategy(MixedStrategy):
                         _days_since_peak += 1  # 未创新高，累计天数
 
                     # Hard Loss Cap — 硬性最大亏损上限（所有入场类型生效）
-                    if hard_loss_cap_enabled and curr_profit_pct <= -hard_loss_cap_pct:
+                    # 如果有过热自适应止损, 使用更紧的止损
+                    _effective_cap = min(hard_loss_cap_pct, _trade_stop_loss) if _trade_stop_loss < hard_loss_cap_pct else hard_loss_cap_pct
+                    if hard_loss_cap_enabled and curr_profit_pct <= -_effective_cap:
                         in_position = False
                         exit_flags[i] = 1
                         stop_flags[i] = 1
-                        exit_reasons[i] = f'硬性止损上限({hard_loss_cap_pct:.0f}%)'
+                        exit_reasons[i] = f'硬性止损上限({_effective_cap:.1f}%)'
                         entry_price = None
                         is_divergence_entry = False
                         is_w_bottom_entry = False
@@ -3198,6 +3574,16 @@ class RSITrendStrategy(MixedStrategy):
                         if curr_profit_pct > extended_hold_max_profit:
                             extended_hold_max_profit = curr_profit_pct
                         _eh_ma120 = data['ma_120'].iloc[i] if data is not None and 'ma_120' in data.columns else np.nan
+                        # MA45连续跌破追踪（比MA120响应更快）
+                        _eh_ma45 = data['exit_ma_slow'].iloc[i] if data is not None and 'exit_ma_slow' in data.columns else np.nan
+                        if eh_ma45_exit_enabled and not np.isnan(_eh_ma45) and _eh_ma45 > 0:
+                            # ATR自适应缓冲: price需跌破MA45×(1-k×ATR%)才算有效跌破
+                            _atr_v = data['atr_pct'].iloc[i] if data is not None and 'atr_pct' in data.columns and not pd.isna(data['atr_pct'].iloc[i]) else np.nan
+                            _ma45_thresh = _eh_ma45 * (1 - eh_ma45_atr_mult * _atr_v / 100) if not np.isnan(_atr_v) and _atr_v > 0 else _eh_ma45
+                            if curr_price < _ma45_thresh:
+                                _eh_below_ma45_count += 1
+                            else:
+                                _eh_below_ma45_count = 0  # 未有效跌破则重置
                         _eh_profit_floor = extended_hold_trigger_profit - eh_drawdown_limit
                         # 比例保护底线：保护已有增益的ratio%（随浮盈自动上升）
                         if eh_gain_protection_ratio > 0 and extended_hold_max_profit > extended_hold_trigger_profit:
@@ -3216,6 +3602,11 @@ class RSITrendStrategy(MixedStrategy):
                         _eh_peak_act_level = extended_hold_trigger_profit + eh_peak_activation_offset
                         _eh_trailing_val = eh_peak_trailing  # 默认20%
 
+                        # 形态触发EH: 覆盖为更紧的峰值追踪(解决MA120慢的回撤问题)
+                        if _eh_from_pattern:
+                            _eh_peak_act_level = extended_hold_trigger_profit + eh_pattern_peak_offset
+                            _eh_trailing_val = eh_pattern_peak_trailing
+
                         # 超买自适应：检测到超买后立即激活peak trailing并收紧
                         if _eh_overbought_seen and eh_overbought_trailing > 0:
                             _eh_peak_act_level = extended_hold_trigger_profit  # 立即激活（offset=0）
@@ -3226,21 +3617,51 @@ class RSITrendStrategy(MixedStrategy):
                             _eh_effective_floor = max(_eh_profit_floor, _eh_peak_floor)
                         else:
                             _eh_effective_floor = _eh_profit_floor
-                        if (not np.isnan(_eh_ma120) and _eh_ma120 > 0 and curr_price < _eh_ma120) or curr_profit_pct < _eh_effective_floor:
+                        # EH止损判断: Chandelier(ATR自适应) → MA45(禁用) → MA120(兜底)
+                        _eh_ma_trigger = False
+                        _eh_trigger_reason = ''
+                        if eh_chandelier_enabled and entry_price and entry_price > 0:
+                            # Chandelier止损线 = 峰值价格 × (1 - N×ATR%)
+                            _eh_max_abs = entry_price * (1 + extended_hold_max_profit / 100)
+                            _ch_atr = data['atr_pct'].iloc[i] if data is not None and 'atr_pct' in data.columns and not pd.isna(data['atr_pct'].iloc[i]) else np.nan
+                            if not np.isnan(_ch_atr) and _ch_atr > 0 and _eh_max_abs > 0:
+                                _chandelier_stop = _eh_max_abs * (1 - eh_chandelier_mult * _ch_atr / 100)
+                                if curr_price < _chandelier_stop:
+                                    _eh_chandelier_count += 1
+                                else:
+                                    _eh_chandelier_count = 0
+                                if _eh_chandelier_count >= eh_chandelier_confirm:
+                                    _eh_ma_trigger = True
+                                    _eh_trigger_reason = f'延长持仓-Chandelier({eh_chandelier_mult:.1f}×ATR,stop={_chandelier_stop:.2f})'
+                        if not _eh_ma_trigger:
+                            # MA45连续确认(禁用) → MA120兜底
+                            if eh_ma45_exit_enabled and not np.isnan(_eh_ma45) and _eh_ma45 > 0:
+                                if _eh_below_ma45_count >= eh_ma45_confirm_days:
+                                    _eh_ma_trigger = True
+                                    _eh_trigger_reason = f'延长持仓-跌破MA45({eh_ma45_confirm_days}天确认)'
+                            elif not np.isnan(_eh_ma120) and _eh_ma120 > 0:
+                                if curr_price < _eh_ma120:
+                                    _eh_below_ma120_count += 1
+                                else:
+                                    _eh_below_ma120_count = 0
+                                if _eh_below_ma120_count >= eh_ma120_confirm_days:
+                                    _eh_ma_trigger = True
+                                    _eh_trigger_reason = f'延长持仓-跌破MA120({eh_ma120_confirm_days}天确认)'
+                        if _eh_ma_trigger or curr_profit_pct < _eh_effective_floor:
                             _pw_exit_price = curr_price  # 记录EH退出价格用于回补确认
                             extended_hold_active = False
                             in_position = False
                             exit_flags[i] = 1
-                            if not np.isnan(_eh_ma120) and _eh_ma120 > 0 and curr_price < _eh_ma120:
-                                exit_reasons[i] = '延长持仓-跌破MA120'
-                            else:
-                                exit_reasons[i] = f'延长持仓-利润回撤(floor={_eh_effective_floor:.1f}%)'
+                            exit_reasons[i] = _eh_trigger_reason if _eh_ma_trigger else f'延长持仓-利润回撤(floor={_eh_effective_floor:.1f}%)'
                             entry_price = None
                             hold_days = 0
                             trailing_stop_active = False
                             dynamic_profit_active = False
                             max_profit_in_trade = 0
                             pending_exit = False
+                            _eh_below_ma45_count = 0
+                            _eh_chandelier_count = 0
+                            _eh_below_ma120_count = 0
                             position[i] = 0
                             continue
 
@@ -3409,6 +3830,17 @@ class RSITrendStrategy(MixedStrategy):
                         _ts_effective_level = trailing_stop_level
                         if trailing_stop_trigger2 > 0 and max_profit_in_trade >= trailing_stop_trigger2:
                             _ts_effective_level = trailing_stop_level2
+                        # 趋势感知: 强上涨趋势中自动放宽level，避免主升浪被洗出
+                        # 条件: 价格>MA120 且 MA120在上升（vs40天前）
+                        if ts_uptrend_enabled and i >= 40 and data is not None and 'ma_120' in data.columns:
+                            _ts_ma120 = data['ma_120'].iloc[i]
+                            _ts_ma120_prev = data['ma_120'].iloc[i - 40]
+                            if (not np.isnan(_ts_ma120) and _ts_ma120 > 0
+                                    and curr_price > _ts_ma120
+                                    and not np.isnan(_ts_ma120_prev)
+                                    and _ts_ma120 > _ts_ma120_prev):
+                                # 强上涨趋势: 放宽level（取更负的值）
+                                _ts_effective_level = min(_ts_effective_level, ts_uptrend_level)
                         trailing_threshold = entry_price * (1 + _ts_effective_level / 100.0)
                         if curr_price <= trailing_threshold:
                             # 智能过滤: 判断是否需要延迟确认
@@ -3461,6 +3893,13 @@ class RSITrendStrategy(MixedStrategy):
                                 _ts_pending = False
                                 _ts_pending_days = 0
                                 position[i] = 0
+                                # 启动回补观察窗口
+                                if reentry_enabled and not reentry_only_surge_exit:
+                                    _reentry_watching = True
+                                    _reentry_exit_price = curr_price
+                                    _reentry_days = 0
+                                    _reentry_skip_uptrend = False
+                                    _reentry_prev_profit = curr_profit_pct
                                 continue
                             else:
                                 # 确认模式: 需要额外N天收在level以下才卖
@@ -3490,6 +3929,13 @@ class RSITrendStrategy(MixedStrategy):
                                     _ts_pending = False
                                     _ts_pending_days = 0
                                     position[i] = 0
+                                    # 启动回补观察窗口
+                                    if reentry_enabled and not reentry_only_surge_exit:
+                                        _reentry_watching = True
+                                        _reentry_exit_price = curr_price
+                                        _reentry_days = 0
+                                        _reentry_skip_uptrend = False
+                                        _reentry_prev_profit = curr_profit_pct
                                     continue
                         else:
                             # 价格回到level以上，取消确认
@@ -3502,7 +3948,7 @@ class RSITrendStrategy(MixedStrategy):
                         if max_profit_in_trade >= dynamic_profit_trigger:
                             dynamic_profit_active = True
 
-                    if dynamic_profit_active and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry:
+                    if dynamic_profit_active and not extended_hold_active and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry:
                         drawback = max_profit_in_trade - curr_profit_pct
                         if drawback >= dynamic_profit_drawback:
                             in_position = False
@@ -3597,6 +4043,14 @@ class RSITrendStrategy(MixedStrategy):
                                         pending_exit = False
                                         pending_exit_days = 0
                                         position[i] = 0
+                                        # 启动回补观察: 若为假信号(股价继续上涨), 可回补
+                                        # 注: dist_madev触发时股价可能在MA120下方(如暴涨初期), 跳过MA120检查
+                                        if reentry_enabled:
+                                            _reentry_watching = True
+                                            _reentry_exit_price = curr_price
+                                            _reentry_days = 0
+                                            _reentry_skip_uptrend = True
+                                            _reentry_prev_profit = curr_profit_pct
                                         continue
 
                     # 多指标超买集群退出：利润在10-22%区间，多个振荡指标同时超买
@@ -3671,6 +4125,13 @@ class RSITrendStrategy(MixedStrategy):
                                     pending_exit = False
                                     pending_exit_days = 0
                                     position[i] = 0
+                                    # 启动回补观察: 若为假信号(股价继续上涨), 可回补
+                                    if reentry_enabled:
+                                        _reentry_watching = True
+                                        _reentry_exit_price = curr_price
+                                        _reentry_days = 0
+                                        _reentry_skip_uptrend = True
+                                        _reentry_prev_profit = curr_profit_pct
                                     continue
 
                     # ROC动量衰竭退出：ROC正值但连续下降=加速度为负
@@ -4030,6 +4491,12 @@ class RSITrendStrategy(MixedStrategy):
                                 exit_reasons[i] = f'早期止损({_effective_sl:.1f}%,{hold_days}日内)'
                             else:
                                 exit_reasons[i] = f'止损({_effective_sl:.1f}%)'
+                            if reentry_hard_stop_enabled and reentry_enabled and not np.isnan(curr_price):
+                                _reentry_watching = True
+                                _reentry_exit_price = curr_price
+                                _reentry_days = 0
+                                _reentry_skip_uptrend = True  # 止损后股价可能在MA120下方, 跳过价格>MA120检查
+                                _reentry_prev_profit = (curr_price / entry_price - 1) * 100 if entry_price and entry_price > 0 else -_effective_sl
                             entry_price = None
                             hold_days = 0
                             pending_exit = False
@@ -4065,7 +4532,35 @@ class RSITrendStrategy(MixedStrategy):
                                 pending_exit_days = 0
                                 continue
 
+                    # MA60止盈保护: 激活中时每日检查价格是否跌破MA60
+                    if _ma60_protect_active and data is not None and 'ma_60' in data.columns and not np.isnan(curr_price):
+                        _mp_ma60 = data['ma_60'].iloc[i]
+                        if not np.isnan(_mp_ma60) and curr_price < _mp_ma60:
+                            _ma60_protect_active = False
+                            in_position = False
+                            exit_flags[i] = 1
+                            exit_reasons[i] = '趋势转空-MA60破位止盈'
+                            entry_price = None
+                            is_divergence_entry = False
+                            is_w_bottom_entry = False
+                            is_sideways_entry = False
+                            w_bottom_price = None
+                            w_bottom_gap = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            extended_hold_active = False
+                            position[i] = 0
+                            continue
+
                     # 处理待反弹卖出状态
+                    if pending_exit:
+                        # 信号恢复: 若exit_active已清除(趋势回升), 取消待卖出继续持仓
+                        if bounce_exit_cancel_on_clear and not exit_active:
+                            pending_exit = False
+                            pending_exit_days = 0
                     if pending_exit:
                         pending_exit_days += 1
                         # 检查是否满足反弹条件或超时
@@ -4086,6 +4581,14 @@ class RSITrendStrategy(MixedStrategy):
                                 exit_reasons[i] = f'反弹卖出-超时({pending_exit_days}日)'
                             else:
                                 exit_reasons[i] = '反弹卖出-等待反弹后退出'
+                            if pattern_reentry_enabled and entry_price and not np.isnan(curr_price) and entry_price > 0:
+                                _pr_profit_at_exit = (curr_price / entry_price - 1) * 100
+                                _pr_ma60_rising = (data is not None and 'ma_60' in data.columns and i >= 40
+                                    and not np.isnan(data['ma_60'].iloc[i]) and not np.isnan(data['ma_60'].iloc[i - 40])
+                                    and data['ma_60'].iloc[i] > data['ma_60'].iloc[i - 40])
+                                if _pr_profit_at_exit > 5 and _pr_ma60_rising:
+                                    _pat_reentry_watching = True
+                                    _pat_reentry_days = 0
                             entry_price = None
                             hold_days = 0
                             pending_exit = False
@@ -4093,6 +4596,20 @@ class RSITrendStrategy(MixedStrategy):
                         # else: 继续持有等待反弹
 
                     elif exit_active:
+                        # MA60止盈保护: 信号退出时若浮盈≥门槛且价格在MA60上方且MA60上升 → 不退出,改用MA60破位止盈
+                        if (ma60_protect_enabled and not extended_hold_active and not _ma60_protect_active
+                                and entry_price and not np.isnan(curr_price) and entry_price > 0
+                                and ((curr_price / entry_price - 1) * 100) >= ma60_protect_profit_min
+                                and hold_days >= ma60_protect_hold_min
+                                and data is not None and 'ma_60' in data.columns and i >= 40):
+                            _mp_ma60 = data['ma_60'].iloc[i]
+                            _mp_ma60_prev = data['ma_60'].iloc[i - 40]
+                            if (not np.isnan(_mp_ma60) and not np.isnan(_mp_ma60_prev)
+                                    and curr_price > _mp_ma60 and _mp_ma60 > _mp_ma60_prev):
+                                _ma60_protect_active = True
+                                position[i] = 1  # 继续持仓
+                                continue  # 跳过本bar的退出逻辑
+
                         # 延长持仓：浮盈>35%且持仓>25天且MA120上升 → 改用MA120退出线
                         _eh_profit = ((curr_price / entry_price - 1) * 100) if entry_price and not np.isnan(curr_price) and entry_price > 0 else 0
                         _eh_ma120_rising = False
@@ -4111,8 +4628,48 @@ class RSITrendStrategy(MixedStrategy):
                             _eh_swing_confirming = False  # 新EH周期重置确认状态
                             _eh_swing_armed = False  # 新EH周期重置武装模式
                             _eh_overbought_seen = False  # 新EH周期重置超买标记
+                            _eh_from_pattern = False  # 标准EH激活
+                            _eh_below_ma45_count = 0   # 新EH周期重置MA45计数
+                            _eh_chandelier_count = 0   # 新EH周期重置Chandelier计数
+                            _eh_below_ma120_count = 0  # 新EH周期重置MA120计数
                             if data is not None and 'date' in data.columns:
                                 logger.debug(f"[EH_ACTIVATE] {data['date'].iloc[i]} profit={_eh_profit:.1f}% hold={hold_days}d")
+                        # 形态触发早期EH: 强阳弱阴确认强趋势时，用低门槛提前进EH
+                        elif (eh_pattern_enabled and not extended_hold_active
+                                and _eh_profit > eh_pattern_profit_min
+                                and _eh_profit < _eh_profit_cap
+                                and hold_days >= eh_pattern_hold_min
+                                and _eh_ma120_rising
+                                and data is not None and 'open' in data.columns and i >= 11):
+                            _ep_up, _ep_dn = [], []
+                            _ep_cls = data['close'].values
+                            _ep_opn = data['open'].values
+                            for _k in range(i - 10, i + 1):
+                                _bd = _ep_cls[_k] - _ep_opn[_k]
+                                _bp = _bd / _ep_opn[_k] * 100 if _ep_opn[_k] > 0 else 0
+                                if _bp > 0.1:
+                                    _ep_up.append(_bp)
+                                elif _bp < -0.1:
+                                    _ep_dn.append(-_bp)
+                            _ep_ma20_ok = True
+                            if 'bb_middle' in data.columns:
+                                _ep_ma20v = data['bb_middle'].iloc[i]
+                                _ep_ma20_ok = not np.isnan(_ep_ma20v) and curr_price > _ep_ma20v
+                            if (len(_ep_up) >= 3 and len(_ep_dn) > 0 and len(_ep_up) >= len(_ep_dn) and _ep_ma20_ok):
+                                _ep_ratio = np.mean(_ep_up) / np.mean(_ep_dn)
+                                if _ep_ratio >= eh_pattern_ratio:
+                                    extended_hold_active = True
+                                    extended_hold_trigger_profit = _eh_profit
+                                    extended_hold_max_profit = _eh_profit
+                                    _eh_swing_used = True   # 禁用swing: 形态EH只用MA120保护,不做T
+                                    _eh_swing_confirming = False
+                                    _eh_swing_armed = False
+                                    _eh_overbought_seen = False
+                                    _eh_from_pattern = True  # 标记为形态触发
+                                    _eh_below_ma45_count = 0  # 新EH周期重置MA45计数
+                                    _eh_chandelier_count = 0  # 新EH周期重置Chandelier计数
+                                    if data is not None and 'date' in data.columns:
+                                        logger.debug(f"[EH_PATTERN] {data['date'].iloc[i]} profit={_eh_profit:.1f}% ratio={_ep_ratio:.2f} hold={hold_days}d")
                         elif extended_hold_active:
                             pass  # 由每日MA120检查处理退出
                         # 反弹卖出逻辑：检查是否在暴跌中
@@ -4144,6 +4701,14 @@ class RSITrendStrategy(MixedStrategy):
                                     in_position = False
                                     exit_flags[i] = 1
                                     exit_reasons[i] = '趋势转空-暴跌强制退出'
+                                    if pattern_reentry_enabled and entry_price and not np.isnan(curr_price) and entry_price > 0:
+                                        _pr_profit_at_exit = (curr_price / entry_price - 1) * 100
+                                        _pr_ma60_rising = (data is not None and 'ma_60' in data.columns and i >= 40
+                                            and not np.isnan(data['ma_60'].iloc[i]) and not np.isnan(data['ma_60'].iloc[i - 40])
+                                            and data['ma_60'].iloc[i] > data['ma_60'].iloc[i - 40])
+                                        if _pr_profit_at_exit > 5 and _pr_ma60_rising:
+                                            _pat_reentry_watching = True
+                                            _pat_reentry_days = 0
                                     entry_price = None
                                     hold_days = 0
                                 else:
@@ -4152,18 +4717,91 @@ class RSITrendStrategy(MixedStrategy):
                                     pending_exit_price = curr_price
                                     pending_exit_days = 0
                             else:
-                                # 非暴跌，正常卖出
+                                # 非暴跌，过滤后退出 (缩量/MA20上升/高峰值盈利可能是调整非反转)
+                                _signal_exit_skip = False
+                                if signal_exit_vol_confirm > 0 and _sig_exit_vol_skip_count < signal_exit_vol_skip_max:
+                                    _sev_vol = data['volume'].iloc[i] if 'volume' in data.columns and not pd.isna(data['volume'].iloc[i]) else np.nan
+                                    _sev_ma  = data['volume_ma20'].iloc[i] if 'volume_ma20' in data.columns and not pd.isna(data['volume_ma20'].iloc[i]) else np.nan
+                                    if not np.isnan(_sev_vol) and not np.isnan(_sev_ma) and _sev_ma > 0 and _sev_vol < _sev_ma * signal_exit_vol_confirm:
+                                        _sig_exit_vol_skip_count += 1
+                                        _signal_exit_skip = True
+                                if not _signal_exit_skip and signal_exit_ma20_rising_delay and _sig_exit_ma20_delay_count < signal_exit_ma20_delay_max:
+                                    _sema_now = data['bb_middle'].iloc[i] if data is not None and 'bb_middle' in data.columns and not pd.isna(data['bb_middle'].iloc[i]) else np.nan
+                                    _sema_prev = data['bb_middle'].iloc[i - signal_exit_ma20_lookback] if i >= signal_exit_ma20_lookback and not pd.isna(data['bb_middle'].iloc[i - signal_exit_ma20_lookback]) else np.nan
+                                    if not np.isnan(_sema_now) and not np.isnan(_sema_prev) and _sema_now > _sema_prev:
+                                        _sig_exit_ma20_delay_count += 1
+                                        _signal_exit_skip = True
+                                if not _signal_exit_skip and signal_exit_peak_protect and _sig_exit_peak_delay_count < signal_exit_peak_delay_max:
+                                    if (max_profit_in_trade >= signal_exit_peak_min
+                                            and curr_profit_pct >= signal_exit_peak_curr_min):
+                                        _sig_exit_peak_delay_count += 1
+                                        _signal_exit_skip = True
+                                if not _signal_exit_skip:
+                                    _sig_exit_vol_skip_count = 0
+                                    _sig_exit_ma20_delay_count = 0
+                                    _sig_exit_peak_delay_count = 0
+                                    in_position = False
+                                    exit_flags[i] = 1
+                                    exit_reasons[i] = '趋势转空退出'
+                                    if pattern_reentry_enabled and entry_price and not np.isnan(curr_price) and entry_price > 0:
+                                        _pr_profit_at_exit = (curr_price / entry_price - 1) * 100
+                                        _pr_ma60_rising = (data is not None and 'ma_60' in data.columns and i >= 40
+                                            and not np.isnan(data['ma_60'].iloc[i]) and not np.isnan(data['ma_60'].iloc[i - 40])
+                                            and data['ma_60'].iloc[i] > data['ma_60'].iloc[i - 40])
+                                        if _pr_profit_at_exit > 5 and _pr_ma60_rising:
+                                            _pat_reentry_watching = True
+                                            _pat_reentry_days = 0
+                                    if reentry_signal_exit_enabled and reentry_enabled and not np.isnan(curr_price):
+                                        _reentry_watching = True
+                                        _reentry_exit_price = curr_price
+                                        _reentry_days = 0
+                                        _reentry_skip_uptrend = False
+                                        _reentry_prev_profit = (curr_price / entry_price - 1) * 100 if entry_price and entry_price > 0 else 0.0
+                                    entry_price = None
+                                    hold_days = 0
+                        else:
+                            # 无bounce_exit: 过滤后退出 (缩量/MA20上升可能是调整非反转)
+                            _signal_exit_skip = False
+                            if signal_exit_vol_confirm > 0 and _sig_exit_vol_skip_count < signal_exit_vol_skip_max:
+                                _sev_vol = data['volume'].iloc[i] if data is not None and 'volume' in data.columns and not pd.isna(data['volume'].iloc[i]) else np.nan
+                                _sev_ma  = data['volume_ma20'].iloc[i] if data is not None and 'volume_ma20' in data.columns and not pd.isna(data['volume_ma20'].iloc[i]) else np.nan
+                                if not np.isnan(_sev_vol) and not np.isnan(_sev_ma) and _sev_ma > 0 and _sev_vol < _sev_ma * signal_exit_vol_confirm:
+                                    _sig_exit_vol_skip_count += 1
+                                    _signal_exit_skip = True
+                            if not _signal_exit_skip and signal_exit_ma20_rising_delay and _sig_exit_ma20_delay_count < signal_exit_ma20_delay_max:
+                                _sema_now = data['bb_middle'].iloc[i] if data is not None and 'bb_middle' in data.columns and not pd.isna(data['bb_middle'].iloc[i]) else np.nan
+                                _sema_prev = data['bb_middle'].iloc[i - signal_exit_ma20_lookback] if data is not None and i >= signal_exit_ma20_lookback and not pd.isna(data['bb_middle'].iloc[i - signal_exit_ma20_lookback]) else np.nan
+                                if not np.isnan(_sema_now) and not np.isnan(_sema_prev) and _sema_now > _sema_prev:
+                                    _sig_exit_ma20_delay_count += 1
+                                    _signal_exit_skip = True
+                            if not _signal_exit_skip and signal_exit_peak_protect and _sig_exit_peak_delay_count < signal_exit_peak_delay_max:
+                                if (max_profit_in_trade >= signal_exit_peak_min
+                                        and curr_profit_pct >= signal_exit_peak_curr_min):
+                                    _sig_exit_peak_delay_count += 1
+                                    _signal_exit_skip = True
+                            if not _signal_exit_skip:
+                                _sig_exit_vol_skip_count = 0
+                                _sig_exit_ma20_delay_count = 0
+                                _sig_exit_peak_delay_count = 0
                                 in_position = False
                                 exit_flags[i] = 1
                                 exit_reasons[i] = '趋势转空退出'
+                                if pattern_reentry_enabled and entry_price and not np.isnan(curr_price) and entry_price > 0:
+                                    _pr_profit_at_exit = (curr_price / entry_price - 1) * 100
+                                    _pr_ma60_rising = (data is not None and 'ma_60' in data.columns and i >= 40
+                                        and not np.isnan(data['ma_60'].iloc[i]) and not np.isnan(data['ma_60'].iloc[i - 40])
+                                        and data['ma_60'].iloc[i] > data['ma_60'].iloc[i - 40])
+                                    if _pr_profit_at_exit > 5 and _pr_ma60_rising:
+                                        _pat_reentry_watching = True
+                                        _pat_reentry_days = 0
+                                if reentry_signal_exit_enabled and reentry_enabled and not np.isnan(curr_price):
+                                    _reentry_watching = True
+                                    _reentry_exit_price = curr_price
+                                    _reentry_days = 0
+                                    _reentry_skip_uptrend = False
+                                    _reentry_prev_profit = (curr_price / entry_price - 1) * 100 if entry_price and entry_price > 0 else 0.0
                                 entry_price = None
                                 hold_days = 0
-                        else:
-                            in_position = False
-                            exit_flags[i] = 1
-                            exit_reasons[i] = '趋势转空退出'
-                            entry_price = None
-                            hold_days = 0
 
             position[i] = 1 if in_position else 0
 

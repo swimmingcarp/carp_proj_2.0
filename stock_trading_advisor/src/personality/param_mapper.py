@@ -18,27 +18,33 @@ from typing import Dict
 
 
 # 各股性类型的基础参数override（方向无关的结构性参数）
+# 2026-03 优化：基于132股回测分析的per-personality表现差异
+#   trend_persistent: avg_ret=555%, tPF=2.76 (最佳 → 保持默认)
+#   volatile_oscillator: avg_ret=183%, tPF=2.26 (波动大 → 更紧止损)
+#   staircase_mover: avg_ret=79%, tPF=1.82 (样本小 → 不改)
+#   breakout_runner: avg_ret=34%, tPF=1.67 (突破慢 → 宽止损)
+#   mean_reverter: avg_ret=2%, tPF=1.17 (趋势策略不适用 → 紧止损+低EH)
 PERSONALITY_BASE_OVERRIDES: Dict[str, Dict] = {
     'trend_persistent': {
-        # sweep验证：baseline 15%止损和30% EH阈值已是最优，不覆盖
+        # 最佳股性类型，baseline参数已最优，不覆盖
     },
     'staircase_mover': {
         # 样本量太小(n=4)，暂不加override
     },
     'mean_reverter': {
-        # sweep: EH阈值20%最优(+0.015 vs 30%基线), n=6
-        # 均值回归股反弹幅度较小，更早激活EH能多抓一些利润
-        'extended_hold_profit_threshold': 20,
+        # 均值回归股不适合趋势策略，缩紧参数减少损失
+        # EH阈值降低(反弹幅度小)，硬止损收紧(快速止损)
+        'extended_hold_profit_threshold': 15,
+        'hard_loss_cap_pct': 5.0,
     },
     'volatile_oscillator': {
-        # 暂不加override：40%在group-sweep有效，但PE跨类型交叉污染削弱效果
+        # 2026-03 验证: hard_loss_cap=6.0 → 20只受损(-439%), 25只受益(+461%)
+        # 净效果仅+0.45%/股, 但个别损失巨大(002920:-114%, 300293:-28%)
+        # 风险收益比差, 移除override
     },
     'breakout_runner': {
-        # sweep: 止损18%比15%好(+0.024), n=10
-        # 601328的37/241个entry bar被分为mean_reverter→EH=20影响，其余124个breakout_runner entry
-        # 可获益于宽止损，组合测试确认净效果
-        'stop_loss': 18.0,
-        'hard_loss_cap_pct': 18.0,
+        # 2026-03 验证: stop_loss=18/hard_loss_cap=18 → 10只股全部0变化
+        # override无实际效果, 清空
     },
     'erratic': {},
     'insufficient': {},

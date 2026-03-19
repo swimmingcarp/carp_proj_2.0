@@ -14,7 +14,11 @@ logging:
   file: logs/trading.log
   level: INFO
 report:
+  blas_threads: 1
+  default_stock_codes_file: config/report_codes_132.txt
+  executor: process
   max_workers: null
+  verbose: false
 strategy:
   init_d: 50.0
   init_date: '2018-01-02'

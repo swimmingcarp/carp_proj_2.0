@@ -15,7 +15,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Dict, List, Optional
 from numbers import Integral
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
@@ -30,9 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_fetcher import DataFetcher
-from src.strategy import MixedStrategy
 from src.new_strategy import RSITrendStrategy
-from src.oscillation_strategy import OscillationStrategy
 from src.analyzer import SignalAnalyzer
 from src.plotter import plot_kline_with_signals
 import config as app_config  # 导入应用配置
@@ -125,10 +123,33 @@ def normalize_stock_code(code: str) -> str:
     return code.upper()
 
 
+def load_stock_codes_file(path_str: Optional[str]) -> List[str]:
+    """从文本文件加载股票代码列表。"""
+    if not path_str:
+        return []
+
+    path = Path(path_str)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError as exc:
+        logging.getLogger(__name__).warning(f"读取股票池文件失败 {path}: {exc}")
+        return []
+
+    codes = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw or raw.startswith('#'):
+            continue
+        codes.append(normalize_stock_code(raw))
+    return codes
+
+
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
-                  use_fixed_strategy: bool = False, df_override: Optional[pd.DataFrame] = None,
-                  quiet: bool = False, chart_generation: bool = False,
-                  oscillation_driven: bool = False, use_new_strategy: bool = False) -> Optional[Dict]:
+                  df_override: Optional[pd.DataFrame] = None,
+                  quiet: bool = False, chart_generation: bool = False) -> Optional[Dict]:
     """
     分析单只股票
 
@@ -137,7 +158,6 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         config: 配置字典
         show_backtest: 是否显示回测结果
         chart_generation: 是否生成K线图
-        use_new_strategy: 是否启用RSI趋势策略 (RSITrendStrategy)
     """
     logger = logging.getLogger(__name__)
     log_func = logger.info if not quiet else logger.debug
@@ -186,28 +206,12 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         df = df_override.copy()
         market = detect_market_from_code(stock_code)
 
-    # 根据参数选择策略类型
-    if oscillation_driven:
-        echo("使用震荡间隔交易策略 (OscillationStrategy)")
-        strategy = OscillationStrategy(
-            config=strategy_config,
-            market=market
-        )
-    elif use_new_strategy:
-        echo("使用RSI趋势策略 (RSITrendStrategy)")
-        strategy = RSITrendStrategy(
-            config=strategy_config,
-            market=market,
-            stock_code=stock_code
-        )
-    else:
-        strategy = MixedStrategy(
-            config=strategy_config,
-            market=market,
-            stock_code=stock_code,
-            use_strategy_cache=show_backtest and use_fixed_strategy,
-            oscillation_driven=False
-        )
+    echo("使用RSI趋势策略 (RSITrendStrategy)")
+    strategy = RSITrendStrategy(
+        config=strategy_config,
+        market=market,
+        stock_code=stock_code
+    )
     analyzer = SignalAnalyzer()
 
     if validation_report:
@@ -288,10 +292,9 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
 
             if not quiet:
                 echo(analyzer.format_backtest_result(backtest_result))
-                if use_new_strategy:
-                    timeline = format_trend_timeline(df, stock_code)
-                    if timeline:
-                        echo(timeline)
+                timeline = format_trend_timeline(df, stock_code)
+                if timeline:
+                    echo(timeline)
                 if trading_signals and trading_signals.get('total_trades', 0) > 0:
                     echo(analyzer.format_trading_signals(trading_signals))
                 echo(analyzer.generate_recommendation(signal_data, backtest_result))
@@ -448,7 +451,11 @@ def batch_analyze(stock_codes: list, config: dict):
                 retry_delay=app_config.RETRY_DELAY,
                 is_backtest_mode=False  # 批量分析不做回测，使用实时模式
             )
-            strategy = MixedStrategy(config=strategy_config)
+            strategy = RSITrendStrategy(
+                config=strategy_config,
+                market=detect_market_from_code(code),
+                stock_code=code
+            )
 
             # 获取数据
             result = fetcher.get_k_data(code, start_date='2020-01-01')
@@ -469,7 +476,12 @@ def batch_analyze(stock_codes: list, config: dict):
                 continue
 
             # 分析
-            df_analyzed = strategy.analyze(df)
+            analyzed_result = strategy.analyze(df)
+            if isinstance(analyzed_result, tuple):
+                df_analyzed = analyzed_result[0]
+            else:
+                df_analyzed = analyzed_result
+
             if df_analyzed is None:
                 continue
 
@@ -749,10 +761,74 @@ def format_trend_timeline(df_raw: pd.DataFrame, stock_code: str) -> str:
     return "\n".join(lines)
 
 
-def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = False,
-                                   stock_codes: Optional[List[str]] = None,
-                                   oscillation_driven: bool = False,
-                                   use_new_strategy: bool = False):
+def _run_cache_backtest_task(stock_code: str, cache_file_str: str, config: dict, initial_capital: float) -> Dict:
+    """Top-level worker for parallel cache backtests."""
+    cache_file = Path(cache_file_str)
+    try:
+        df_raw = pd.read_csv(cache_file)
+    except Exception as exc:
+        return {'success': False, 'code': stock_code, 'error': f"读取缓存失败: {exc}"}
+
+    if df_raw.empty:
+        return {'success': False, 'code': stock_code, 'error': "缓存数据为空，跳过"}
+
+    analysis = analyze_stock(
+        stock_code,
+        config,
+        show_backtest=True,
+        df_override=df_raw,
+        quiet=True,
+    )
+
+    if not analysis:
+        return {'success': False, 'code': stock_code, 'error': "分析失败，跳过"}
+
+    backtest_result = analysis.get('backtest')
+    if not backtest_result:
+        return {'success': False, 'code': stock_code, 'error': "回测失败，跳过"}
+
+    current_price = float(df_raw['close'].iloc[-1])
+    stock_report = format_stock_report(
+        stock_code,
+        current_price,
+        analysis.get('signal'),
+        backtest_result,
+        analysis.get('trading_signals')
+    )
+
+    timeline = format_trend_timeline(df_raw, stock_code)
+    if timeline:
+        stock_report = stock_report + "\n\n" + timeline
+
+    summary_entry = {
+        'code': stock_code,
+        'total_return': backtest_result.get('total_return', 0.0),
+        'max_drawdown': backtest_result.get('max_drawdown', 0.0),
+        'win_rate': backtest_result.get('win_rate', 0.0),
+        'profit_factor': backtest_result.get('profit_factor', 0.0),
+        'total_trades': backtest_result.get('total_trades', 0),
+        'final_capital': backtest_result.get('final_capital', initial_capital),
+        'total_profit_pct': backtest_result.get('total_profit_pct', 0.0),
+        'total_loss_pct': backtest_result.get('total_loss_pct', 0.0),
+    }
+
+    log_message = (
+        f"✓ {stock_code} 完成 - 收益 {backtest_result.get('total_return', 0.0):.2f}% | "
+        f"最大回撤 {backtest_result.get('max_drawdown', 0.0):.2f}% | "
+        f"胜率 {backtest_result.get('win_rate', 0.0):.2f}% | "
+        f"交易 {backtest_result.get('total_trades', 0)}"
+    )
+
+    return {
+        'success': True,
+        'code': stock_code,
+        'report': stock_report,
+        'summary': summary_entry,
+        'log': log_message,
+    }
+
+
+def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]] = None):
     """
     对缓存中的所有股票执行回测并生成汇总报告
     """
@@ -792,104 +868,68 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
     initial_capital = backtest_config.get('initial_capital', 10000)
 
     report_config = config.get('report', {})
-    max_workers_config = report_config.get('max_workers')
-    if isinstance(max_workers_config, Integral) and max_workers_config > 0:
-        max_workers = int(max_workers_config)
-    else:
-        cpu_count = os.cpu_count() or 1
-        max_workers = cpu_count
+    report_verbose = bool(report_config.get('verbose', False))
+    report_blas_threads = int(report_config.get('blas_threads', 1) or 1)
+
+    executor_name = str(
+        os.environ.get('STOCK_ADVISOR_REPORT_EXECUTOR')
+        or report_config.get('executor')
+        or 'process'
+    ).strip().lower()
+    executor_cls = ProcessPoolExecutor if executor_name in ('process', 'proc', 'processpool') else ThreadPoolExecutor
 
     total = len(target_files)
+    env_workers = os.environ.get('STOCK_ADVISOR_REPORT_WORKERS')
+    max_workers_config = env_workers if env_workers is not None else report_config.get('max_workers')
+    if isinstance(max_workers_config, str) and max_workers_config.isdigit():
+        max_workers = int(max_workers_config)
+    elif isinstance(max_workers_config, Integral) and max_workers_config > 0:
+        max_workers = int(max_workers_config)
+    else:
+        max_workers = total if executor_cls is ProcessPoolExecutor else (os.cpu_count() or 1)
+
     max_workers = max(1, min(max_workers, total))
+
+    if executor_cls is ProcessPoolExecutor:
+        for var in (
+            'OMP_NUM_THREADS',
+            'OPENBLAS_NUM_THREADS',
+            'MKL_NUM_THREADS',
+            'NUMEXPR_NUM_THREADS',
+            'VECLIB_MAXIMUM_THREADS',
+        ):
+            os.environ.setdefault(var, str(report_blas_threads))
+        if not report_verbose:
+            logging.getLogger().setLevel(logging.WARNING)
 
     if stock_codes:
         print(f"对指定的 {total} 只股票生成回测报告（需存在缓存）...")
     else:
-        mode_label = "多线程" if max_workers > 1 else "单线程"
+        if max_workers <= 1:
+            mode_label = "单线程"
+        else:
+            mode_label = "多进程" if executor_cls is ProcessPoolExecutor else "多线程"
         print(f"在缓存目录中找到 {total} 只股票，开始{mode_label}离线回测...")
     if max_workers > 1:
-        print(f"本次将使用 {max_workers} 个线程并行处理缓存文件")
+        worker_label = "进程" if executor_cls is ProcessPoolExecutor else "线程"
+        print(f"本次将使用 {max_workers} 个{worker_label}并行处理缓存文件")
 
     summary = []
     failures = []
     stock_reports: Dict[str, str] = {}
 
-    def run_single_backtest(stock_code: str, cache_file: Path) -> Dict:
-        try:
-            df_raw = pd.read_csv(cache_file)
-        except Exception as exc:
-            logger.error(f"读取缓存 {cache_file} 失败: {exc}")
-            return {'success': False, 'code': stock_code, 'error': f"读取缓存失败: {exc}"}
-
-        if df_raw.empty:
-            return {'success': False, 'code': stock_code, 'error': "缓存数据为空，跳过"}
-
-        analysis = analyze_stock(
-            stock_code,
-            config,
-            show_backtest=True,
-            use_fixed_strategy=use_fixed_strategy,
-            df_override=df_raw,
-            quiet=True,
-            oscillation_driven=oscillation_driven,
-            use_new_strategy=use_new_strategy
-        )
-
-        if not analysis:
-            return {'success': False, 'code': stock_code, 'error': "分析失败，跳过"}
-
-        backtest_result = analysis.get('backtest')
-        if not backtest_result:
-            return {'success': False, 'code': stock_code, 'error': "回测失败，跳过"}
-
-        current_price = float(df_raw['close'].iloc[-1])
-        stock_report = format_stock_report(
-            stock_code,
-            current_price,
-            analysis.get('signal'),
-            backtest_result,
-            analysis.get('trading_signals')
-        )
-
-        # 趋势区间段落表（仅 --new-strategy 模式）
-        if use_new_strategy:
-            timeline = format_trend_timeline(df_raw, stock_code)
-            if timeline:
-                stock_report = stock_report + "\n\n" + timeline
-
-        summary_entry = {
-            'code': stock_code,
-            'total_return': backtest_result.get('total_return', 0.0),
-            'max_drawdown': backtest_result.get('max_drawdown', 0.0),
-            'win_rate': backtest_result.get('win_rate', 0.0),
-            'profit_factor': backtest_result.get('profit_factor', 0.0),
-            'total_trades': backtest_result.get('total_trades', 0),
-            'final_capital': backtest_result.get('final_capital', initial_capital),
-            # 用于汇总计算盈亏比
-            'total_profit_pct': backtest_result.get('total_profit_pct', 0.0),
-            'total_loss_pct': backtest_result.get('total_loss_pct', 0.0),
-        }
-
-        log_message = (
-            f"✓ {stock_code} 完成 - 收益 {backtest_result.get('total_return', 0.0):.2f}% | "
-            f"最大回撤 {backtest_result.get('max_drawdown', 0.0):.2f}% | "
-            f"胜率 {backtest_result.get('win_rate', 0.0):.2f}% | "
-            f"交易 {backtest_result.get('total_trades', 0)}"
-        )
-
-        return {
-            'success': True,
-            'code': stock_code,
-            'report': stock_report,
-            'summary': summary_entry,
-            'log': log_message,
-        }
-
     futures_map = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with executor_cls(max_workers=max_workers) as executor:
         for idx, (stock_code, cache_file) in enumerate(target_files, 1):
-            print(f"\n[{idx}/{total}] 回测 {stock_code} ...")
-            future = executor.submit(run_single_backtest, stock_code, cache_file)
+            if report_verbose:
+                print(f"\n[{idx}/{total}] 回测 {stock_code} ...")
+            future = executor.submit(
+                _run_cache_backtest_task,
+                stock_code,
+                str(cache_file),
+                config,
+                initial_capital,
+            )
             futures_map[future] = stock_code
 
         for future in as_completed(futures_map):
@@ -905,10 +945,12 @@ def generate_cache_backtest_report(config: dict, use_fixed_strategy: bool = Fals
             if result.get('success'):
                 summary.append(result['summary'])
                 stock_reports[stock_code] = result['report']
-                print(result.get('log', f"✓ {stock_code} 完成"))
+                if report_verbose:
+                    print(result.get('log', f"✓ {stock_code} 完成"))
             else:
                 failures.append(stock_code)
-                print(f"✗ {stock_code} {result.get('error', '未知错误')}")
+                if report_verbose:
+                    print(f"✗ {stock_code} {result.get('error', '未知错误')}")
 
     success_count = len(summary)
     if success_count == 0:
@@ -1047,14 +1089,10 @@ def main():
     parser.add_argument('-s', '--stock', type=str, help='单只股票代码')
     parser.add_argument('-b', '--batch', nargs='+', help='批量股票代码列表')
     parser.add_argument('-c', '--config', type=str, default='config/config.yaml', help='配置文件路径')
-    parser.add_argument('--fixed-strategy', action='store_true',
-                        help='回测模式下使用缓存的最优组合（原始/渐进 + 高频/高质量），'
-                             '若无缓存则自动评估并写入缓存')
-    parser.add_argument('--oscillation-driven', action='store_true',
-                        help='使用震荡间隔交易策略（只在震荡区间外的正常行情中交易一笔）')
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
+    # 兼容保留旧命令行参数；当前 CLI 始终使用 RSITrendStrategy。
     parser.add_argument('--new-strategy', action='store_true',
-                        help='启用RSI趋势策略 (RSITrendStrategy)，替代默认混合策略')
+                        help=argparse.SUPPRESS)
     parser.add_argument('--report', action='store_true',
                         help='离线模式：对缓存中所有或指定股票（-s/-b）进行回测并输出报告')
     parser.add_argument('--chart-generation', action='store_true',
@@ -1078,25 +1116,26 @@ def main():
         if report_codes:
             print(f"仅对指定股票生成离线报告: {', '.join(report_codes)}")
         else:
-            print("未指定股票，将对缓存中所有股票生成离线报告")
+            default_report_codes = load_stock_codes_file(
+                config.get('report', {}).get('default_stock_codes_file')
+            )
+            if default_report_codes:
+                report_codes = default_report_codes
+                print(f"未指定股票，将对固定股票池 {len(report_codes)} 只股票生成离线报告")
+            else:
+                print("未指定股票，将对缓存中所有股票生成离线报告")
         generate_cache_backtest_report(
             config,
-            use_fixed_strategy=args.fixed_strategy,
             stock_codes=report_codes if report_codes else None,
-            oscillation_driven=args.oscillation_driven,
-            use_new_strategy=args.new_strategy
         )
     elif args.stock:
         analyze_stock(
             args.stock,
             config,
             show_backtest=not args.no_backtest,
-            use_fixed_strategy=args.fixed_strategy,
             quiet=False,
             df_override=None,
             chart_generation=args.chart_generation,
-            oscillation_driven=args.oscillation_driven,
-            use_new_strategy=args.new_strategy
         )
     elif args.batch:
         batch_analyze(args.batch, config)

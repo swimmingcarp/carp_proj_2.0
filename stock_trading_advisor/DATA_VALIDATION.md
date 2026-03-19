@@ -171,10 +171,10 @@ print(validator.format_report(report))
 
 ```python
 from src.data_fetcher import DataFetcher
-from src.strategy import MixedStrategy
+from src.new_strategy import RSITrendStrategy
 
 fetcher = DataFetcher(source='akshare')
-strategy = MixedStrategy()
+strategy = RSITrendStrategy()
 
 # 获取并验证数据
 df, report = fetcher.get_k_data('000001', start_date='2020-01-01')
@@ -257,7 +257,7 @@ DataValidator.validate()
     ↓
 返回清洗后的DataFrame + 验证报告
     ↓
-策略分析 (MixedStrategy)
+策略分析 (RSITrendStrategy)
 ```
 
 ## 更新日志

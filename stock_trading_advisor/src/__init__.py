@@ -23,13 +23,11 @@ from .divergence import (
 )
 
 from .data_fetcher import DataFetcher
-from .strategy import MixedStrategy
 from .new_strategy import RSITrendStrategy
 from .analyzer import SignalAnalyzer
 
 __all__ = [
     'DataFetcher',
-    'MixedStrategy',
     'RSITrendStrategy',
     'SignalAnalyzer',
     'calculate_all_indicators',

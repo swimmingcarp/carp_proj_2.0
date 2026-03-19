@@ -111,13 +111,10 @@ class SignalAnalyzer:
 
         # 资金指标
         initial_capital = result.get('initial_capital', 0)
-        # final_capital: 优先显示这个值（OscillationStrategy中已经是包含持仓的）
-        # final_capital_closed: 已完成交易的资金（不含持仓）
         final_capital = result.get('final_capital', 0)
         final_capital_closed = result.get('final_capital_closed', final_capital)
         has_open_position = result.get('has_open_position', False)
         
-        # total_return: 优先显示这个值（OscillationStrategy中已经是包含持仓的）
         total_return = result.get('total_return', 0)
         profit_amount = final_capital - initial_capital
 

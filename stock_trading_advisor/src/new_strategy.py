@@ -49,6 +49,22 @@ class RSITrendStrategy(StrategyBase):
     _index_regime: Dict[str, pd.Series] = {}  # 预计算的regime信号(date→bool)
     _breadth_regime: Optional[pd.Series] = None  # 市场宽度regime信号缓存
 
+    @staticmethod
+    def _perm_entropy_order3_window(values: np.ndarray) -> float:
+        values = np.asarray(values, dtype=float)
+        if len(values) < 5 or np.isnan(values).any():
+            return np.nan
+        counts: Dict[Tuple[int, ...], int] = {}
+        for i in range(len(values) - 2):
+            key = tuple(np.argsort(values[i:i + 3], kind='mergesort'))
+            counts[key] = counts.get(key, 0) + 1
+        if not counts:
+            return np.nan
+        probs = np.array(list(counts.values()), dtype=float)
+        probs /= probs.sum()
+        entropy = -(probs * np.log2(probs)).sum()
+        return float(entropy / np.log2(6.0))
+
     def __init__(self, config: Optional[Dict] = None, market: str = 'CN-A',
                  stock_code: str = ''):
         defaults = {
@@ -106,28 +122,51 @@ class RSITrendStrategy(StrategyBase):
             'ma60_factor_avg_gap_size_min': 2.70,
             'ma60_factor_avg_gap_size_max': 3.20,
             'slow_pullback_enabled': True,
-            'slow_pullback_anchor_period': 45,
+            'slow_pullback_anchor_period': 55,
             'slow_pullback_ret60_min': 3.0,
             'slow_pullback_ret60_max': 30.0,
             'slow_pullback_dist_anchor_min': 0.0,
-            'slow_pullback_dist_anchor_max': 14.0,
+            'slow_pullback_dist_anchor_max': 12.0,
             'slow_pullback_dist_ma20_min': 3.0,
-            'slow_pullback_dist_ma20_max': 11.0,
+            'slow_pullback_dist_ma20_max': 14.0,
             'slow_pullback_rsi14_min': 58.0,
             'slow_pullback_rsi14_max': 82.0,
             'slow_pullback_pct20_high_min': -4.5,
             'slow_pullback_pct20_high_max': -0.4,
-            'slow_pullback_weekly_macd_min': 1.0,
-            'slow_pullback_weekly_macd_max': 6.6,
-            'slow_pullback_lr20_min': 0.05,
-            'slow_pullback_lr20_max': 1.10,
-            'slow_pullback_ma_spread_std_min': 0.40,
-            'slow_pullback_ma_spread_std_max': 2.90,
+            'slow_pullback_weekly_macd_min': 4.2,
+            'slow_pullback_weekly_macd_max': 6.8,
+            'slow_pullback_lr20_min': 0.0,
+            'slow_pullback_lr20_max': 99.0,
+            'slow_pullback_ma_spread_std_min': 2.853,
+            'slow_pullback_ma_spread_std_max': 4.3,
             'slow_pullback_lt_ma120_slope_min': 1.0,
             'slow_pullback_lt_ma120_slope_max': 5.0,
-            'slow_pullback_range20_min': 6.0,
-            'slow_pullback_range20_max': 24.0,
+            'slow_pullback_range20_min': 11.339,
+            'slow_pullback_range20_max': 27.226,
             'slow_pullback_avg_gap_size_max': 0.20,
+            'slow_pullback_exit_signal_hold_days': 12,
+            'slow_pullback_exit_anchor_break_pct': 0.5,
+            'slow_pullback_exit_profit_take_pct': 16.0,
+            'slow_pullback_exit_peak_trigger_pct': 12.0,
+            'slow_pullback_exit_peak_drawdown_pct': 5.0,
+            'slow_pullback_exit_rsi_overbought': 78.0,
+            'slow_pullback_exit_bb_overbought': 0.92,
+            'slow_pullback_exit_family_weekly_macd_min': 4.2,
+            'slow_pullback_exit_family_weekly_macd_max': 6.5,
+            'slow_pullback_exit_family_lr20_max': 0.40,
+            'slow_pullback_exit_family_range20_max': 24.0,
+            'slow_pullback_exit_family_dist_ma20_max': 9.5,
+            'slow_pullback_use_family_routes': False,
+            'slow_pullback_family_a_cross_ma5_freq_min': 0.20,
+            'slow_pullback_family_a_cross_ma5_freq_max': 0.2012,
+            'slow_pullback_family_a_perm_entropy3_min': 0.952465,
+            'slow_pullback_family_a_perm_entropy3_max': 0.988033,
+            'slow_pullback_family_a_gk_vol_min': 1.981408,
+            'slow_pullback_family_a_gk_vol_max': 3.175205,
+            'slow_pullback_family_b_weekly_macd_min': 5.945306,
+            'slow_pullback_family_b_weekly_macd_max': 6.168151,
+            'slow_pullback_family_b_hh_ratio20_min': 0.50,
+            'slow_pullback_family_b_hh_ratio20_max': 0.5848,
             'slow_pullback_min_hold_days': 8,
             'slow_pullback_min_vq_score': 0,
             'slow_pullback_ignore_hurst': False,
@@ -385,6 +424,33 @@ class RSITrendStrategy(StrategyBase):
             'w_bottom_stop_loss_pct': 5.0,            # W底形态专属止损% (PF=1.69; scan48: +1.13%/+0.0067 tPF; 0=使用默认)
             'discount_zone_stop_loss_pct': 6.0,       # 折价区补仓专属止损% (PF=2.68; scan48: +0.63%/+0.0035 tPF; 0=使用默认)
             'dual_channel_stop_loss_pct': 0,          # 双通道信号专属止损% (PF=1.55最低; scan58测试; 0=使用默认)
+            'discount_hard_stop_soft_wait': 7,
+            'discount_hard_stop_hold_max': 11,
+            'discount_hard_stop_peak_min': 1.0,
+            'discount_hard_stop_range20_min': 17.0,
+            'discount_hard_stop_weekly_macd_min': -8.0,
+            'discount_hard_stop_emergency_buffer': 2.0,
+            'momentum_hard_stop_soft_wait': 1,
+            'momentum_hard_stop_hold_max': 5,
+            'momentum_hard_stop_atr_min': 5.0,
+            'momentum_hard_stop_range20_min': 20.0,
+            'momentum_hard_stop_emergency_buffer': 2.0,
+            'golden_cross_hard_stop_soft_wait': 1,
+            'golden_cross_hard_stop_hold_max': 14,
+            'golden_cross_hard_stop_atr_min': 5.0,
+            'golden_cross_hard_stop_range20_min': 20.0,
+            'golden_cross_hard_stop_cap_min': 5.5,
+            'golden_cross_hard_stop_cap_max': 6.5,
+            'golden_cross_hard_stop_emergency_buffer': 2.0,
+            'continuation_hard_stop_soft_wait': 1,
+            'continuation_hard_stop_hold_max': 3,
+            'continuation_hard_stop_atr_min': 4.5,
+            'continuation_hard_stop_range20_min': 20.0,
+            'continuation_hard_stop_lr20_min': 0.2,
+            'continuation_hard_stop_dist_ma20_min': -0.5,
+            'continuation_hard_stop_cap_min': 3.5,
+            'continuation_hard_stop_cap_max': 4.5,
+            'continuation_hard_stop_emergency_buffer': 2.0,
 
             # 上升趋势早期入场过滤（scan41: gap=2.5/d=2: +0.40%/+0.0085 tPF, 9伤10益）
             'entry_early_trend_gap': 2.5,             # 上升趋势前N天的relaxed_condition入场要求 rsi_diff >= X
@@ -1025,11 +1091,25 @@ class RSITrendStrategy(StrategyBase):
         data['ma_250'] = data['close'].rolling(250).mean()
         data['dist_ma60'] = (data['close'] - data['ma_60']) / data['ma_60'].replace(0, np.nan) * 100
         data['pct_from_20d_high'] = (data['close'] / data['high'].rolling(20).max() - 1) * 100
+        _above_ma5 = data['close'] > data['ma_5']
+        _cross_ma5 = (
+            (_above_ma5 != _above_ma5.shift(1))
+            & data['ma_5'].notna()
+            & data['ma_5'].shift(1).notna()
+        )
+        data['cross_ma5_freq_10d'] = _cross_ma5.rolling(10, min_periods=10).sum() / 10.0
+        data['hh_ratio_20d'] = (data['high'] > data['high'].shift(1)).rolling(20, min_periods=20).sum() / 20.0
         data['range_20d_pct'] = (
             (data['high'].rolling(20).max() - data['low'].rolling(20).min())
             / data['close'].replace(0, np.nan)
             * 100
         )
+        _prev_close = data['close'].shift(1).replace(0, np.nan)
+        _gk_u = np.log(data['high'] / _prev_close)
+        _gk_d = np.log(data['low'] / _prev_close)
+        _gk_cc = np.log(data['close'] / _prev_close)
+        _gk_term = 0.5 * (_gk_u - _gk_d) ** 2 - (2 * np.log(2) - 1) * (_gk_cc ** 2)
+        data['garman_klass_vol'] = np.sqrt(_gk_term.rolling(20, min_periods=5).mean().clip(lower=0)) * 100
         _ma_spreads = pd.concat([
             (data['ma_5'] - data['ma_10']) / data['close'].replace(0, np.nan) * 100,
             (data['ma_10'] - data['ma_20']) / data['close'].replace(0, np.nan) * 100,
@@ -1076,6 +1156,9 @@ class RSITrendStrategy(StrategyBase):
             return slope / mean_val * 100 if mean_val != 0 else 0
         data['lr_slope_10'] = data['close'].rolling(10).apply(_lr_slope_norm, raw=True)
         data['lr_slope_20'] = data['close'].rolling(20).apply(_lr_slope_norm, raw=True)
+        data['perm_entropy_3'] = np.log(data['close'] / data['close'].shift(1)).rolling(30).apply(
+            self._perm_entropy_order3_window, raw=True
+        )
 
         # Supplementary MA60 pullback factors
         _ema65 = data['close'].ewm(span=65, adjust=False).mean()
@@ -1210,24 +1293,55 @@ class RSITrendStrategy(StrategyBase):
                 & (_slow_ret60 <= float(self.config.get('slow_pullback_ret60_max', 35.0)))
                 & (_slow_dist_anchor >= float(self.config.get('slow_pullback_dist_anchor_min', 0.0)))
                 & (_slow_dist_anchor <= float(self.config.get('slow_pullback_dist_anchor_max', 18.0)))
-                & (data['dist_ma20'] >= float(self.config.get('slow_pullback_dist_ma20_min', 3.5)))
-                & (data['dist_ma20'] <= float(self.config.get('slow_pullback_dist_ma20_max', 15.5)))
-                & (data['rsi_14'] >= float(self.config.get('slow_pullback_rsi14_min', 52.0)))
-                & (data['rsi_14'] <= float(self.config.get('slow_pullback_rsi14_max', 82.0)))
-                & (data['pct_from_20d_high'] >= float(self.config.get('slow_pullback_pct20_high_min', -5.0)))
-                & (data['pct_from_20d_high'] <= float(self.config.get('slow_pullback_pct20_high_max', -0.2)))
+                & (data['dist_ma20'] >= float(self.config.get('slow_pullback_dist_ma20_min', 4.0)))
+                & (data['dist_ma20'] <= float(self.config.get('slow_pullback_dist_ma20_max', 14.0)))
                 & (data['lt_elder_weekly_macd'] >= float(self.config.get('slow_pullback_weekly_macd_min', 1.5)))
                 & (data['lt_elder_weekly_macd'] <= float(self.config.get('slow_pullback_weekly_macd_max', 7.2)))
-                & (data['lr_slope_20'] >= float(self.config.get('slow_pullback_lr20_min', 0.05)))
-                & (data['lr_slope_20'] <= float(self.config.get('slow_pullback_lr20_max', 1.40)))
-                & (data['ma_spread_std'] >= float(self.config.get('slow_pullback_ma_spread_std_min', 0.40)))
-                & (data['ma_spread_std'] <= float(self.config.get('slow_pullback_ma_spread_std_max', 3.30)))
-                & (data['lt_ma120_slope_20d'] >= float(self.config.get('slow_pullback_lt_ma120_slope_min', 1.0)))
-                & (data['lt_ma120_slope_20d'] <= float(self.config.get('slow_pullback_lt_ma120_slope_max', 7.0)))
-                & (data['range_20d_pct'] >= float(self.config.get('slow_pullback_range20_min', 5.0)))
-                & (data['range_20d_pct'] <= float(self.config.get('slow_pullback_range20_max', 28.0)))
-                & (data['avg_gap_size'] <= float(self.config.get('slow_pullback_avg_gap_size_max', 0.20)))
+                & (data['lr_slope_20'] > float(self.config.get('slow_pullback_lr20_min', 0.0)))
+                & (data['lr_slope_20'] <= float(self.config.get('slow_pullback_lr20_max', 99.0)))
+                & (data['ma_spread_std'] >= float(self.config.get('slow_pullback_ma_spread_std_min', 2.707884)))
+                & (data['ma_spread_std'] <= float(self.config.get('slow_pullback_ma_spread_std_max', 4.021532)))
+                & (data['range_20d_pct'] >= float(self.config.get('slow_pullback_range20_min', 12.414966)))
+                & (data['range_20d_pct'] <= float(self.config.get('slow_pullback_range20_max', 24.294218)))
             )
+            if bool(self.config.get('slow_pullback_use_family_routes', True)):
+                _slow_family_a = (
+                    data['cross_ma5_freq_10d'].between(
+                        float(self.config.get('slow_pullback_family_a_cross_ma5_freq_min', 0.20)),
+                        float(self.config.get('slow_pullback_family_a_cross_ma5_freq_max', 0.2012)),
+                    )
+                    & data['perm_entropy_3'].between(
+                        float(self.config.get('slow_pullback_family_a_perm_entropy3_min', 0.952465)),
+                        float(self.config.get('slow_pullback_family_a_perm_entropy3_max', 0.988033)),
+                    )
+                    & data['garman_klass_vol'].between(
+                        float(self.config.get('slow_pullback_family_a_gk_vol_min', 1.981408)),
+                        float(self.config.get('slow_pullback_family_a_gk_vol_max', 3.175205)),
+                    )
+                )
+                _slow_family_b = (
+                    data['lt_elder_weekly_macd'].between(
+                        float(self.config.get('slow_pullback_family_b_weekly_macd_min', 5.945306)),
+                        float(self.config.get('slow_pullback_family_b_weekly_macd_max', 6.168151)),
+                    )
+                    & data['hh_ratio_20d'].between(
+                        float(self.config.get('slow_pullback_family_b_hh_ratio20_min', 0.50)),
+                        float(self.config.get('slow_pullback_family_b_hh_ratio20_max', 0.5848)),
+                    )
+                )
+                slow_pullback_entry = slow_pullback_entry & (_slow_family_a | _slow_family_b)
+            data['slow_pullback_slow_family'] = (
+                slow_pullback_entry
+                & data['lt_elder_weekly_macd'].between(
+                    float(self.config.get('slow_pullback_exit_family_weekly_macd_min', 5.35)),
+                    float(self.config.get('slow_pullback_exit_family_weekly_macd_max', 6.2)),
+                )
+                & (data['lr_slope_20'] <= float(self.config.get('slow_pullback_exit_family_lr20_max', 0.30)))
+                & (data['range_20d_pct'] <= float(self.config.get('slow_pullback_exit_family_range20_max', 17.5)))
+                & (data['dist_ma20'] <= float(self.config.get('slow_pullback_exit_family_dist_ma20_max', 9.5)))
+            )
+        else:
+            data['slow_pullback_slow_family'] = False
         data['slow_pullback_entry'] = slow_pullback_entry
 
         # 入场质量过滤器（基于多因子分析，按类型选择性应用）
@@ -2420,6 +2534,33 @@ class RSITrendStrategy(StrategyBase):
         bounce_exit_max_wait = int(self.config.get('bounce_exit_max_wait', 1))  # 最大等待天数
         bounce_exit_bounce_pct = float(self.config.get('bounce_exit_bounce_pct', 1.0))  # 反弹幅度要求%（vs卖出信号价）
         bounce_exit_cancel_on_clear = bool(self.config.get('bounce_exit_cancel_on_clear', False))  # 信号恢复时取消pending_exit
+        discount_hard_stop_soft_wait = int(self.config.get('discount_hard_stop_soft_wait', 7))
+        discount_hard_stop_hold_max = int(self.config.get('discount_hard_stop_hold_max', 11))
+        discount_hard_stop_peak_min = float(self.config.get('discount_hard_stop_peak_min', 1.0))
+        discount_hard_stop_range20_min = float(self.config.get('discount_hard_stop_range20_min', 17.0))
+        discount_hard_stop_weekly_macd_min = float(self.config.get('discount_hard_stop_weekly_macd_min', -8.0))
+        discount_hard_stop_emergency_buffer = float(self.config.get('discount_hard_stop_emergency_buffer', 2.0))
+        momentum_hard_stop_soft_wait = int(self.config.get('momentum_hard_stop_soft_wait', 1))
+        momentum_hard_stop_hold_max = int(self.config.get('momentum_hard_stop_hold_max', 5))
+        momentum_hard_stop_atr_min = float(self.config.get('momentum_hard_stop_atr_min', 5.0))
+        momentum_hard_stop_range20_min = float(self.config.get('momentum_hard_stop_range20_min', 20.0))
+        momentum_hard_stop_emergency_buffer = float(self.config.get('momentum_hard_stop_emergency_buffer', 2.0))
+        golden_cross_hard_stop_soft_wait = int(self.config.get('golden_cross_hard_stop_soft_wait', 1))
+        golden_cross_hard_stop_hold_max = int(self.config.get('golden_cross_hard_stop_hold_max', 14))
+        golden_cross_hard_stop_atr_min = float(self.config.get('golden_cross_hard_stop_atr_min', 5.0))
+        golden_cross_hard_stop_range20_min = float(self.config.get('golden_cross_hard_stop_range20_min', 20.0))
+        golden_cross_hard_stop_cap_min = float(self.config.get('golden_cross_hard_stop_cap_min', 5.5))
+        golden_cross_hard_stop_cap_max = float(self.config.get('golden_cross_hard_stop_cap_max', 6.5))
+        golden_cross_hard_stop_emergency_buffer = float(self.config.get('golden_cross_hard_stop_emergency_buffer', 2.0))
+        continuation_hard_stop_soft_wait = int(self.config.get('continuation_hard_stop_soft_wait', 1))
+        continuation_hard_stop_hold_max = int(self.config.get('continuation_hard_stop_hold_max', 3))
+        continuation_hard_stop_atr_min = float(self.config.get('continuation_hard_stop_atr_min', 4.5))
+        continuation_hard_stop_range20_min = float(self.config.get('continuation_hard_stop_range20_min', 20.0))
+        continuation_hard_stop_lr20_min = float(self.config.get('continuation_hard_stop_lr20_min', 0.2))
+        continuation_hard_stop_dist_ma20_min = float(self.config.get('continuation_hard_stop_dist_ma20_min', -0.5))
+        continuation_hard_stop_cap_min = float(self.config.get('continuation_hard_stop_cap_min', 3.5))
+        continuation_hard_stop_cap_max = float(self.config.get('continuation_hard_stop_cap_max', 4.5))
+        continuation_hard_stop_emergency_buffer = float(self.config.get('continuation_hard_stop_emergency_buffer', 2.0))
         pending_exit = False  # 是否处于待卖出状态
         pending_exit_price = 0  # 触发卖出信号时的价格
         pending_exit_days = 0  # 等待天数
@@ -3501,6 +3642,11 @@ class RSITrendStrategy(StrategyBase):
                         entry_reasons[i] = 'RSI趋势买入'
                 current_entry_reason = entry_reasons[i]
                 current_entry_class = entry_reasons[i]
+                if (current_entry_class == '慢牛回踩因子'
+                        and data is not None
+                        and 'slow_pullback_slow_family' in data.columns
+                        and bool(data['slow_pullback_slow_family'].iloc[i])):
+                    current_entry_class = '慢牛回踩因子-慢牛'
                 _trade_stop_loss = stop_loss_pct  # 默认使用正常止损
                 # 自适应止损：根据入场时大盘regime决定止损幅度
                 if _adaptive_sl_enabled and _regime_signal is not None and len(_regime_signal) > 0:
@@ -3622,7 +3768,7 @@ class RSITrendStrategy(StrategyBase):
                 hold_days += 1
                 if current_entry_class == 'MA回踩因子' and hold_days <= ma60_factor_min_hold_days:
                     exit_active = False
-                if current_entry_class == '慢牛回踩因子' and hold_days <= int(self.config.get('slow_pullback_min_hold_days', 8)):
+                if current_entry_class == '慢牛回踩因子-慢牛' and hold_days <= int(self.config.get('slow_pullback_min_hold_days', 8)):
                     exit_active = False
                 _pw_last_trade_profit = 0.0  # 初始值，每天更新
                 _pw_last_trade_hold = hold_days
@@ -3649,7 +3795,62 @@ class RSITrendStrategy(StrategyBase):
                     # Hard Loss Cap — 硬性最大亏损上限（所有入场类型生效）
                     # 如果有过热自适应止损, 使用更紧的止损
                     _effective_cap = min(hard_loss_cap_pct, _trade_stop_loss) if _trade_stop_loss < hard_loss_cap_pct else hard_loss_cap_pct
-                    if hard_loss_cap_enabled and curr_profit_pct <= -_effective_cap:
+                    _discount_hard_stop_pending = (pending_exit and pending_exit_source == 'discount_hard_stop')
+                    _discount_hard_stop_guard = False
+                    _momentum_hard_stop_pending = (pending_exit and pending_exit_source == 'momentum_hard_stop')
+                    _momentum_hard_stop_guard = False
+                    _golden_cross_hard_stop_pending = (pending_exit and pending_exit_source == 'golden_cross_hard_stop')
+                    _golden_cross_hard_stop_guard = False
+                    _continuation_hard_stop_pending = (pending_exit and pending_exit_source == 'continuation_hard_stop')
+                    _continuation_hard_stop_guard = False
+                    if current_entry_class == '折价区补仓' and data is not None:
+                        _dhs_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
+                        _dhs_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                        _discount_hard_stop_guard = (
+                            hold_days <= discount_hard_stop_hold_max
+                            and max_profit_in_trade >= discount_hard_stop_peak_min
+                            and not np.isnan(_dhs_weekly_macd) and _dhs_weekly_macd >= discount_hard_stop_weekly_macd_min
+                            and not np.isnan(_dhs_range20) and _dhs_range20 >= discount_hard_stop_range20_min
+                        )
+                    if current_entry_class == 'RSI动量加速' and data is not None:
+                        _mhs_atr_pct = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
+                        _mhs_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                        _momentum_hard_stop_guard = (
+                            hold_days <= momentum_hard_stop_hold_max
+                            and not np.isnan(_mhs_atr_pct) and _mhs_atr_pct >= momentum_hard_stop_atr_min
+                            and not np.isnan(_mhs_range20) and _mhs_range20 >= momentum_hard_stop_range20_min
+                        )
+                    if current_entry_class == 'RSI金叉' and data is not None:
+                        _gchs_atr_pct = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
+                        _gchs_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                        _golden_cross_hard_stop_guard = (
+                            hold_days <= golden_cross_hard_stop_hold_max
+                            and _effective_cap >= golden_cross_hard_stop_cap_min
+                            and _effective_cap <= golden_cross_hard_stop_cap_max
+                            and not np.isnan(_gchs_atr_pct) and _gchs_atr_pct >= golden_cross_hard_stop_atr_min
+                            and not np.isnan(_gchs_range20) and _gchs_range20 >= golden_cross_hard_stop_range20_min
+                        )
+                    if current_entry_class == 'RSI多头延续' and data is not None:
+                        _chs_atr_pct = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
+                        _chs_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                        _chs_lr20 = data['lr_slope_20'].iloc[i] if 'lr_slope_20' in data.columns else np.nan
+                        _chs_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                        _continuation_hard_stop_guard = (
+                            hold_days <= continuation_hard_stop_hold_max
+                            and _effective_cap >= continuation_hard_stop_cap_min
+                            and _effective_cap <= continuation_hard_stop_cap_max
+                            and not np.isnan(_chs_atr_pct) and _chs_atr_pct >= continuation_hard_stop_atr_min
+                            and not np.isnan(_chs_range20) and _chs_range20 >= continuation_hard_stop_range20_min
+                            and not np.isnan(_chs_lr20) and _chs_lr20 >= continuation_hard_stop_lr20_min
+                            and not np.isnan(_chs_dist_ma20) and _chs_dist_ma20 >= continuation_hard_stop_dist_ma20_min
+                        )
+                    if (hard_loss_cap_enabled
+                            and current_entry_class != '慢牛回踩因子-慢牛'
+                            and not (_discount_hard_stop_pending and curr_profit_pct > -(_effective_cap + discount_hard_stop_emergency_buffer))
+                            and not (_momentum_hard_stop_pending and curr_profit_pct > -(_effective_cap + momentum_hard_stop_emergency_buffer))
+                            and not (_golden_cross_hard_stop_pending and curr_profit_pct > -(_effective_cap + golden_cross_hard_stop_emergency_buffer))
+                            and not (_continuation_hard_stop_pending and curr_profit_pct > -(_effective_cap + continuation_hard_stop_emergency_buffer))
+                            and curr_profit_pct <= -_effective_cap):
                         _hot_stop_trend_ok = False
                         if data is not None and 'ma_120' in data.columns and i >= 40:
                             _hs_ma120 = data['ma_120'].iloc[i]
@@ -3675,6 +3876,34 @@ class RSITrendStrategy(StrategyBase):
                             and current_entry_class == 'RSI多头延续'
                             and hold_days <= 2
                         )
+                        if _discount_hard_stop_guard:
+                            pending_exit = True
+                            pending_exit_price = curr_price
+                            pending_exit_days = 0
+                            pending_exit_source = 'discount_hard_stop'
+                            position[i] = 1
+                            continue
+                        if _momentum_hard_stop_guard:
+                            pending_exit = True
+                            pending_exit_price = curr_price
+                            pending_exit_days = 0
+                            pending_exit_source = 'momentum_hard_stop'
+                            position[i] = 1
+                            continue
+                        if _golden_cross_hard_stop_guard:
+                            pending_exit = True
+                            pending_exit_price = curr_price
+                            pending_exit_days = 0
+                            pending_exit_source = 'golden_cross_hard_stop'
+                            position[i] = 1
+                            continue
+                        if _continuation_hard_stop_guard:
+                            pending_exit = True
+                            pending_exit_price = curr_price
+                            pending_exit_days = 0
+                            pending_exit_source = 'continuation_hard_stop'
+                            position[i] = 1
+                            continue
                         in_position = False
                         exit_flags[i] = 1
                         stop_flags[i] = 1
@@ -3964,7 +4193,8 @@ class RSITrendStrategy(StrategyBase):
                         if max_profit_in_trade >= _current_ts_trigger:
                             trailing_stop_active = True
 
-                    if (trailing_stop_active and not (pending_exit and pending_exit_source == 'trailing_winner')
+                    if (trailing_stop_active and current_entry_class != '慢牛回踩因子-慢牛'
+                            and not (pending_exit and pending_exit_source == 'trailing_winner')
                             and (not is_w_bottom_entry or _wb_std_exit)
                             and not is_sideways_entry and not _gap_fade_position):
                         # 双层trailing: 利润越高，floor越紧
@@ -4062,6 +4292,21 @@ class RSITrendStrategy(StrategyBase):
                                     if data is not None and 'atr_pct' in data.columns and not pd.isna(data['atr_pct'].iloc[i])
                                     else np.nan
                                 )
+                                _ts_range20 = (
+                                    data['range_20d_pct'].iloc[i]
+                                    if data is not None and 'range_20d_pct' in data.columns and not pd.isna(data['range_20d_pct'].iloc[i])
+                                    else np.nan
+                                )
+                                _ts_weekly_macd = (
+                                    data['lt_elder_weekly_macd'].iloc[i]
+                                    if data is not None and 'lt_elder_weekly_macd' in data.columns and not pd.isna(data['lt_elder_weekly_macd'].iloc[i])
+                                    else np.nan
+                                )
+                                _ts_dist_ma20 = (
+                                    data['dist_ma20'].iloc[i]
+                                    if data is not None and 'dist_ma20' in data.columns and not pd.isna(data['dist_ma20'].iloc[i])
+                                    else np.nan
+                                )
                                 _ts_failed_winner_harm_cluster = (
                                     (current_entry_class == 'RSI金叉' and _ts_close_vs_ma120_pct <= -3.0)
                                     or (
@@ -4109,9 +4354,21 @@ class RSITrendStrategy(StrategyBase):
                                     and _ts_close_vs_ma120_pct > 0.0
                                     and not _ts_failed_winner_harm_cluster
                                 )
+                                _ts_discount_soft_exit_guard = (
+                                    current_entry_class == '折价区补仓'
+                                    and 3 <= hold_days <= 20
+                                    and curr_profit_pct >= -5.5
+                                    and curr_profit_pct <= 0.0
+                                    and max_profit_in_trade >= 5.0
+                                    and not np.isnan(_ts_atr_pct) and _ts_atr_pct >= 2.0
+                                    and not np.isnan(_ts_range20) and _ts_range20 >= 12.0
+                                    and not np.isnan(_ts_weekly_macd) and -5.0 <= _ts_weekly_macd <= -1.0
+                                    and not np.isnan(_ts_dist_ma20) and _ts_dist_ma20 <= 2.2
+                                )
                                 _ts_required_confirm = trailing_stop_confirm + (1 if _ts_failed_winner_guard else 0)
                                 if _ts_pending_days >= _ts_required_confirm:
-                                    if _ts_soft_exit_guard or _ts_rsi_cross_soft_exit_guard or _ts_rsi_bull_early_soft_exit_guard:
+                                    if (_ts_soft_exit_guard or _ts_rsi_cross_soft_exit_guard
+                                            or _ts_rsi_bull_early_soft_exit_guard or _ts_discount_soft_exit_guard):
                                         pending_exit = True
                                         pending_exit_price = curr_price
                                         pending_exit_days = 0
@@ -4591,6 +4848,118 @@ class RSITrendStrategy(StrategyBase):
 
                     # 继续持有
 
+                elif current_entry_class == '慢牛回踩因子-慢牛' and entry_price and not pd.isna(curr_price):
+                    _sp_profit = (curr_price / entry_price - 1) * 100
+                    _sp_anchor_period = int(self.config.get('slow_pullback_anchor_period', 55))
+                    _sp_anchor_col = f'ma_{_sp_anchor_period}'
+                    _sp_anchor_ma = data[_sp_anchor_col].iloc[i] if data is not None and _sp_anchor_col in data.columns else np.nan
+                    _sp_ma20 = data['bb_middle'].iloc[i] if data is not None and 'bb_middle' in data.columns else np.nan
+                    _sp_rsi = data['fast_rsi'].iloc[i] if data is not None and 'fast_rsi' in data.columns else np.nan
+                    _sp_bb = data['bb_percent'].iloc[i] if data is not None and 'bb_percent' in data.columns else np.nan
+                    _sp_min_hold = int(self.config.get('slow_pullback_min_hold_days', 8))
+                    _sp_signal_hold = int(self.config.get('slow_pullback_exit_signal_hold_days', 12))
+                    _sp_anchor_break_pct = float(self.config.get('slow_pullback_exit_anchor_break_pct', 0.5))
+                    _sp_profit_take = float(self.config.get('slow_pullback_exit_profit_take_pct', 16.0))
+                    _sp_peak_trigger = float(self.config.get('slow_pullback_exit_peak_trigger_pct', 12.0))
+                    _sp_peak_drawdown = float(self.config.get('slow_pullback_exit_peak_drawdown_pct', 5.0))
+                    _sp_rsi_ob = float(self.config.get('slow_pullback_exit_rsi_overbought', 78.0))
+                    _sp_bb_ob = float(self.config.get('slow_pullback_exit_bb_overbought', 0.92))
+                    _sp_curr_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if data is not None and 'lt_elder_weekly_macd' in data.columns else np.nan
+                    _sp_curr_lr20 = data['lr_slope_20'].iloc[i] if data is not None and 'lr_slope_20' in data.columns else np.nan
+                    _sp_curr_range20 = data['range_20d_pct'].iloc[i] if data is not None and 'range_20d_pct' in data.columns else np.nan
+                    _sp_family_weekly_macd_max = float(self.config.get('slow_pullback_exit_family_weekly_macd_max', 6.5))
+                    _sp_family_lr20_max = float(self.config.get('slow_pullback_exit_family_lr20_max', 0.40))
+                    _sp_family_range20_max = float(self.config.get('slow_pullback_exit_family_range20_max', 24.0))
+                    _sp_family_dist_ma20_max = float(self.config.get('slow_pullback_exit_family_dist_ma20_max', 9.5))
+
+                    if _trade_stop_loss > 0:
+                        _sp_threshold = entry_price * (1 - _trade_stop_loss / 100.0)
+                        if curr_price <= _sp_threshold:
+                            in_position = False
+                            exit_flags[i] = 1
+                            stop_flags[i] = 1
+                            exit_reasons[i] = f'慢牛回踩-止损({_trade_stop_loss:.1f}%)'
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            position[i] = 0
+                            continue
+
+                    if hold_days < _sp_min_hold:
+                        position[i] = 1
+                        continue
+
+                    _sp_anchor_broken = (
+                        not np.isnan(_sp_anchor_ma) and _sp_anchor_ma > 0
+                        and curr_price < _sp_anchor_ma * (1 - _sp_anchor_break_pct / 100.0)
+                    )
+                    _sp_ma20_broken = (not np.isnan(_sp_ma20) and curr_price < _sp_ma20)
+                    _sp_overbought = (
+                        not np.isnan(_sp_rsi) and _sp_rsi >= _sp_rsi_ob
+                        and not np.isnan(_sp_bb) and _sp_bb >= _sp_bb_ob
+                    )
+                    _sp_peak_draw = max_profit_in_trade - _sp_profit
+                    _sp_graduated_trend = (
+                        (not np.isnan(_sp_curr_weekly_macd) and _sp_curr_weekly_macd > _sp_family_weekly_macd_max)
+                        or (not np.isnan(_sp_curr_lr20) and _sp_curr_lr20 > _sp_family_lr20_max)
+                        or (not np.isnan(_sp_curr_range20) and _sp_curr_range20 > _sp_family_range20_max)
+                        or (not np.isnan(data['dist_ma20'].iloc[i]) and data['dist_ma20'].iloc[i] > _sp_family_dist_ma20_max)
+                    )
+
+                    if _sp_profit >= _sp_profit_take and _sp_overbought:
+                        in_position = False
+                        exit_flags[i] = 1
+                        profit_target_flags[i] = 1
+                        exit_reasons[i] = '慢牛回踩-超买止盈'
+                        entry_price = None
+                        hold_days = 0
+                        trailing_stop_active = False
+                        dynamic_profit_active = False
+                        max_profit_in_trade = 0
+                        pending_exit = False
+                        pending_exit_days = 0
+                        position[i] = 0
+                        continue
+
+                    if (hold_days >= _sp_signal_hold
+                            and not _sp_graduated_trend
+                            and max_profit_in_trade >= _sp_peak_trigger
+                            and _sp_peak_draw >= _sp_peak_drawdown):
+                        in_position = False
+                        exit_flags[i] = 1
+                        profit_target_flags[i] = 1
+                        exit_reasons[i] = '慢牛回踩-回撤止盈'
+                        entry_price = None
+                        hold_days = 0
+                        trailing_stop_active = False
+                        dynamic_profit_active = False
+                        max_profit_in_trade = 0
+                        pending_exit = False
+                        pending_exit_days = 0
+                        position[i] = 0
+                        continue
+
+                    if hold_days >= _sp_signal_hold and _sp_anchor_broken and (_sp_ma20_broken or _sp_profit < 0):
+                        in_position = False
+                        exit_flags[i] = 1
+                        exit_reasons[i] = '慢牛回踩-趋势转空退出'
+                        entry_price = None
+                        hold_days = 0
+                        trailing_stop_active = False
+                        dynamic_profit_active = False
+                        max_profit_in_trade = 0
+                        pending_exit = False
+                        pending_exit_days = 0
+                        position[i] = 0
+                        continue
+
+                    position[i] = 1
+                    continue
+
                 # 非底背离、非W底、非震荡市场买入，按正常逻辑处理
                 elif not is_divergence_entry and not is_w_bottom_entry and not is_sideways_entry:
                     # 高抛低吸：检查是否满足swing sell条件
@@ -4782,11 +5151,35 @@ class RSITrendStrategy(StrategyBase):
                             # 若信号恢复，上面会直接取消 pending_exit；否则不要因为次日翻红就立刻卖，
                             # 只按 time-stop 退出，避免把刚启动的反弹腿提前卖掉。
                             bounce_ok = False
+                        elif pending_exit_source == 'discount_hard_stop':
+                            # 折价区补仓的高波动强反弹簇，硬止损更像洗盘而非趋势破坏；
+                            # 先给极短软确认窗口，信号恢复则取消，否则超时退出。
+                            bounce_ok = False
+                        elif pending_exit_source == 'momentum_hard_stop':
+                            # 动量加速早期高波动止损，常见为拉升后的剧烈洗盘；
+                            # 不因次日翻红立刻卖，只给极短确认窗口再退出。
+                            bounce_ok = False
+                        elif pending_exit_source == 'golden_cross_hard_stop':
+                            # RSI金叉 6% 高波动早期止损更像突破前洗盘；
+                            # 仅给极短确认窗口，不因次日翻红立刻退出。
+                            bounce_ok = False
+                        elif pending_exit_source == 'continuation_hard_stop':
+                            # RSI多头延续 4% 的极窄高波动早期止损子簇，经常是加速段中的洗盘；
+                            # 仅给极短确认窗口，不因次日翻红立刻退出。
+                            bounce_ok = False
                         elif bounce_exit_bounce_pct > 0:
                             bounce_ok = bounce_ok or (bounce_from_signal >= -bounce_exit_bounce_pct)
                         _pending_wait = bounce_exit_max_wait
                         if pending_exit_source == 'gap_fade':
                             _pending_wait = max(_pending_wait, 2)
+                        elif pending_exit_source == 'discount_hard_stop':
+                            _pending_wait = max(_pending_wait, discount_hard_stop_soft_wait)
+                        elif pending_exit_source == 'momentum_hard_stop':
+                            _pending_wait = max(_pending_wait, momentum_hard_stop_soft_wait)
+                        elif pending_exit_source == 'golden_cross_hard_stop':
+                            _pending_wait = max(_pending_wait, golden_cross_hard_stop_soft_wait)
+                        elif pending_exit_source == 'continuation_hard_stop':
+                            _pending_wait = max(_pending_wait, continuation_hard_stop_soft_wait)
                         timeout = (pending_exit_days >= _pending_wait)
 
                         if bounce_ok or timeout:

@@ -66,8 +66,71 @@ class RSITrendStrategy(StrategyBase):
             'trend_exit_slow_ma_period': 40,
             'trend_exit_confirm_ma_period': 15,  # (21→15: +7.28%, +0.0191 tPF, 29伤43益, excl-300274仍+6.20%)
             'trend_lr_filter_enabled': True,
-            'trend_lr_lookback': 40,            # LR下跌过滤回看天数 (30→40: +0.57%/+0.002 tPF, 5伤5益; 50: +0.13%; peak at 40)
+            'trend_lr_lookback': 48,            # LR下跌过滤回看天数 (30→40→48: +0.28%/+0.002 tPF h=4/6; 45=+0.22%, 50非最优)
             'trend_lr_max_slope_pct': 1.5,
+            'ma60_factor_pullback_enabled': True,
+            'ma60_factor_anchor_period': 45,
+            'ma60_factor_ret60_min': 5.0,
+            'ma60_factor_ret60_max': 999.0,
+            'ma60_factor_dist_ma60_min': -9.0,
+            'ma60_factor_dist_ma60_max': 6.0,
+            'ma60_factor_dist_ma20_min': -999.0,
+            'ma60_factor_dist_ma20_max': 4.0,
+            'ma60_factor_rsi14_min': 25.0,
+            'ma60_factor_rsi14_max': 62.0,
+            'ma60_factor_pct20_high_min': -11.4,
+            'ma60_factor_pct20_high_max': -10.7,
+            'ma60_factor_weekly_macd_min': 6.9,
+            'ma60_factor_weekly_macd_max': 7.7,
+            'ma60_factor_lr20_min': -0.70,
+            'ma60_factor_lr20_max': -0.35,
+            'ma60_factor_min_hold_days': 10,
+            'ma60_factor_min_vq_score': 0,
+            'ma60_factor_ignore_hurst': False,
+            'ma60_factor_use_range20': False,
+            'ma60_factor_range20_min': 12.587959,
+            'ma60_factor_range20_max': 17.002119,
+            'ma60_factor_use_ma_bullish_alignment': False,
+            'ma60_factor_ma_bullish_min': 0.25,
+            'ma60_factor_ma_bullish_max': 0.50,
+            'ma60_factor_use_ma_spread_std': False,
+            'ma60_factor_ma_spread_std_min': 4.70,
+            'ma60_factor_ma_spread_std_max': 5.80,
+            'ma60_factor_use_lt_ma120_slope': False,
+            'ma60_factor_lt_ma120_slope_min': 5.80,
+            'ma60_factor_lt_ma120_slope_max': 7.40,
+            'ma60_factor_use_lt_rsi_ma_alignment': False,
+            'ma60_factor_lt_rsi_ma_alignment_min': 38.0,
+            'ma60_factor_lt_rsi_ma_alignment_max': 45.0,
+            'ma60_factor_use_avg_gap_size': False,
+            'ma60_factor_avg_gap_size_min': 2.70,
+            'ma60_factor_avg_gap_size_max': 3.20,
+            'slow_pullback_enabled': True,
+            'slow_pullback_anchor_period': 45,
+            'slow_pullback_ret60_min': 3.0,
+            'slow_pullback_ret60_max': 30.0,
+            'slow_pullback_dist_anchor_min': 0.0,
+            'slow_pullback_dist_anchor_max': 14.0,
+            'slow_pullback_dist_ma20_min': 3.0,
+            'slow_pullback_dist_ma20_max': 11.0,
+            'slow_pullback_rsi14_min': 58.0,
+            'slow_pullback_rsi14_max': 82.0,
+            'slow_pullback_pct20_high_min': -4.5,
+            'slow_pullback_pct20_high_max': -0.4,
+            'slow_pullback_weekly_macd_min': 1.0,
+            'slow_pullback_weekly_macd_max': 6.6,
+            'slow_pullback_lr20_min': 0.05,
+            'slow_pullback_lr20_max': 1.10,
+            'slow_pullback_ma_spread_std_min': 0.40,
+            'slow_pullback_ma_spread_std_max': 2.90,
+            'slow_pullback_lt_ma120_slope_min': 1.0,
+            'slow_pullback_lt_ma120_slope_max': 5.0,
+            'slow_pullback_range20_min': 6.0,
+            'slow_pullback_range20_max': 24.0,
+            'slow_pullback_avg_gap_size_max': 0.20,
+            'slow_pullback_min_hold_days': 8,
+            'slow_pullback_min_vq_score': 0,
+            'slow_pullback_ignore_hurst': False,
             # 主升浪持仓优化配置（优化后的参数）
             'trend_main_wave_enabled': True,  # 启用主升浪检测
             'trend_main_wave_min_gain': 15.0,  # 主升浪最小涨幅阈值(%) - 10→15: +0.18%, +0.002 tPF, 0伤1益
@@ -89,15 +152,15 @@ class RSITrendStrategy(StrategyBase):
             'swing_trade_enabled': True,            # 高抛低吸开关
             'swing_min_hold_days': 8,               # 最少持仓8天才考虑
             'swing_min_profit_pct': 3.0,            # 最少浮盈3%才考虑
-            'swing_max_profit_pct': 25.0,           # 浮盈超过此值不高抛（保护大牛股）
+            'swing_max_profit_pct': 40.0,           # 浮盈超过此值不高抛（25→35→40: scan80 A4 +1.43%/+0.0025 h=0/2; 步函数在40处）
             'swing_sell_gain_threshold': 10.0,      # 涨幅超过10%才允许卖出（必须与RSI同时满足）
-            'swing_aroon_threshold': 40,            # aroon_osc绝对值 < 40 = 震荡市 (25→35: +0.59%/+0.0046, 35→40: +0.29%/+0.0014, 0伤5益; 45+: tPF↓)
+            'swing_aroon_threshold': 42,            # aroon_osc绝对值 < 42 = 震荡市 (25→35→40→42: +0.29%/+0.0012 h=1/4; 42/43/44 identical; 45+: tPF↓)
             'swing_bb_sell_threshold': 0.80,        # bb_percent > 0.80 = 高位（必须满足）
             'swing_rsi_sell_threshold': 65,         # fast_rsi > 65 = 超买
             'swing_volume_surge_block': 1.8,        # 成交量 > 1.8倍均量时不卖（放量突破保护）
             'swing_bb_rebuy_threshold': 0.35,       # bb_percent < 0.35 = 回到低位买回（优化：0.50→0.35⭐）
             'swing_rsi_rebuy_threshold': 40,        # fast_rsi < 40 = 超卖买回
-            'swing_stoch_k_rebuy_threshold': 23,    # KDJ K线 < 23 = 超卖买回 (30→25: +3.13%, 25→23: +0.17%/0伤1益; 24-25相同; 26+负效果)
+            'swing_stoch_k_rebuy_threshold': 18,    # KDJ K线 < 18 = 超卖买回 (30→25: +3.13%, 25→23: +0.17%, 23→19: +1.29%, 19→18: +0.13%/+0.0003 h=0/1)
             'swing_rebuy_drop_pct': 999.0,          # 禁用纯跌幅回买（优化：4.0→禁用，提升胜率⭐）
             'swing_breakout_chase_pct': 999.0,      # 禁用普通追高买回（分析显示追高胜率低）
             'swing_breakout_max_gap_pct': 999.0,    # 禁用普通追高买回
@@ -105,7 +168,7 @@ class RSITrendStrategy(StrategyBase):
             'swing_next_day_up_rebuy': False,       # 次日收涨立即买回（分析发现容易追高，默认关闭）
             'swing_volume_breakout_rebuy': True,    # 放量突破买回（真突破信号）
             'swing_volume_breakout_ratio': 1.8,     # 放量突破的量比阈值
-            'swing_max_wait_days': 5,               # (8→5: +0.80%, +0.0009 tPF, 0伤1益)
+            'swing_max_wait_days': 4,               # (8→5→4: scan77 C1 +0.30%/+0.0020, h=0/2)
             'swing_max_loss_from_sell_pct': 5.0,    # 跌超过卖出价5%放弃买回
             'swing_trend_reversal_giveup': True,    # trend_direction变-1则放弃
 
@@ -127,7 +190,7 @@ class RSITrendStrategy(StrategyBase):
             'sideways_exit_sl_pct': 5.0,           # 退出条件3：止损%
 
             # 主升浪延长持仓（Extended Hold）
-            'extended_hold_profit_threshold': 35, # 浮盈>X%时触发延长持仓 (30→35: +0.49%, 5伤15益, 分布均匀)
+            'extended_hold_profit_threshold': 38, # 浮盈>X%时触发延长持仓 (30→35→38: +0.96%/+0.0046 h=0/7; 40: cliff -2.93%)
             # extended_hold_drawdown默认5(get()取): 5→6测avg+9.19%但仅因300274+1486%(12伤3益); 不通用
             'extended_hold_peak_trailing': 20,    # 从最高浮盈回撤X%后退出
             'extended_hold_peak_activation_offset': 999,  # 峰值回撤激活偏移
@@ -143,7 +206,7 @@ class RSITrendStrategy(StrategyBase):
 
             # 滞涨退出（浮盈达标后连续N天未创新高）
             'stale_peak_enabled': True,
-            'stale_peak_min_profit': 40,          # 浮盈>X%时才检查
+            'stale_peak_min_profit': 28,          # 浮盈>X%时才检查 (40→30→28: +3.65%/+0.0041; scan22: 28=29 identical)
             'stale_peak_max_days': 30,            # 未创新高天数阈值 (25→30: +1.09%/+0.017 tPF, 10伤11益; 35: avg↓2.6%)
 
             # 早期止损收紧
@@ -164,6 +227,18 @@ class RSITrendStrategy(StrategyBase):
             'trailing_stop_level': 1.5,            # 回到入场价+level%就卖 (0→1.5: +10.22%/+0.0346 tPF; 1.5 > 2.0: +1.74%/+0.0231 tPF, 44伤41益; 4: catastrophic)
             'trailing_stop_trigger2': 0,          # 双层trailing: 更高利润时使用更紧floor（0=关闭）
             'trailing_stop_level2': 8,            # 高层trailing floor
+            # 入场类型专属trailing触发点（0=使用全局默认；弱信号入场更早激活trailing保护资本）
+            'golden_cross_trailing_trigger': 5.0,  # RSI金叉专属trigger（scan65 E1_gc50: +0.27%/+0.0038 tPF, h=5/8; 5.5% catastrophic 300757-325）
+            'w_bottom_trailing_trigger': 0,        # W底形态专属trigger（non-binding: W底缓冲期逻辑覆盖trailing）
+            'discount_zone_trailing_trigger': 5.5,  # 折价区补仓专属trigger（scan63 A4: +1.34%/+0.0054 tPF, h=3/8）
+            'dual_channel_trailing_trigger': 5.5,   # 双通道信号专属trigger（scan64 B4: marginal +0.42%/+0.0014, h=0/1）
+            # 入场类型专属trailing floor（scan59: gc_lv25+dc_lv25=C4: +5.37%/+0.0043 tPF, 002407+201, 300757+325）
+            'golden_cross_trailing_level': 2.3,    # RSI金叉专属trailing floor（scan67 C1: +0.43%/+0.0055, h=6/6; trigger=5.0时window=2.7%最优）
+            'dual_channel_trailing_level': 2.5,    # 双通道信号专属trailing floor（近乎non-binding，+0.0016 tPF）
+            'continuation_trailing_level': 0,      # RSI多头延续专属trailing floor（0=使用全局1.5%; scan61: 全部负向）
+            'rsi_trend_trailing_level': 0,         # RSI趋势买入专属trailing floor（0=使用全局1.5%; scan61: non-binding）
+            'discount_zone_trailing_level': 3.5,    # 折价区补仓专属trailing floor（scan64 A1: +2.33%/+0.0015 tPF; lv4.0+ catastrophic）
+            'w_bottom_trailing_level': 0,          # W底形态专属trailing floor（0=使用全局1.5%; scan62测试）
             'trailing_stop_confirm': 1,           # 确认K线数（0=立即卖出，1=1日确认过滤假信号）
             'trailing_stop_panic_skip': 0,        # 恐慌过滤（0=关闭）
             'trailing_stop_calm_threshold': 0,    # 平稳期突跌过滤（0=关闭）
@@ -182,9 +257,9 @@ class RSITrendStrategy(StrategyBase):
 
             # 放量阴线+均线偏离退出
             'dist_madev_exit_enabled': True,
-            'dist_madev_exit_min_profit': 30,     # 浮盈>X%时才检查（30%更合理，防止过早卖飞）
+            'dist_madev_exit_min_profit': 24,     # 浮盈>X%时才检查（scan66 C1: +1.95%/+0.0032; scan77 B3: 25→24 +0.49%/+0.0016 h=0/1）
             'dist_madev_exit_ma_period': 13,      # 均线周期 (20→13: +1.94%/+0.0174 tPF, 10伤7益; 300757-222%但tPF强; 12/14更差)
-            'dist_madev_exit_dev_pct': 22,        # 偏离均线>X% (25→22: +1.41%/+0.001 tPF, 2伤5益; 20-21: avg↑6%但tPF↓)
+            'dist_madev_exit_dev_pct': 24,        # 偏离均线>X% (scan65 C3: +3.52%/+0.0200 tPF, h=5/4; 23=non-binding; 21=catastrophic)
             'dist_madev_exit_vol_mult': 2.2,      # 放量阈值（倍均量）
 
             # Hurst Exponent趋势过滤器
@@ -202,6 +277,14 @@ class RSITrendStrategy(StrategyBase):
             'slope_downtrend_period': 180,            # 超长期斜率周期（天）
             'slope_downtrend_threshold': -0.0042,     # 斜率阈值（负数，越小=越严格）
             'slope_downtrend_pearson': 0.70,          # Pearson R²最低确定性
+
+            # 三维Regime过滤: 下跌趋势中的无方向高位震荡屏蔽入场
+            # pp250>0.5(高位) + slope250<-0.02%(下跌) + er250<0.01(无方向) → 假突破
+            # avg+6.89%/tPF+0.0096, 屏蔽好2坏11, 改善11/恶化2, 关键股0影响
+            'regime_filter_enabled': True,
+            'regime_filter_pp250_min': 0.50,       # 250日价格位置>此值=高位
+            'regime_filter_slope250_max': -0.02,    # 250日趋势斜率<此值=下跌
+            'regime_filter_er250_max': 0.01,        # 250日效率比<此值=无方向
 
             # Hard Loss Cap（硬性最大亏损上限）
             'hard_loss_cap_enabled': True,            # 启用硬性亏损上限
@@ -221,7 +304,7 @@ class RSITrendStrategy(StrategyBase):
             # MA60止盈保护: 信号退出时若浮盈足够且价格在MA60上方, 改用MA60破位止盈
             # 只对大赢家(浮盈>140%)生效 — 保护趋势强劲的大运; 普通交易正常ATR退出
             'ma60_protect_enabled': True,              # 启用MA60止盈保护
-            'ma60_protect_profit_min': 140.0,          # 最低浮盈门槛%(推荐140%: 0伤害+7受益+tPF↑)
+            'ma60_protect_profit_min': 125.0,          # 最低浮盈门槛%(140→130→125: scan76 A2: +0.46%/+0.0021 h=0/1 CLEAN; 120=worse)
             'ma60_protect_hold_min': 20,               # 最少持仓天数(避免信号过早转换)
 
             # EH退出MA120确认: 要求连续N天跌破MA120才退出(单日跌破=调整，连续跌破=真反转)
@@ -301,13 +384,15 @@ class RSITrendStrategy(StrategyBase):
             'golden_cross_stop_loss_pct': 6.0,        # RSI金叉专属止损% (PF=2.05最弱; scan42: +0.72%/+0.0099 tPF; 0=使用默认)
             'w_bottom_stop_loss_pct': 5.0,            # W底形态专属止损% (PF=1.69; scan48: +1.13%/+0.0067 tPF; 0=使用默认)
             'discount_zone_stop_loss_pct': 6.0,       # 折价区补仓专属止损% (PF=2.68; scan48: +0.63%/+0.0035 tPF; 0=使用默认)
+            'dual_channel_stop_loss_pct': 0,          # 双通道信号专属止损% (PF=1.55最低; scan58测试; 0=使用默认)
 
             # 上升趋势早期入场过滤（scan41: gap=2.5/d=2: +0.40%/+0.0085 tPF, 9伤10益）
             'entry_early_trend_gap': 2.5,             # 上升趋势前N天的relaxed_condition入场要求 rsi_diff >= X
             'entry_early_trend_max_day': 2,           # 适用的最大趋势天数N
 
+
             # W底缓冲期参数
-            'wb_buffer_stop_pct': 8,                  # W底缓冲期止损：跌破W2低点X%
+            'wb_buffer_stop_pct': 5,                  # W底缓冲期止损：8→6(scan23)+0.31%/+0.0007; 6→5(scan76)+0.03%/+0.0019 h=3/2
             'wb_buffer_profit_pct': 999,              # W底缓冲期止盈：涨幅X%（999=禁用）
 
             # Gap Fade（跳空回补入场）
@@ -340,8 +425,8 @@ class RSITrendStrategy(StrategyBase):
 
             # 放量冲高回落退出（上影线>实体+收盘下半区+放量）
             'vol_climax_exit_enabled': True,
-            'vol_climax_exit_min_profit': 15,     # 最低利润%（优化：8→15, dPF +0.022）
-            'vol_climax_exit_vol_mult': 3.0,      # 放量倍数阈值（优化：2.5→3.0）
+            'vol_climax_exit_min_profit': 15,     # 最低利润%（优化：8→15→18→16→15 with vcm=3.1; scan75 A2: +0.10%/+0.0013 h=0/1; vc=14 tPF-0.0015失效）
+            'vol_climax_exit_vol_mult': 3.1,      # 放量倍数阈值（优化：2.5→3.0→3.1: +1.95%/+0.0068 h=0/5, 01797+211）
             'vol_climax_exit_require_new_high': False,  # (True→False: +1.53%, +0.0049 tPF, 1伤3益, 300274无影响)
 
             # ROC动量衰竭退出（ROC正值但连续下降=加速度为负）
@@ -355,6 +440,7 @@ class RSITrendStrategy(StrategyBase):
             'market_breadth_file': '',                    # 宽度CSV路径 (空=自动查找)
             'market_breadth_threshold': 0.35,             # 宽度阈值: >=X比例股票在MA120上方才允许入场
             'market_breadth_smooth': 5,                   # 宽度信号平滑天数 (0=不平滑)
+
         }
         if config:
             defaults.update(config)
@@ -924,11 +1010,59 @@ class RSITrendStrategy(StrategyBase):
         data['cci_20'] = (_cci_tp - _cci_ma) / (0.015 * _cci_md.replace(0, np.nan))
 
         # Distance from MA20 (%) - bb_middle is the 20-day SMA
+        data['ma_20'] = bb_middle
         data['dist_ma20'] = (data['close'] - bb_middle) / bb_middle.replace(0, np.nan) * 100
 
         # MA60 and distance from it (%)
+        data['ma_5'] = data['close'].rolling(5).mean()
+        data['ma_10'] = data['close'].rolling(10).mean()
+        data['ma_45'] = data['close'].rolling(45).mean()
+        data['ma_50'] = data['close'].rolling(50).mean()
+        data['ma_55'] = data['close'].rolling(55).mean()
         data['ma_60'] = data['close'].rolling(60).mean()
+        data['ma_65'] = data['close'].rolling(65).mean()
+        data['ma_70'] = data['close'].rolling(70).mean()
+        data['ma_250'] = data['close'].rolling(250).mean()
         data['dist_ma60'] = (data['close'] - data['ma_60']) / data['ma_60'].replace(0, np.nan) * 100
+        data['pct_from_20d_high'] = (data['close'] / data['high'].rolling(20).max() - 1) * 100
+        data['range_20d_pct'] = (
+            (data['high'].rolling(20).max() - data['low'].rolling(20).min())
+            / data['close'].replace(0, np.nan)
+            * 100
+        )
+        _ma_spreads = pd.concat([
+            (data['ma_5'] - data['ma_10']) / data['close'].replace(0, np.nan) * 100,
+            (data['ma_10'] - data['ma_20']) / data['close'].replace(0, np.nan) * 100,
+            (data['ma_20'] - data['ma_60']) / data['close'].replace(0, np.nan) * 100,
+            (data['ma_60'] - data['ma_120']) / data['close'].replace(0, np.nan) * 100,
+        ], axis=1)
+        data['ma_spread_std'] = _ma_spreads.std(axis=1, ddof=0)
+        data['lt_ma120_slope_20d'] = (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100
+        data['rsi_29'] = rsi_indicator(data['close'], period=29)
+        _ma20_safe = data['ma_20'].fillna(data['close'])
+        _ma60_safe = data['ma_60'].fillna(data['close'])
+        _ma120_safe = data['ma_120'].fillna(data['close'])
+        _ma250_safe = data['ma_250'].fillna(data['close'])
+        data['lt_ma_alignment_full'] = (
+            (_ma20_safe > _ma60_safe).astype(float)
+            + (_ma60_safe > _ma120_safe).astype(float)
+            + (_ma120_safe > _ma250_safe).astype(float)
+        ) / 3.0
+        data['lt_rsi_x_ma_alignment'] = data['rsi_29'] * data['lt_ma_alignment_full']
+        _gap_pct = (data['close'] / data['close'].shift(1) - 1) * 100
+        _sig_gap = _gap_pct.where(_gap_pct.abs() > 1.0)
+        data['avg_gap_size'] = _sig_gap.abs().rolling(20).mean().fillna(0)
+
+        _ma_alignment_score = pd.Series(np.nan, index=data.index, dtype=float)
+        _ma_alignment_periods = ['ma_5', 'ma_10', 'ma_20', 'ma_60', 'ma_120']
+        valid_count = 0
+        bullish_count = 0
+        for left_col, right_col in zip(_ma_alignment_periods[:-1], _ma_alignment_periods[1:]):
+            _valid = data[left_col].notna() & data[right_col].notna()
+            valid_count += _valid.astype(int)
+            bullish_count += (_valid & (data[left_col] > data[right_col])).astype(int)
+        _ma_alignment_score = bullish_count / valid_count.replace(0, np.nan)
+        data['ma_bullish_alignment'] = _ma_alignment_score.fillna(0.5)
 
         # RSI 14-period (for scoring, separate from fast_rsi which may be 5-period)
         data['rsi_14'] = rsi_indicator(data['close'], period=14)
@@ -941,6 +1075,12 @@ class RSITrendStrategy(StrategyBase):
             mean_val = np.mean(x)
             return slope / mean_val * 100 if mean_val != 0 else 0
         data['lr_slope_10'] = data['close'].rolling(10).apply(_lr_slope_norm, raw=True)
+        data['lr_slope_20'] = data['close'].rolling(20).apply(_lr_slope_norm, raw=True)
+
+        # Supplementary MA60 pullback factors
+        _ema65 = data['close'].ewm(span=65, adjust=False).mean()
+        _ema130 = data['close'].ewm(span=130, adjust=False).mean()
+        data['lt_elder_weekly_macd'] = (_ema65 - _ema130) / data['close'].replace(0, np.nan) * 100
 
         # MFI (Money Flow Index, 14-period) - 量价RSI，做T超买超卖信号
         _mfi_tp = (data['high'] + data['low'] + data['close']) / 3
@@ -986,6 +1126,109 @@ class RSITrendStrategy(StrategyBase):
             (~data['is_m_top']) &
             (~data['atr_expanding'])
         )
+
+        ma60_factor_pullback_entry = pd.Series(False, index=data.index)
+        if bool(self.config.get('ma60_factor_pullback_enabled', False)):
+            _anchor_period = int(self.config.get('ma60_factor_anchor_period', 60))
+            _anchor_col = f'ma_{_anchor_period}'
+            _anchor_ma = data[_anchor_col] if _anchor_col in data.columns else data['ma_60']
+            _dist_anchor = (data['close'] - _anchor_ma) / _anchor_ma.replace(0, np.nan) * 100
+            _ret60 = (data['close'] / data['close'].shift(60) - 1) * 100
+            _ma60_rising = _anchor_ma > _anchor_ma.shift(20)
+            _ma120_rising = data['ma_120'] > data['ma_120'].shift(40)
+            ma60_factor_pullback_entry = (
+                _ma60_rising.fillna(False)
+                & _ma120_rising.fillna(False)
+                & (data['close'] >= data['ma_120'])
+                & (_ret60 >= float(self.config.get('ma60_factor_ret60_min', 5.0)))
+                & (_ret60 <= float(self.config.get('ma60_factor_ret60_max', 999.0)))
+                & (_dist_anchor >= float(self.config.get('ma60_factor_dist_ma60_min', -8.0)))
+                & (_dist_anchor <= float(self.config.get('ma60_factor_dist_ma60_max', 4.0)))
+                & (data['dist_ma20'] >= float(self.config.get('ma60_factor_dist_ma20_min', -999.0)))
+                & (data['dist_ma20'] <= float(self.config.get('ma60_factor_dist_ma20_max', 4.0)))
+                & (data['rsi_14'] >= float(self.config.get('ma60_factor_rsi14_min', 25.0)))
+                & (data['rsi_14'] <= float(self.config.get('ma60_factor_rsi14_max', 62.0)))
+                & (data['pct_from_20d_high'] >= float(self.config.get('ma60_factor_pct20_high_min', -11.322139)))
+                & (data['pct_from_20d_high'] <= float(self.config.get('ma60_factor_pct20_high_max', -10.576003)))
+                & (data['lt_elder_weekly_macd'] >= float(self.config.get('ma60_factor_weekly_macd_min', 7.176894)))
+                & (data['lt_elder_weekly_macd'] <= float(self.config.get('ma60_factor_weekly_macd_max', 7.591475)))
+                & (data['lr_slope_20'] >= float(self.config.get('ma60_factor_lr20_min', -0.489079)))
+                & (data['lr_slope_20'] <= float(self.config.get('ma60_factor_lr20_max', -0.344042)))
+            )
+            if bool(self.config.get('ma60_factor_use_range20', False)):
+                ma60_factor_pullback_entry = (
+                    ma60_factor_pullback_entry
+                    & (data['range_20d_pct'] >= float(self.config.get('ma60_factor_range20_min', 12.587959)))
+                    & (data['range_20d_pct'] <= float(self.config.get('ma60_factor_range20_max', 17.002119)))
+                )
+            if bool(self.config.get('ma60_factor_use_ma_bullish_alignment', False)):
+                ma60_factor_pullback_entry = (
+                    ma60_factor_pullback_entry
+                    & (data['ma_bullish_alignment'] >= float(self.config.get('ma60_factor_ma_bullish_min', 0.25)))
+                    & (data['ma_bullish_alignment'] <= float(self.config.get('ma60_factor_ma_bullish_max', 0.50)))
+                )
+            if bool(self.config.get('ma60_factor_use_ma_spread_std', False)):
+                ma60_factor_pullback_entry = (
+                    ma60_factor_pullback_entry
+                    & (data['ma_spread_std'] >= float(self.config.get('ma60_factor_ma_spread_std_min', 4.70)))
+                    & (data['ma_spread_std'] <= float(self.config.get('ma60_factor_ma_spread_std_max', 5.80)))
+                )
+            if bool(self.config.get('ma60_factor_use_lt_ma120_slope', False)):
+                ma60_factor_pullback_entry = (
+                    ma60_factor_pullback_entry
+                    & (data['lt_ma120_slope_20d'] >= float(self.config.get('ma60_factor_lt_ma120_slope_min', 5.80)))
+                    & (data['lt_ma120_slope_20d'] <= float(self.config.get('ma60_factor_lt_ma120_slope_max', 7.40)))
+                )
+            if bool(self.config.get('ma60_factor_use_lt_rsi_ma_alignment', False)):
+                ma60_factor_pullback_entry = (
+                    ma60_factor_pullback_entry
+                    & (data['lt_rsi_x_ma_alignment'] >= float(self.config.get('ma60_factor_lt_rsi_ma_alignment_min', 38.0)))
+                    & (data['lt_rsi_x_ma_alignment'] <= float(self.config.get('ma60_factor_lt_rsi_ma_alignment_max', 45.0)))
+                )
+            if bool(self.config.get('ma60_factor_use_avg_gap_size', False)):
+                ma60_factor_pullback_entry = (
+                    ma60_factor_pullback_entry
+                    & (data['avg_gap_size'] >= float(self.config.get('ma60_factor_avg_gap_size_min', 2.70)))
+                    & (data['avg_gap_size'] <= float(self.config.get('ma60_factor_avg_gap_size_max', 3.20)))
+                )
+        data['ma60_factor_pullback_entry'] = ma60_factor_pullback_entry
+
+        slow_pullback_entry = pd.Series(False, index=data.index)
+        if bool(self.config.get('slow_pullback_enabled', False)):
+            _slow_anchor_period = int(self.config.get('slow_pullback_anchor_period', 45))
+            _slow_anchor_col = f'ma_{_slow_anchor_period}'
+            _slow_anchor_ma = data[_slow_anchor_col] if _slow_anchor_col in data.columns else data['ma_45']
+            _slow_dist_anchor = (data['close'] - _slow_anchor_ma) / _slow_anchor_ma.replace(0, np.nan) * 100
+            _slow_ret60 = (data['close'] / data['close'].shift(60) - 1) * 100
+            _slow_anchor_rising = _slow_anchor_ma > _slow_anchor_ma.shift(20)
+            _slow_ma120_rising = data['ma_120'] > data['ma_120'].shift(40)
+            slow_pullback_entry = (
+                _slow_anchor_rising.fillna(False)
+                & _slow_ma120_rising.fillna(False)
+                & (data['close'] >= data['ma_120'])
+                & (_slow_ret60 >= float(self.config.get('slow_pullback_ret60_min', 3.0)))
+                & (_slow_ret60 <= float(self.config.get('slow_pullback_ret60_max', 35.0)))
+                & (_slow_dist_anchor >= float(self.config.get('slow_pullback_dist_anchor_min', 0.0)))
+                & (_slow_dist_anchor <= float(self.config.get('slow_pullback_dist_anchor_max', 18.0)))
+                & (data['dist_ma20'] >= float(self.config.get('slow_pullback_dist_ma20_min', 3.5)))
+                & (data['dist_ma20'] <= float(self.config.get('slow_pullback_dist_ma20_max', 15.5)))
+                & (data['rsi_14'] >= float(self.config.get('slow_pullback_rsi14_min', 52.0)))
+                & (data['rsi_14'] <= float(self.config.get('slow_pullback_rsi14_max', 82.0)))
+                & (data['pct_from_20d_high'] >= float(self.config.get('slow_pullback_pct20_high_min', -5.0)))
+                & (data['pct_from_20d_high'] <= float(self.config.get('slow_pullback_pct20_high_max', -0.2)))
+                & (data['lt_elder_weekly_macd'] >= float(self.config.get('slow_pullback_weekly_macd_min', 1.5)))
+                & (data['lt_elder_weekly_macd'] <= float(self.config.get('slow_pullback_weekly_macd_max', 7.2)))
+                & (data['lr_slope_20'] >= float(self.config.get('slow_pullback_lr20_min', 0.05)))
+                & (data['lr_slope_20'] <= float(self.config.get('slow_pullback_lr20_max', 1.40)))
+                & (data['ma_spread_std'] >= float(self.config.get('slow_pullback_ma_spread_std_min', 0.40)))
+                & (data['ma_spread_std'] <= float(self.config.get('slow_pullback_ma_spread_std_max', 3.30)))
+                & (data['lt_ma120_slope_20d'] >= float(self.config.get('slow_pullback_lt_ma120_slope_min', 1.0)))
+                & (data['lt_ma120_slope_20d'] <= float(self.config.get('slow_pullback_lt_ma120_slope_max', 7.0)))
+                & (data['range_20d_pct'] >= float(self.config.get('slow_pullback_range20_min', 5.0)))
+                & (data['range_20d_pct'] <= float(self.config.get('slow_pullback_range20_max', 28.0)))
+                & (data['avg_gap_size'] <= float(self.config.get('slow_pullback_avg_gap_size_max', 0.20)))
+            )
+        data['slow_pullback_entry'] = slow_pullback_entry
 
         # 入场质量过滤器（基于多因子分析，按类型选择性应用）
         data['standard_entry_raw'] = standard_entry.copy()
@@ -1035,7 +1278,17 @@ class RSITrendStrategy(StrategyBase):
                 standard_entry = standard_entry & ~streak_block
                 rsi_momentum_entry = rsi_momentum_entry & ~streak_block
 
-        entry_condition = standard_entry | divergence_entry | dual_channel_entry | w_bottom_entry | discount_zone_entry | sideways_entry | rsi_momentum_entry
+        entry_condition = (
+            standard_entry
+            | divergence_entry
+            | dual_channel_entry
+            | w_bottom_entry
+            | discount_zone_entry
+            | sideways_entry
+            | rsi_momentum_entry
+            | ma60_factor_pullback_entry
+            | slow_pullback_entry
+        )
 
         gap_fade_entry = pd.Series(False, index=data.index)
 
@@ -1059,6 +1312,8 @@ class RSITrendStrategy(StrategyBase):
             hurst_window = int(self.config['hurst_window'])
             mean_revert_threshold = float(self.config['hurst_mean_revert_threshold'])
             trending_threshold = float(self.config['hurst_trending_threshold'])
+            ma60_ignore_hurst = bool(self.config.get('ma60_factor_ignore_hurst', False))
+            slow_ignore_hurst = bool(self.config.get('slow_pullback_ignore_hurst', False))
 
             # 每隔20天重新计算Hurst指数
             hurst_vals = pd.Series(0.5, index=data.index)
@@ -1076,7 +1331,11 @@ class RSITrendStrategy(StrategyBase):
                     continue
                 h = hurst_vals.iloc[i]
                 if h < mean_revert_threshold:
-                    if standard_entry.iloc[i] or dual_channel_entry.iloc[i] or rsi_momentum_entry.iloc[i]:
+                    if ma60_ignore_hurst and ma60_factor_pullback_entry.iloc[i]:
+                        continue
+                    if slow_ignore_hurst and slow_pullback_entry.iloc[i]:
+                        continue
+                    if standard_entry.iloc[i] or dual_channel_entry.iloc[i] or rsi_momentum_entry.iloc[i] or ma60_factor_pullback_entry.iloc[i] or slow_pullback_entry.iloc[i]:
                         entry_condition.iloc[i] = False
                 elif h > trending_threshold:
                     if sideways_entry.iloc[i] or discount_zone_entry.iloc[i]:
@@ -1086,12 +1345,18 @@ class RSITrendStrategy(StrategyBase):
         vq_enabled = bool(self.config['volume_quality_enabled'])
         if vq_enabled and 'volume' in data.columns:
             min_score = int(self.config['vq_min_score'])
+            ma60_min_vq_score = float(self.config.get('ma60_factor_min_vq_score', 0))
+            slow_min_vq_score = float(self.config.get('slow_pullback_min_vq_score', 0))
             vq_scores = pd.Series(0.0, index=data.index)
             for i in range(len(data)):
                 vq_scores.iloc[i] = self._calculate_volume_quality_score(data, i)
             for i in range(len(data)):
                 if entry_condition.iloc[i] and vq_scores.iloc[i] < min_score:
                     if divergence_entry.iloc[i] or w_bottom_entry.iloc[i]:
+                        continue
+                    if ma60_factor_pullback_entry.iloc[i] and vq_scores.iloc[i] >= ma60_min_vq_score:
+                        continue
+                    if slow_pullback_entry.iloc[i] and vq_scores.iloc[i] >= slow_min_vq_score:
                         continue
                     entry_condition.iloc[i] = False
             data['volume_quality_score'] = vq_scores
@@ -1125,6 +1390,49 @@ class RSITrendStrategy(StrategyBase):
                                 entry_condition.iloc[i] = False
                 after_count = entry_condition.sum()
                 logger.debug(f"[Slope DT] period={slope_dt_period} slope<{slope_dt_threshold} pearson>{slope_dt_pearson}: {before_count}->{after_count}")
+
+        # 三维Regime过滤: 下跌趋势中的无方向高位震荡 → 屏蔽入场
+        if self.config.get('regime_filter_enabled', True):
+            pp250_min = float(self.config.get('regime_filter_pp250_min', 0.50))
+            slope250_max = float(self.config.get('regime_filter_slope250_max', -0.02))
+            er250_max = float(self.config.get('regime_filter_er250_max', 0.01))
+            close_arr = data['close'].values
+            high_arr = data['high'].values
+            low_arr = data['low'].values
+            n_bars = len(close_arr)
+            before_count = entry_condition.sum()
+            for i in range(250, n_bars):
+                if not entry_condition.iloc[i]:
+                    continue
+                # 250日价格位置
+                h250 = np.max(high_arr[i-249:i+1])
+                l250 = np.min(low_arr[i-249:i+1])
+                pp250 = (close_arr[i] - l250) / (h250 - l250) if h250 > l250 else 0.5
+                if pp250 <= pp250_min:
+                    continue
+                # 250日趋势斜率
+                x250 = np.arange(250, dtype=float)
+                y250 = close_arr[i-249:i+1]
+                slope = np.polyfit(x250, y250, 1)[0]
+                slope_pct = slope / np.mean(y250) * 100
+                if slope_pct >= slope250_max:
+                    continue
+                # 250日效率比
+                net = abs(close_arr[i] - close_arr[i-250])
+                path = 0
+                for j in range(i-250, i):
+                    path += abs(close_arr[j+1] - close_arr[j])
+                er250 = net / (path + 1e-10)
+                if er250 >= er250_max:
+                    continue
+                # 三个条件同时满足: 屏蔽入场
+                # 但保留底背离和W底（它们是底部反转信号）
+                if divergence_entry.iloc[i] or w_bottom_entry.iloc[i]:
+                    continue
+                entry_condition.iloc[i] = False
+            after_count = entry_condition.sum()
+            if before_count != after_count:
+                logger.debug(f"[Regime Filter] pp250>{pp250_min} slope<{slope250_max}% er<{er250_max}: {before_count}->{after_count}")
 
         # 整理内存碎片，消除后续列赋值的PerformanceWarning
         data = data.copy()
@@ -2092,6 +2400,7 @@ class RSITrendStrategy(StrategyBase):
         _gc_sl = float(self.config.get('golden_cross_stop_loss_pct', 0))
         _wb_sl_custom = float(self.config.get('w_bottom_stop_loss_pct', 0))
         _disc_sl = float(self.config.get('discount_zone_stop_loss_pct', 0))
+        _dc_sl = float(self.config.get('dual_channel_stop_loss_pct', 0))
         # 上升趋势早期过滤参数
         _early_trend_gap = float(self.config.get('entry_early_trend_gap', 0))
         _early_trend_max_day = int(self.config.get('entry_early_trend_max_day', 2))
@@ -2101,6 +2410,7 @@ class RSITrendStrategy(StrategyBase):
         # W底缓冲期参数
         wb_buffer_stop_pct = float(self.config['wb_buffer_stop_pct'])
         wb_buffer_profit_pct = float(self.config['wb_buffer_profit_pct'])
+        ma60_factor_min_hold_days = int(self.config.get('ma60_factor_min_hold_days', 3))
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
 
@@ -2121,6 +2431,18 @@ class RSITrendStrategy(StrategyBase):
         # 双层trailing stop: 更高利润时使用更紧的floor
         trailing_stop_trigger2 = float(self.config['trailing_stop_trigger2'])  # 0=关闭
         trailing_stop_level2 = float(self.config['trailing_stop_level2'])
+        # 入场类型专属trailing触发点
+        _gc_ts_trigger  = float(self.config.get('golden_cross_trailing_trigger', 0))
+        _wb_ts_trigger  = float(self.config.get('w_bottom_trailing_trigger', 0))
+        _disc_ts_trigger = float(self.config.get('discount_zone_trailing_trigger', 0))
+        _dc_ts_trigger  = float(self.config.get('dual_channel_trailing_trigger', 0))
+        # 入场类型专属trailing floor
+        _gc_ts_level    = float(self.config.get('golden_cross_trailing_level', 0))
+        _dc_ts_level    = float(self.config.get('dual_channel_trailing_level', 0))
+        _cont_ts_level  = float(self.config.get('continuation_trailing_level', 0))
+        _trend_ts_level = float(self.config.get('rsi_trend_trailing_level', 0))
+        _disc_ts_level  = float(self.config.get('discount_zone_trailing_level', 0))
+        _wb_ts_level    = float(self.config.get('w_bottom_trailing_level', 0))
         trailing_stop_confirm = int(self.config['trailing_stop_confirm'])  # 确认K线数, 0=立即卖出
         # 恐慌过滤：当日跌幅超过阈值时不触发trailing stop（认为是恐慌性下杀，可能V型反转）
         trailing_stop_panic_skip = float(self.config['trailing_stop_panic_skip'])  # 0=关闭, 如-5表示当日跌>5%时不卖
@@ -2130,6 +2452,8 @@ class RSITrendStrategy(StrategyBase):
         trailing_stop_active = False  # 当前是否已激活
         _ts_pending = False  # trailing stop是否在等待确认
         _ts_pending_days = 0  # 已等待确认的天数
+        _current_ts_trigger = trailing_stop_trigger  # 当前持仓的有效trailing触发点（入场时按类型更新）
+        _current_ts_level = trailing_stop_level      # 当前持仓的有效trailing floor（入场时按类型更新）
         max_profit_in_trade = 0  # 当前交易中的最大浮盈%
 
         dynamic_profit_trigger = float(self.config.get('dynamic_profit_trigger', 0))  # 浮盈达X%后激活动态止盈,0=关闭
@@ -2503,6 +2827,7 @@ class RSITrendStrategy(StrategyBase):
                     _trend_age_arr[_ta_i] = _trend_age_arr[_ta_i - 1] + 1
                 else:
                     _trend_age_arr[_ta_i] = 0
+
 
         for i in range(n):
             entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
@@ -3162,6 +3487,10 @@ class RSITrendStrategy(StrategyBase):
                     _gap_fade_prev_close = data['close'].iloc[i - 1] if data is not None and i > 0 else np.nan
                     _gap_fade_reclaimed = False
                     _gap_fade_reclaim_idx = -1
+                elif data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]):
+                    entry_reasons[i] = 'MA回踩因子'
+                elif data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]):
+                    entry_reasons[i] = '慢牛回踩因子'
                 else:
                     # 标准RSI入场 - 区分金叉和多头延续
                     if data is not None and 'golden_cross' in data.columns and bool(data['golden_cross'].iloc[i]):
@@ -3192,6 +3521,32 @@ class RSITrendStrategy(StrategyBase):
                     _trade_stop_loss = min(_trade_stop_loss, _wb_sl_custom)
                 elif current_entry_class == '折价区补仓' and _disc_sl > 0:
                     _trade_stop_loss = min(_trade_stop_loss, _disc_sl)
+                elif current_entry_class == '双通道信号' and _dc_sl > 0:
+                    _trade_stop_loss = min(_trade_stop_loss, _dc_sl)
+                # 入场类型专属trailing触发点（弱势入场更早激活保护）
+                _current_ts_trigger = trailing_stop_trigger
+                if _gc_ts_trigger > 0 and current_entry_class == 'RSI金叉':
+                    _current_ts_trigger = _gc_ts_trigger
+                elif _wb_ts_trigger > 0 and current_entry_class == 'W底形态':
+                    _current_ts_trigger = _wb_ts_trigger
+                elif _dc_ts_trigger > 0 and current_entry_class == '双通道信号':
+                    _current_ts_trigger = _dc_ts_trigger
+                elif _disc_ts_trigger > 0 and current_entry_class == '折价区补仓':
+                    _current_ts_trigger = _disc_ts_trigger
+                # 入场类型专属trailing floor
+                _current_ts_level = trailing_stop_level
+                if _gc_ts_level > 0 and current_entry_class == 'RSI金叉':
+                    _current_ts_level = _gc_ts_level
+                elif _dc_ts_level > 0 and current_entry_class == '双通道信号':
+                    _current_ts_level = _dc_ts_level
+                elif _cont_ts_level > 0 and current_entry_class == 'RSI多头延续':
+                    _current_ts_level = _cont_ts_level
+                elif _trend_ts_level > 0 and current_entry_class == 'RSI趋势买入':
+                    _current_ts_level = _trend_ts_level
+                elif _disc_ts_level > 0 and current_entry_class == '折价区补仓':
+                    _current_ts_level = _disc_ts_level
+                elif _wb_ts_level > 0 and current_entry_class == 'W底形态':
+                    _current_ts_level = _wb_ts_level
                 # 标记回调买入
                 if chase_pullback_buy and data is not None and 'chase_pullback_entry' in data.columns:
                     data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
@@ -3265,6 +3620,10 @@ class RSITrendStrategy(StrategyBase):
 
             if in_position:
                 hold_days += 1
+                if current_entry_class == 'MA回踩因子' and hold_days <= ma60_factor_min_hold_days:
+                    exit_active = False
+                if current_entry_class == '慢牛回踩因子' and hold_days <= int(self.config.get('slow_pullback_min_hold_days', 8)):
+                    exit_active = False
                 _pw_last_trade_profit = 0.0  # 初始值，每天更新
                 _pw_last_trade_hold = hold_days
 
@@ -3601,15 +3960,15 @@ class RSITrendStrategy(StrategyBase):
                                     continue
 
                     # 检查止盈保护（trailing stop）
-                    if trailing_stop_trigger > 0 and not trailing_stop_active:
-                        if max_profit_in_trade >= trailing_stop_trigger:
+                    if _current_ts_trigger > 0 and not trailing_stop_active:
+                        if max_profit_in_trade >= _current_ts_trigger:
                             trailing_stop_active = True
 
                     if (trailing_stop_active and not (pending_exit and pending_exit_source == 'trailing_winner')
                             and (not is_w_bottom_entry or _wb_std_exit)
                             and not is_sideways_entry and not _gap_fade_position):
                         # 双层trailing: 利润越高，floor越紧
-                        _ts_effective_level = trailing_stop_level
+                        _ts_effective_level = _current_ts_level  # 入场类型专属floor（默认=trailing_stop_level=1.5%）
                         if trailing_stop_trigger2 > 0 and max_profit_in_trade >= trailing_stop_trigger2:
                             _ts_effective_level = trailing_stop_level2
                         # 趋势感知: 强上涨趋势中自动放宽level，避免主升浪被洗出

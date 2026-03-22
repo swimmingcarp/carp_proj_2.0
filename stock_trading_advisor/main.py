@@ -10,6 +10,7 @@ import os
 import sys
 import yaml
 import logging
+import warnings
 from datetime import datetime
 from itertools import zip_longest
 from pathlib import Path
@@ -18,6 +19,8 @@ from numbers import Integral
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 import pandas as pd
+
+warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 BASE_DIR = Path(__file__).resolve().parent
 SRC_DIR = BASE_DIR / 'src'

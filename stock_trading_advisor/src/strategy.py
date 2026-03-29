@@ -19,7 +19,6 @@ class StrategyBase:
                  market: str = 'CN-A', use_simple_divergence: bool = False,
                  adaptive_oscillation: bool = False, stock_code: str = '',
                  precomputed_indicators: bool = False,
-                 use_strategy_cache: bool = False,
                  oscillation_driven: bool = False):
         self.config = self._default_config()
         if config:
@@ -36,7 +35,6 @@ class StrategyBase:
         self.market = market
         self.use_simple_divergence = use_simple_divergence
         self.precomputed_indicators = precomputed_indicators
-        self.use_strategy_cache = use_strategy_cache
         self.oscillation_driven = oscillation_driven
         self._oscillation_confirmed_periods: List[Tuple] = []
 

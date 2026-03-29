@@ -29,23 +29,24 @@ cd stock_trading_advisor
 - ✅ **定时自动执行** - 默认每天14:57执行分析
 - ✅ **微信消息通知** - 支持企业微信机器人推送
 
-**详细文档：** [stock_trading_advisor/SYSTEMD_SERVICE_README.md](stock_trading_advisor/SYSTEMD_SERVICE_README.md)
+**说明：** systemd 的使用方式已经合并到本 README，直接按下面的 `manage_scheduler.sh` 示例操作即可。
 
 ## 功能特性
 
 ✨ **核心功能**
-- 📊 多技术指标分析（KDJ, MACD, 均线系统）
-- 🔍 顶底背离自动检测
-- 📈 买卖信号智能提示
-- 💹 策略历史回测
-- 🎯 信号强度评级
-- 📱 批量股票分析
-- ⏰ **定时提醒** - 在固定时间自动运行并生成交易提醒（**新功能**）
+- 📈 **多家族交易策略**：覆盖 `RSI` 趋势跟随、`MA` 回踩、慢牛回踩、`runner breakout`、`trend reclaim` 等不同买点家族
+- 🧠 **自适应策略路由**：基于趋势强度、风险状态、runner 画像，在不同市场结构下切换更合适的入场与持有逻辑
+- 💹 **单股分析 + 全量离线回测**：既支持单只股票分析，也支持对缓存股票池生成完整批量报告
+- 🧾 **交易级复盘能力**：输出买卖点、交易统计、收益/回撤/胜率等核心指标，方便定位坏簇和修策略
+- 🖼️ **K 线图与买卖点标注**：支持生成带买卖点的图表用于人工复盘
+- 📱 **批量分析与定时提醒**：支持固定时间自动运行，并通过企业微信推送结果
+- ⚙️ **配置驱动**：核心参数均可通过 `config.yaml` 调整，便于研究和迭代
 
 ⚡ **性能优势**
-- 向量化计算，性能提升 **300+ 倍**
-- Numba 加速，支持大规模数据处理
-- 支持多数据源（AKShare, Tushare, yfinance）
+- 🚀 **本地缓存优先**：批量回测直接复用 `data/cache`，适合高频研究和反复验证
+- ⚙️ **高并发离线报告**：`--report` 模式默认支持多进程并发，worker 数按“股票数”和“CPU 核心数”自动取较小值
+- 📐 **向量化指标计算**：核心指标计算采用向量化实现，减少逐 bar 回测的额外开销
+- 🔌 **多数据源接入**：支持 `AKShare`、`Tushare`、`yfinance`
 
 ## 安装步骤
 
@@ -77,11 +78,13 @@ pip install -r stock_trading_advisor/requirements.txt -i https://pypi.tuna.tsing
 ### 5. 运行程序
 ```bash
 # 分析单只股票
-python3 stock_trading_advisor/main.py -s 000001
+python3 stock_trading_advisor/main.py -s 000001 --new-strategy
 
-# 或者使用完整路径
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279
+# 或者使用完整命令
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279 --new-strategy
 ```
+
+**备注：** `--new-strategy` 目前是兼容保留参数，当前主线命令即使不显式传入，也会走我们现在使用的这套策略。文档里保留它，是为了和历史命令、回测记录保持一致。
 
 ## 使用方法
 
@@ -89,38 +92,38 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279
 
 ```bash
 # 激活虚拟环境并分析平安银行（000001）
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --new-strategy
 
 # 分析贵州茅台（600519）
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 600519
-
-# 分析中国平安（001279）
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 600519 --new-strategy
 
 # 不显示回测结果
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --no-backtest
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --new-strategy --no-backtest
 
-# 使用 RSI 趋势策略分析单只股票
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293
+# 使用当前主线策略分析单只股票
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293 --new-strategy
 
 # 对缓存中的所有股票进行离线回测并输出报告
-# 默认就是高并发静默模式：多进程 + 自动满配 worker + 不逐只刷屏
-source venv/bin/activate && python3 stock_trading_advisor/main.py --report
+# 默认就是高并发静默模式：多进程 + 自动按 min(股票数, CPU核心数) 分配 worker + 不逐只刷屏
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy
 
-# 在大核机器上显式指定并发（示例：使用 132 个进程）
-source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=process STOCK_ADVISOR_REPORT_WORKERS=132 python3 stock_trading_advisor/main.py --report
+# 显式指定并发（示例：使用 132 个进程）
+source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=process STOCK_ADVISOR_REPORT_WORKERS=132 python3 stock_trading_advisor/main.py --report --new-strategy
+
+# 如果需要，也可以切到多线程执行器
+source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=thread STOCK_ADVISOR_REPORT_WORKERS=132 python3 stock_trading_advisor/main.py --report --new-strategy
 
 # 只对指定股票生成离线报告（需已有缓存）
-source venv/bin/activate && python3 stock_trading_advisor/main.py --report -b 300293 300274 300750 605117
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy -b 300293 300274 300750 605117
 
 # 生成K线图并标注买卖点
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --chart-generation
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --new-strategy --chart-generation
 # 图片将保存到 reports/kline_000001.png
 ```
 
 使用 `--report` 时，系统会将完整的批量回测明细保存到 `stock_trading_advisor/reports/cache_backtest_report_YYYYMMDD_HHMMSS.txt`（按时间戳命名），每只股票都会包含最新价格、历史交易对收益表以及交易统计，方便留档和复盘。
 
-`--report` 现在默认使用高并发静默模式：多进程、自动把 worker 开到目标股票数量、并默认将 `OMP/OPENBLAS/MKL/NUMEXPR` 线程压到 `1`，避免每个子进程再额外开线程导致过度并行。可通过环境变量 `STOCK_ADVISOR_REPORT_EXECUTOR`（`process`/`thread`）和 `STOCK_ADVISOR_REPORT_WORKERS` 覆写执行器与并发数；如需恢复逐只刷屏，可把 `report.verbose` 改回 `true`。
+`--report` 现在默认使用高并发静默模式：默认执行器为多进程，默认 worker 数为 `min(目标股票数量, CPU 核心数)`。系统会将 `OMP/OPENBLAS/MKL/NUMEXPR` 线程压到 `1`，避免每个子进程再额外开线程导致过度并行。可通过环境变量 `STOCK_ADVISOR_REPORT_EXECUTOR`（`process`/`thread`）和 `STOCK_ADVISOR_REPORT_WORKERS` 覆写执行器与并发数；如需恢复逐只刷屏，可把 `report.verbose` 改回 `true`。
 
 **输出示例**：
 ```
@@ -176,31 +179,12 @@ MA45: 11.95
 
 ```bash
 # 分析多只股票
-source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 600519 601318
+source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 600519 601318 --new-strategy
 
 # 使用自定义配置
-source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 -c config/my_config.yaml
+source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 --new-strategy -c stock_trading_advisor/config/your_config.yaml
 ```
 
-**批量输出示例**：
-```
-================================================================================
-📋 批量股票分析
-================================================================================
-
-总分析股票数: 4
-买入信号: 2
-卖出信号: 1
-持有信号: 1
-
---- 买入机会 ---
-1. 000001 - 强度: 4/5 - 价格: 12.35 - 底部背离信号, K值超卖
-2. 600519 - 强度: 3/5 - 价格: 1680.50 - 中期趋势向上
-
---- 卖出提醒 ---
-1. 000002 - 价格: 25.60 - 顶部背离信号, MACD转负
-================================================================================
-```
 
 ### 📅 定时提醒
 
@@ -303,117 +287,127 @@ python3 scheduler.py --run-now
 
 ## 项目结构
 
-```
+```bash
 stock_trading_advisor/
 ├── src/
-│   ├── __init__.py
-│   ├── indicators.py          # 技术指标计算（向量化+Numba加速）
+│   ├── new_strategy.py        # 当前主线策略（多家族 + adaptive runner/reclaim routing）
+│   ├── strategy.py            # 旧版策略实现
+│   ├── factor_library.py      # 因子库（研究/筛选/策略辅助）
+│   ├── indicators.py          # 指标计算
 │   ├── divergence.py          # 顶底背离检测
-│   ├── strategy.py            # 核心交易策略
-│   ├── data_fetcher.py        # 数据获取（支持多数据源）
-│   ├── analyzer.py            # 买卖信号分析
-│   └── market_hours.py        # 交易时间检测
+│   ├── analyzer.py            # 单股分析与结果整合
+│   ├── plotter.py             # K线图与买卖点标注
+│   ├── data_fetcher.py        # 数据获取
+│   ├── data_validator.py      # 数据校验
+│   ├── indicator_validator.py # 指标/未来函数校验辅助
+│   ├── market_hours.py        # 交易时间检测
+│   ├── wechat_notifier.py     # 微信通知
+│   └── personality/           # 走势画像 / 路由辅助模块
+│       ├── classifier.py
+│       ├── segmenter.py
+│       └── pit_stage.py
 ├── config/
-│   ├── config.yaml            # 主程序配置
-│   ├── scheduler_config.yaml  # 定时调度器配置
-│   └── watch_list.txt         # 监控股票列表
+│   ├── config.yaml            # 主配置
+│   ├── scheduler_config.yaml  # 定时任务配置
+│   ├── report_codes_132.txt   # 离线报告默认股票池
+│   ├── watch_list.txt         # 监控股票列表
+│   ├── cn_stock_names.txt     # A股名称映射
+│   └── hk_stock_names.txt     # 港股名称映射
 ├── data/
-│   └── cache/                 # 数据缓存
-├── logs/
-│   ├── trading.log            # 主程序日志
-│   └── scheduler.log          # 调度器日志
-├── reports/
-│   └── trading_alerts.txt     # 交易提醒报告
-├── main.py                    # 主程序入口
-├── scheduler.py               # 定时调度器（新增）
-├── requirements.txt           # 依赖包
-└── README.md                  # 使用文档
+│   ├── cache/                 # 本地行情缓存
+│   ├── market_breadth.csv     # 市场宽度数据
+│   ├── realtime_positions.json
+├── reports/                   # 回测报告、研究输出、图表
+├── logs/                      # 运行日志
+├── tests/
+│   ├── README.md
+│   └── test_lookahead_bias_smart.py  # 未来函数/截断一致性检测
+├── main.py                    # CLI 入口
+├── scheduler.py               # 定时调度器
+├── manage_scheduler.sh        # systemd 管理脚本
+├── run_scheduler.sh           # 调度启动脚本
+├── WechatQuickStart.txt       # 微信推送快速说明
+├── requirements.txt           # 依赖列表
+└── README.md                  # 项目文档
 ```
 
 ## 策略说明
 
-### Mixed Strategy（混合策略）
+### Current Main Strategy（当前主线策略）
 
-**核心思想**：结合趋势跟随和顶底背离，多维度确认买卖信号
+当前主线不是单一的 `KDJ + 均线` 规则，而是一个**多家族入场 + 动态路由 + 家族化退出**的组合系统。
 
-#### 买入条件
-1. **基础条件**：收盘价 ≥ 16 日均线
-2. **增强条件**：
-   - K 值 < 45（超卖区域）
-   - 45 日均线向上（中期趋势确认）
-3. **强制买入**：底部背离次日
+#### 主要入场家族
 
-#### 卖出条件
-满足以下任一条件：
-1. 收盘价 < 16 日均线
-2. MACD < 0
-3. 顶部背离信号
+1. **趋势跟随家族**
+   - `RSI金叉`
+   - `RSI多头延续`
+   - `RSI趋势买入`
+   - `RSI动量加速`
 
-#### 风险控制
-- 跌停保护：自动过滤有跌停风险的股票
-- 顶部背离期间阻止买入
-- 快速止损机制
+2. **趋势回踩 / 慢趋势家族**
+   - `MA回踩因子`
+   - `慢牛回踩因子`
+   - `趋势再突破`
+   - `趋势跑者突破`
+
+3. **反转 / 低吸家族**
+   - `底背离信号`
+   - `W底形态`
+   - `折价区补仓`
+   - `跳空回补`
+   - `Aroon震荡入场`
+   - `双通道信号`
+
+#### 核心思想
+
+- **按市场结构选交易家族**：不是所有股票、所有阶段都用同一种买点。
+- **按走势画像做动态放行**：系统会结合趋势强度、风险分数、runner 画像来决定哪些信号更值得放行。
+- **买卖尽量同家族接管**：例如慢牛回踩单、runner/reclaim 单，会尽量走自己的持有与退出逻辑，减少被旧退出链误伤。
+- **保留窄修复机制**：对真实坏簇做局部修正，比如 `continuation_weak`、`golden_cross_weak`、`extended_hold` 的定点修复。
+
+#### 退出与风控
+
+系统不是单一止损线，而是多层退出叠加：
+
+- 硬止损 / 动态止损
+- trailing stop / gain protection
+- `extended_hold`
+- `runner_hold_guard`
+- `structural_trend_hold`
+- 慢牛单专属退出链
+- 交易后冷却与家族一致性保护
+
+也就是说，强趋势单会尽量少被过早洗掉，弱势单则会更快止损或退出。
 
 ## 配置参数
 
-编辑 [config/config.yaml](config/config.yaml) 调整策略参数：
+主配置在 [stock_trading_advisor/config/config.yaml](stock_trading_advisor/config/config.yaml)。
+
+当前参数规模已经比较大，实际调整时建议优先看：
+
+- `strategy`：主策略开关与风控参数
+- `report`：离线批量回测配置
+- `scheduler`：定时任务和提醒配置
+- `data_source`：数据源配置
+
+一个更贴近当前使用方式的示例：
 
 ```yaml
+data_source:
+  provider: akshare
+
+report:
+  verbose: false
+  default_stock_codes_file: config/report_codes_132.txt
+
 strategy:
-  init_k: 50.0           # KDJ 初始 K 值
-  init_d: 50.0           # KDJ 初始 D 值
-  short_ma: 16           # 短期均线周期
-  mid_ma: 45             # 中期均线周期
-  k_threshold: 45        # K 值买入阈值
-  stop_loss: -15.0       # 跌停保护阈值
-  lookback_days: 100     # 背离检测回溯天数
+  # 当前主线参数主要定义在 src/new_strategy.py 的默认配置中，
+  # config.yaml 更适合做数据源、报告模式、调度等外层配置。
+  use_cache: true
 ```
-
-## 数据源配置
-
-### 使用 AKShare（推荐，免费）
-```yaml
-data_source:
-  provider: 'akshare'
-```
-
-### 使用 Tushare（需要积分）
-```yaml
-data_source:
-  provider: 'tushare'
-```
-
-需要在代码中设置 token：
-```python
-import tushare as ts
-ts.set_token('your_token_here')
-```
-
-## 性能优化
-
-相比原始实现，本项目进行了以下优化：
-
-| 模块 | 原始方法 | 优化方法 | 加速比 |
-|------|----------|----------|--------|
-| 移动平均 | 循环计算 | Pandas rolling | 500x |
-| EMA | 循环计算 | Pandas ewm | 150x |
-| MACD | 三次循环 | 向量化 | 180x |
-| KDJ | iterrows | Numba JIT | 300x |
-| 涨跌幅 | 循环计算 | pct_change | 200x |
-
-**总体性能提升：300-500 倍**
-
-回测 1000 只股票：
-- 原始实现：~5 小时
-- 优化后：**~1 分钟**
 
 ## 注意事项
-
-⚠️ **重要提示**
-1. 本工具仅供学习和研究使用
-2. 所有分析结果**不构成投资建议**
-3. 股市有风险，投资需谨慎
-4. 建议结合基本面分析和市场环境综合判断
 
 ⚠️ **数据源限制**
 - AKShare：免费，但有访问频率限制
@@ -488,26 +482,3 @@ python3 scheduler.py --run-now
 ```bash
 sudo journalctl -u stock-scheduler.service | grep restart
 ```
-
-详见：[定时提醒完整文档](stock_trading_advisor/README_定时提醒.md)
-
-## 后续计划
-
-- [x] ⏰ **定时提醒功能** - 已完成！systemd 服务自动化管理
-- [x] 📱 **微信通知** - 已完成！支持企业微信机器人推送
-- [ ] 支持更多技术指标（RSI, BOLL 等）
-- [ ] 添加可视化图表
-- [ ] Web 界面
-- [ ] 策略参数自动优化
-
-## 技术支持
-
-如有问题或建议，欢迎提 Issue。
-
-## 许可证
-
-MIT License
-
----
-
-**免责声明**：本项目仅供学习交流使用，不构成任何投资建议。使用本工具产生的任何投资损失，开发者不承担任何责任。

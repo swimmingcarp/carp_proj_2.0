@@ -25,7 +25,10 @@ import numpy as np
 import sys
 import os
 import random
-from typing import Dict, List, Tuple
+import io
+import contextlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Dict, List, Tuple, Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.new_strategy import RSITrendStrategy
@@ -573,20 +576,121 @@ class TestPitStageLookahead(unittest.TestCase):
         self._test_pit_stage_stock('300750')
 
 
-def run_tests():
-    """运行测试"""
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestLookAheadBiasSmart)
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    return result.wasSuccessful()
+STRATEGY_TEST_NAMES = [
+    'test_02367',
+    'test_300750',
+    'test_300274',
+]
+
+PIT_STAGE_TEST_NAMES = [
+    'test_surge_603444',
+    'test_surge_002362',
+    'test_surge_600775',
+    'test_surge_002467',
+    'test_surge_605117',
+    'test_ultra2_002920',
+    'test_ultra2_300279',
+    'test_ultra2_002167',
+    'test_ultra2_300769',
+    'test_baseline_02367',
+    'test_baseline_300750',
+]
 
 
-def run_pit_stage_tests():
-    """运行 PitStage 未来函数检测"""
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestPitStageLookahead)
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    return result.wasSuccessful()
+def _default_worker_count(total_cases: int, requested: Optional[int] = None) -> int:
+    if isinstance(requested, int) and requested > 0:
+        return max(1, min(requested, total_cases))
+    return max(1, min(total_cases, os.cpu_count() or 1))
+
+
+def _run_named_unittest_case(case_class_name: str, test_name: str) -> Dict[str, object]:
+    """在独立进程中运行单个 unittest case，并捕获输出。"""
+    case_class = globals()[case_class_name]
+    suite = unittest.TestSuite([case_class(test_name)])
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+        runner = unittest.TextTestRunner(stream=stream, verbosity=2)
+        result = runner.run(suite)
+    return {
+        'case_class_name': case_class_name,
+        'test_name': test_name,
+        'success': result.wasSuccessful(),
+        'output': stream.getvalue(),
+    }
+
+
+def _run_case_group_parallel(title: str,
+                             case_class_name: str,
+                             test_names: List[str],
+                             max_workers: Optional[int] = None) -> bool:
+    """并行运行一组单测方法，汇总结果。"""
+    total = len(test_names)
+    workers = _default_worker_count(total, max_workers)
+
+    print("\n" + "=" * 80)
+    print(title)
+    print("=" * 80)
+    print(f"并发模式: 多进程 ({workers} workers / {total} cases)")
+
+    ordered_results: Dict[str, Dict[str, object]] = {}
+    failures = []
+
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(_run_named_unittest_case, case_class_name, test_name): test_name
+            for test_name in test_names
+        }
+        for future in as_completed(future_map):
+            test_name = future_map[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                failures.append((test_name, f"进程执行异常: {exc}"))
+                continue
+            ordered_results[test_name] = result
+            if not result['success']:
+                failures.append((test_name, result['output']))
+
+    # 保持输出顺序稳定，便于阅读和比对
+    for test_name in test_names:
+        result = ordered_results.get(test_name)
+        if result and result['output']:
+            print(result['output'].rstrip())
+
+    if failures:
+        print("\n" + "=" * 80)
+        print(f"❌ 并行测试失败: {len(failures)}/{total}")
+        print("=" * 80)
+        for test_name, details in failures:
+            print(f"\n[{test_name}] 失败")
+            if details:
+                print(details.rstrip())
+        return False
+
+    print("\n" + "=" * 80)
+    print(f"✅ 并行测试通过: {total}/{total}")
+    print("=" * 80)
+    return True
+
+
+def run_tests(max_workers: Optional[int] = None):
+    """运行策略层未来函数检测。"""
+    return _run_case_group_parallel(
+        title="未来函数检测 - 智能采样版本（策略层）",
+        case_class_name='TestLookAheadBiasSmart',
+        test_names=STRATEGY_TEST_NAMES,
+        max_workers=max_workers,
+    )
+
+
+def run_pit_stage_tests(max_workers: Optional[int] = None):
+    """运行 PitStage 未来函数检测。"""
+    return _run_case_group_parallel(
+        title="PitStage 未来函数检测（smooth_macro_phase / ULTRA2 / SURGE）",
+        case_class_name='TestPitStageLookahead',
+        test_names=PIT_STAGE_TEST_NAMES,
+        max_workers=max_workers,
+    )
 
 
 if __name__ == '__main__':
@@ -594,23 +698,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='未来函数检测')
     parser.add_argument('--pit', action='store_true', help='只跑 PitStage 检测')
     parser.add_argument('--all', action='store_true', help='同时跑策略检测 + PitStage 检测')
+    parser.add_argument('--workers', type=int, default=0,
+                        help='并行 worker 数量（默认=min(测试数量, CPU核心数)）')
     args = parser.parse_args()
 
+    worker_count = args.workers if args.workers > 0 else None
+
     if args.pit or args.all:
-        print("\n" + "="*80)
-        print("PitStage 未来函数检测（smooth_macro_phase / ULTRA2 / SURGE）")
-        print("="*80 + "\n")
-        ok_pit = run_pit_stage_tests()
+        ok_pit = run_pit_stage_tests(max_workers=worker_count)
     else:
         ok_pit = True
 
     if not args.pit:
-        print("\n" + "="*80)
-        print("未来函数检测 - 智能采样版本（策略层）")
-        print("="*80)
-        print("策略：测试所有信号点 + 随机采样平静期")
-        print("="*80 + "\n")
-        ok_strategy = run_tests()
+        ok_strategy = run_tests(max_workers=worker_count)
     else:
         ok_strategy = True
 

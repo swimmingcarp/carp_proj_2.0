@@ -889,7 +889,8 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
     elif isinstance(max_workers_config, Integral) and max_workers_config > 0:
         max_workers = int(max_workers_config)
     else:
-        max_workers = total if executor_cls is ProcessPoolExecutor else (os.cpu_count() or 1)
+        cpu_count = os.cpu_count() or 1
+        max_workers = min(total, cpu_count)
 
     max_workers = max(1, min(max_workers, total))
 

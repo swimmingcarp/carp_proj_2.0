@@ -827,7 +827,6 @@ class RSITrendStrategy(StrategyBase):
             adaptive_oscillation=False,
             stock_code=stock_code,
             precomputed_indicators=False,
-            use_strategy_cache=False,
             oscillation_driven=False
         )
         self.active_profile_mode = 'base'

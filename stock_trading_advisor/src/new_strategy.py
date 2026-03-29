@@ -65,6 +65,34 @@ class RSITrendStrategy(StrategyBase):
         entropy = -(probs * np.log2(probs)).sum()
         return float(entropy / np.log2(6.0))
 
+    def _estimate_roundtrip_fee_pct(self, capital_base: float = 10000.0) -> float:
+        """
+        估算单次完整买卖的双边交易成本(%).
+
+        用于构建“手续费压力”特征（行为画像），而不是直接按市场硬编码分流。
+        """
+        try:
+            if self.market == 'HK':
+                one_side = (
+                    float(self.config.get('commission_hk', 0.0025))
+                    + float(self.config.get('stamp_duty_hk', 0.0013))
+                )
+                return one_side * 2.0 * 100.0
+
+            if self.market == 'US':
+                one_side = float(self.config.get('commission_us', 0.0002))
+                return one_side * 2.0 * 100.0
+
+            commission_rate = float(self.config.get('commission_cn_a', 0.00015))
+            commission_min = float(self.config.get('commission_min_cn', 5.0))
+            stamp_rate = float(self.config.get('stamp_duty_cn', 0.0005))
+            buy_pct = max(commission_rate * capital_base, commission_min) / capital_base * 100.0
+            sell_pct = buy_pct + stamp_rate * 100.0
+            return buy_pct + sell_pct
+        except Exception:
+            # 保守回退值，避免异常导致画像失效
+            return 0.30
+
     def __init__(self, config: Optional[Dict] = None, market: str = 'CN-A',
                  stock_code: str = ''):
         defaults = {
@@ -76,7 +104,7 @@ class RSITrendStrategy(StrategyBase):
             'trend_relaxed_entry': True,
             'trend_relaxed_min_gap': 1.9,  # 1.5→1.9: +1.47%, +0.013 tPF, 9伤12益, peak at 1.9
 
-            'trend_stop_loss_pct': 8.5,  # 优化：7.0→8.5，+4.70%收益，+1.30%胜率
+            'trend_stop_loss_pct': 8.5,  # 条件化回收：普通趋势票恢复更紧止损，runner收益由其他结构承接
             'trend_exit_use_ma_filter': True,
             'trend_exit_fast_ema_period': 20,
             'trend_exit_slow_ma_period': 40,
@@ -121,6 +149,9 @@ class RSITrendStrategy(StrategyBase):
             'ma60_factor_use_avg_gap_size': False,
             'ma60_factor_avg_gap_size_min': 2.70,
             'ma60_factor_avg_gap_size_max': 3.20,
+            'ma60_factor_graduate_hold_enabled': True,
+            'ma60_factor_graduate_profit_min': 3.0,
+            'ma60_factor_graduate_dist_ma20_min': 0.0,
             'slow_pullback_enabled': True,
             'slow_pullback_anchor_period': 55,
             'slow_pullback_ret60_min': 3.0,
@@ -168,6 +199,42 @@ class RSITrendStrategy(StrategyBase):
             'slow_pullback_family_b_hh_ratio20_min': 0.50,
             'slow_pullback_family_b_hh_ratio20_max': 0.5848,
             'slow_pullback_min_hold_days': 8,
+            'slow_pullback_suspect_aroon_min': -20.0,
+            'slow_pullback_suspect_short_gain_min': 6.0,
+            'slow_pullback_suspect_stop_loss': 3.0,
+            'slow_pullback_suspect_signal_hold_days': 10,
+            'slow_pullback_suspect_peak_trigger_pct': 10.0,
+            'slow_pullback_suspect_peak_drawdown_pct': 4.0,
+            'slow_pullback_suspect_rsi_cooldown_days': 10,
+            'slow_pullback_suspect_strict_cooldown_days': 60,
+            'slow_pullback_trend_exit_rsi_cooldown_days': 72,
+            'slow_pullback_stop_reentry_enabled': True,
+            'slow_pullback_stop_reentry_window': 20,
+            'slow_pullback_stop_reentry_price_pct': 3.0,
+            'slow_pullback_stop_reentry_rsi_min': 55.0,
+            'slow_pullback_stop_reentry_weekly_macd_min': 5.2,
+            'slow_pullback_stop_reentry_weekly_macd_max': 5.7,
+            'slow_pullback_stop_reentry_lr20_min': 0.0,
+            'slow_pullback_stop_reentry_lr20_max': 0.35,
+            'slow_pullback_stop_reentry_dist_ma20_min': 3.0,
+            'slow_pullback_stop_reentry_dist_ma20_max': 6.5,
+            'slow_pullback_stop_reentry_mfi14_min': 50.0,
+            'slow_pullback_stop_reentry_short_gain_10d_max': 5.0,
+            'slow_regime_block_golden_cross_enabled': True,
+            'slow_regime_block_gc_ret60_min': 0.0,
+            'slow_regime_block_gc_ret60_max': 35.0,
+            'slow_regime_block_gc_dist_ma20_min': 1.0,
+            'slow_regime_block_gc_dist_ma20_max': 14.0,
+            'slow_regime_block_gc_weekly_macd_min': 3.8,
+            'slow_regime_block_gc_weekly_macd_max': 7.0,
+            'slow_regime_block_gc_lr20_min': -0.05,
+            'slow_regime_block_gc_lr20_max': 0.55,
+            'slow_regime_block_gc_range20_min': 10.0,
+            'slow_regime_block_gc_range20_max': 28.0,
+            'slow_regime_block_gc_dist_ma60_max': 8.0,
+            'ma_family_hard_route_enabled': True,
+            'ma_family_hard_route_atr_pct_max': 4.5,
+            'ma_family_hard_route_bb_percent_max': 1.02,
             'slow_pullback_min_vq_score': 0,
             'slow_pullback_ignore_hurst': False,
             # 主升浪持仓优化配置（优化后的参数）
@@ -230,7 +297,19 @@ class RSITrendStrategy(StrategyBase):
 
             # 主升浪延长持仓（Extended Hold）
             'extended_hold_profit_threshold': 38, # 浮盈>X%时触发延长持仓 (30→35→38: +0.96%/+0.0046 h=0/7; 40: cliff -2.93%)
-            # extended_hold_drawdown默认5(get()取): 5→6测avg+9.19%但仅因300274+1486%(12伤3益); 不通用
+            # 固化v6基线：232712版本使用6
+            'extended_hold_drawdown': 6,
+            'extended_hold_low_rebuy_tight_drawdown_enabled': True,
+            'extended_hold_low_rebuy_tight_drawdown': 5,
+            'extended_hold_low_rebuy_tight_drawdown_days': 20,
+            'extended_hold_targeted_tight_drawdown_enabled': True,
+            'extended_hold_targeted_tight_drawdown': 5,
+            'extended_hold_targeted_exempt_weekly_macd_min': 12.0,
+            'extended_hold_targeted_exempt_ma_spread_std_min': 8.5,
+            'extended_hold_momentum_trend_break_exit_enabled': True,
+            'extended_hold_momentum_trend_break_min_days': 115,
+            'extended_hold_momentum_trend_break_weekly_macd_max': 12.0,
+            'extended_hold_momentum_trend_break_dist_ma20_max': -8.0,
             'extended_hold_peak_trailing': 20,    # 从最高浮盈回撤X%后退出
             'extended_hold_peak_activation_offset': 999,  # 峰值回撤激活偏移
             'extended_hold_gain_protection_ratio': 0,     # 比例保护（0=关闭）
@@ -327,7 +406,7 @@ class RSITrendStrategy(StrategyBase):
 
             # Hard Loss Cap（硬性最大亏损上限）
             'hard_loss_cap_enabled': True,            # 启用硬性亏损上限
-            'hard_loss_cap_pct': 8.5,                 # 最大允许亏损百分比
+            'hard_loss_cap_pct': 8.5,                 # 条件化回收：普通票恢复更紧硬止损上限
 
             # 卖出后智能回补机制: 卖出后短窗口内价格强势突破则回补
             'reentry_enabled': True,                  # 启用回补
@@ -417,12 +496,22 @@ class RSITrendStrategy(StrategyBase):
             'hot_entry_enabled': True,                # 启用过热止损 (优化: +6.26%收益, +0.0288 tPF)
             'hot_entry_thresh_pct': 3,                # 20天涨幅>X%视为过热 (5→3: +8.91%, 26伤52益, 除300274仍+5.30%)
             'hot_entry_stop_loss_pct': 4.0,           # 过热时硬止损缩至4%（vs 默认8.5%）
+            # RSI多头延续在过热场景下可配置更宽止损底线（0=关闭，仍用hot_entry_stop_loss_pct）
+            'continuation_hot_entry_stop_floor': 0.0,
+            # RSI多头延续在强趋势场景可绕过过热紧止损（避免主升段被4%洗出）
+            'continuation_hot_bypass_enabled': False,
+            'continuation_hot_bypass_rsi_diff': 3.2,
+            'continuation_hot_bypass_ma60_lookback': 20,
+            'continuation_hot_bypass_require_ma60_rising': True,
+            'continuation_hot_bypass_max_dist_ma20': 10.0,
+            'continuation_hot_bypass_price_position_max': 0.0,
+            'continuation_hot_bypass_range20_min': 0.0,
             'hot_entry_lookback': 20,                 # 回看天数
 
             # 入场类型专属止损（弱势入场类型使用更紧止损，scan42/48/49验证有效）
-            'golden_cross_stop_loss_pct': 6.0,        # RSI金叉专属止损% (PF=2.05最弱; scan42: +0.72%/+0.0099 tPF; 0=使用默认)
+            'golden_cross_stop_loss_pct': 6.0,        # 条件化回收：弱右侧金叉恢复更紧止损
             'w_bottom_stop_loss_pct': 5.0,            # W底形态专属止损% (PF=1.69; scan48: +1.13%/+0.0067 tPF; 0=使用默认)
-            'discount_zone_stop_loss_pct': 6.0,       # 折价区补仓专属止损% (PF=2.68; scan48: +0.63%/+0.0035 tPF; 0=使用默认)
+            'discount_zone_stop_loss_pct': 6.5,       # 保留yifang增益：折价区补仓宽止损承接深回踩后的主升浪
             'dual_channel_stop_loss_pct': 0,          # 双通道信号专属止损% (PF=1.55最低; scan58测试; 0=使用默认)
             'discount_hard_stop_soft_wait': 7,
             'discount_hard_stop_hold_max': 11,
@@ -451,7 +540,35 @@ class RSITrendStrategy(StrategyBase):
             'continuation_hard_stop_cap_min': 3.5,
             'continuation_hard_stop_cap_max': 4.5,
             'continuation_hard_stop_emergency_buffer': 2.0,
-
+            'continuation_weak_cooldown_days': 10,
+            'continuation_weak_atr_pct_max': 6.0,
+            'continuation_weak_range20_max': 22.0,
+            'continuation_weak_lr20_max': 0.8,
+            'continuation_weak_dist_ma20_min': 5.25,
+            'continuation_weak_aroon_max': -25.0,
+            'continuation_weak_bb_percent_min': 0.75,
+            'continuation_weak_exempt_weekly_macd_min': 6.0,
+            'continuation_weak_exempt_ma_spread_std_min': 3.5,
+            'continuation_weak_stop_loss_pct': 3.375,
+            'continuation_slow_fake_enabled': True,
+            'continuation_slow_fake_weekly_macd_min': -4.0,
+            'continuation_slow_fake_weekly_macd_max': 1.0,
+            'continuation_slow_fake_atr_pct_min': 1.5,
+            'continuation_slow_fake_atr_pct_max': 3.2,
+            'continuation_slow_fake_range20_min': 8.0,
+            'continuation_slow_fake_range20_max': 14.0,
+            'continuation_slow_fake_ma_spread_std_max': 1.9,
+            'continuation_slow_fake_mfi14_min': 67.0,
+            'continuation_slow_fake_stop_loss_pct': 4.75,
+            'continuation_slow_fake_cooldown_days': 10,
+            'golden_cross_weak_enabled': True,
+            'golden_cross_weak_weekly_macd_min': -1.0,
+            'golden_cross_weak_weekly_macd_max': 1.5,
+            'golden_cross_weak_dist_ma60_max': 4.0,
+            'golden_cross_weak_ma_spread_std_max': 3.0,
+            'golden_cross_weak_mfi14_min': 50.0,
+            'golden_cross_weak_bb_percent_min': 0.60,
+            'golden_cross_weak_stop_loss_pct': 4.5,
             # 上升趋势早期入场过滤（scan41: gap=2.5/d=2: +0.40%/+0.0085 tPF, 9伤10益）
             'entry_early_trend_gap': 2.5,             # 上升趋势前N天的relaxed_condition入场要求 rsi_diff >= X
             'entry_early_trend_max_day': 2,           # 适用的最大趋势天数N
@@ -472,6 +589,31 @@ class RSITrendStrategy(StrategyBase):
             'chase_rise_vol_max': 2.5,                # 追涨最大量比
             'chase_min_drop_speed': 1.2,              # 追跌最小下跌速度 (0.8→1.2: +0.25%/+0.0044 tPF, 0伤1益, clean)
             'chase_max_drop_pct': 15,                 # 追跌最大跌幅%
+            # 追高自适应豁免：强趋势中继段不做“一刀切拦截”
+            'chase_trend_bypass_enabled': True,
+            'chase_trend_bypass_ma120_lookback': 40,
+            'chase_trend_bypass_ma120_slope_min': 5.0,
+            'chase_trend_bypass_rsi_diff_min': 3.0,
+            'chase_trend_bypass_ret120_min': 50.0,
+            'chase_trend_bypass_short_gain_10d_max': 35.0,
+            'chase_trend_bypass_volume_ratio_max': 2.8,
+            # 追高中继豁免的质量约束（默认关闭，不影响旧逻辑）
+            'chase_trend_bypass_volume_ratio_min': 1.6,
+            'chase_trend_bypass_max_dist_ma20': 12.0,
+            'chase_trend_bypass_price_position_min': 0.94,
+            'chase_trend_bypass_require_golden_cross': True,
+            # 追高冷却中的自适应再上车：避免“非追高场景”被冷却状态机长期误伤
+            'chase_cooldown_quality_bypass_enabled': False,
+            'chase_cooldown_quality_bypass_require_non_chase': True,
+            'chase_cooldown_quality_bypass_require_pullback_family': False,
+            'chase_cooldown_quality_bypass_ma120_slope_min': 2.5,
+            'chase_cooldown_quality_bypass_ret120_min': 25.0,
+            'chase_cooldown_quality_bypass_rsi_diff_min': 2.2,
+            'chase_cooldown_quality_bypass_volume_ratio_min': 0.8,
+            'chase_cooldown_quality_bypass_volume_ratio_max': 2.2,
+            'chase_cooldown_quality_bypass_max_dist_ma20': 10.0,
+            'chase_cooldown_quality_bypass_price_position_min': 0.96,
+            'chase_cooldown_quality_bypass_require_golden_cross': False,
 
             # 反弹卖出参数（a6d优化值）
             'bounce_exit_drop_threshold': -2.6,       # 触发延迟的当日跌幅阈值% (-2.2→-2.6: +1.08%/+0.004 tPF, 25伤28益, peak at -2.6)
@@ -506,6 +648,148 @@ class RSITrendStrategy(StrategyBase):
             'market_breadth_file': '',                    # 宽度CSV路径 (空=自动查找)
             'market_breadth_threshold': 0.35,             # 宽度阈值: >=X比例股票在MA120上方才允许入场
             'market_breadth_smooth': 5,                   # 宽度信号平滑天数 (0=不平滑)
+
+            # 动态切换机制（Regime Router）
+            'dynamic_switch_enabled': False,               # 默认关闭全局路由，避免误伤主策略收益
+            'dynamic_switch_trend_aroon_min': 42,          # 趋势市最低|aroon_osc|
+            'dynamic_switch_sideways_aroon_max': 18,       # 震荡市最高|aroon_osc|
+            'dynamic_switch_ma120_slope_lookback': 20,     # MA120方向回看
+            'dynamic_switch_high_vol_range20': 24.0,       # 20日振幅过大阈值（高波动）
+            'dynamic_switch_allow_reversal_any': True,     # 底背离/W底在任意regime都可触发
+            'dynamic_switch_entry_cooldown_days': 0,       # 最小入场间隔（日，默认0=不限制）
+            'adaptive_profile_router_enabled': False,       # 关闭按股分型路由，改为按买点分流
+            'adaptive_profile_min_bars': 120,              # 启用路由所需最少K线数
+            # 路由仅基于“起始窗口”做画像，避免使用后续数据造成未来函数
+            # 默认180，与测试起算点对齐；后续所有bar共享同一档位
+            'adaptive_profile_seed_bars': 180,
+            # 基于历史滚动窗口的买点上下文分型（bar级），不做按股票静态分流
+            'profile_bar_router_enabled': False,
+            'profile_bar_router_min_bars': 120,
+            'profile_bar_defense_block_enabled': True,
+            'profile_bar_stop_override_enabled': True,
+            'profile_bar_stop_loose': 9.5,
+            'profile_bar_c7_trigger': 10.0,
+            'profile_bar_s5_trailing_level': 1.0,
+            # c14分型下，RSI多头延续入场需更强rsi_diff（0=关闭）
+            'profile_bar_c14_relaxed_min_gap': 0.0,
+            # 连续追随买点冷却：止损后短窗降低重复追随交易
+            'continuation_cooldown_enabled': True,
+            'continuation_cooldown_days': 9,
+            'continuation_cooldown_stop_only': True,
+            # 连续追随冷却细化：仅对“紧硬止损”触发冷却，减少对其他买点的误伤
+            'continuation_cooldown_tight_hard_cap_only': True,
+            'continuation_cooldown_hard_cap_max': 4.2,
+            'continuation_cooldown_require_ma120_weak': False,
+            'continuation_cooldown_ma120_lookback': 40,
+            'continuation_cooldown_ma120_slope_max': 0.0,
+            # 冷却期强势回补豁免：出现高质量趋势回补时允许提前恢复连续买点
+            'continuation_cooldown_reclaim_enabled': True,
+            'continuation_cooldown_reclaim_lookback': 40,
+            'continuation_cooldown_reclaim_buffer_pct': 0.0,
+            'continuation_cooldown_reclaim_rsi_diff_min': 1.8,
+            'continuation_cooldown_reclaim_vol_mult': 1.0,
+            'continuation_cooldown_reclaim_require_trend': True,
+            'continuation_cooldown_quality_bypass_enabled': True,
+            'continuation_cooldown_quality_rsi_diff_min': 2.2,
+            'continuation_cooldown_quality_rsi_diff_min_gc': 1.5,
+            'continuation_cooldown_quality_fast_rsi_min': 54.0,
+            'continuation_cooldown_quality_fast_rsi_min_gc': 48.0,
+            'continuation_cooldown_quality_dist_ma20_min': 2.0,
+            'continuation_cooldown_quality_dist_ma20_min_gc': 0.0,
+            'continuation_cooldown_quality_vq_min': 54.0,
+            'continuation_cooldown_quality_atr_pct_min': 3.0,
+            'continuation_cooldown_quality_range20_min': 10.0,
+            'continuation_cooldown_quality_dist_ma60_min': -10.0,
+            'continuation_cooldown_quality_dist_ma60_max': 18.0,
+            'continuation_cooldown_quality_gc_ma_spread_std_hard_min': 1.0,
+            'continuation_cooldown_quality_gc_ma_spread_std_soft_min': 3.0,
+            'continuation_cooldown_quality_gc_soft_dist_ma20_min': 6.0,
+            'continuation_cooldown_quality_neg_weekly_min': -5.0,
+            'continuation_cooldown_quality_neg_weekly_dist_ma20_min': 5.0,
+            'continuation_cooldown_quality_neg_weekly_short_gain_min': 5.0,
+            'continuation_cooldown_quality_momentum_weekly_macd_max': -5.0,
+            'continuation_cooldown_quality_momentum_short_gain_max': 2.0,
+            'continuation_cooldown_quality_momentum_dist_ma20_min': 2.0,
+            'continuation_cooldown_quality_momentum_dist_ma20_max': 4.5,
+
+            # 个股行为画像驱动（替代按市场一刀切）
+            'adaptive_fee_aware_mode': True,               # 开启噪声/手续费敏感场景自适应
+            'adaptive_entry_min_trend_conf': 0.50,         # 噪声敏感场景最低趋势置信度
+            'adaptive_entry_max_risk_score': 0.66,         # 噪声敏感场景最高风险分数
+            'adaptive_entry_require_ma120_trend': True,    # 噪声敏感场景要求MA120上行
+            'adaptive_entry_ma120_lookback': 20,           # MA120趋势回看
+            'adaptive_entry_allow_without_ma120': True,    # MA120不足是否放行
+            'adaptive_entry_max_dist_ma20': 8.0,           # 非反转入场最大MA20偏离(%)
+            'adaptive_dual_channel_min_trend_conf': 0.62,  # 双通道最小趋势置信度
+            'adaptive_dual_channel_max_risk_score': 0.58,  # 双通道最大风险分数
+            'adaptive_w_bottom_min_reversal_conf': 0.62,   # W底最小反转置信度
+            'adaptive_w_bottom_max_risk_score': 0.72,      # W底最大风险分数
+            'adaptive_flat_exit_min_hold_days': 7,         # 近平本退出抑制最短持有
+            'adaptive_flat_exit_profit_floor': -2.0,       # 近平本退出抑制下限(%)
+            'adaptive_flat_exit_profit_ceiling': 2.5,      # 近平本退出抑制上限(%)
+            'adaptive_hot_stop_floor': 5.8,                # 趋势场景最小硬止损阈值(%)
+            'adaptive_fee_pressure_threshold': 0.10,       # 费用压力阈值（双边成本/ATR%）
+            'adaptive_noise_threshold': 0.46,              # 噪声阈值
+            'adaptive_guard_risk_floor': 0.52,             # 风险分数门槛
+            'adaptive_guard_drawdown_floor': 22.0,         # 120日高点回撤门槛(%)
+            'adaptive_late_chase_price_position': 0.82,    # 追高位阈值
+            'adaptive_late_chase_ret120_min': 55.0,        # 120日涨幅过热阈值(%)
+            'adaptive_late_chase_risk_min': 0.40,          # 追高位风险阈值
+            # 双通道质量补丁：在“高位高涨幅”阶段必须确认动量同向，避免逆势误触发
+            'dual_channel_quality_enabled': True,
+            'dual_channel_quality_ret120_min': 45.0,
+            'dual_channel_quality_price_position_min': 0.76,
+            'dual_channel_quality_macd_min': 0.0,
+            'dual_channel_quality_rsi_diff_min': 0.0,
+
+            # 趋势跑者识别与持有（用于高波动大牛股）
+            'runner_context_enabled': False,             # 动态门控关闭时，是否仍计算runner画像并放行runner突破
+            'runner_profile_enabled': True,
+            'runner_profile_min_score': 0.58,
+            'runner_profile_ret120_min': 18.0,
+            'runner_profile_ma120_slope_min': 1.2,
+            'runner_profile_max_drawdown': 18.0,
+            'runner_profile_breakout_lookback': 120,
+            'runner_breakout_enabled': True,
+            'runner_breakout_lookback': 55,
+            'runner_breakout_buffer_pct': 0.3,
+            'runner_breakout_volume_mult': 1.05,
+            'runner_breakout_min_trend_conf': 0.52,
+            'runner_breakout_max_risk_score': 0.70,
+            'runner_breakout_rsi_min': 44,
+            'runner_breakout_rsi_max': 82,
+            'runner_breakout_force_entry': False,
+            # 趋势再突破买点：不依赖runner画像，用于“回撤后再次突破上车”
+            'trend_reclaim_entry_enabled': False,
+            'trend_reclaim_entry_lookback': 80,
+            'trend_reclaim_entry_buffer_pct': 0.2,
+            'trend_reclaim_entry_ma120_lookback': 40,
+            'trend_reclaim_entry_ma120_slope_min': 0.3,
+            'trend_reclaim_entry_rsi_diff_min': 1.0,
+            'trend_reclaim_entry_ret120_min': 15.0,
+            'trend_reclaim_entry_volume_mult': 0.9,
+            'trend_reclaim_entry_max_dist_ma20': 18.0,
+            'runner_hold_guard_days': 16,
+            'runner_hold_guard_profit_floor': -4.0,
+            'runner_hold_guard_profit_ceiling': 7.5,
+            'runner_hold_guard_min_trend_conf': 0.50,
+            'runner_hold_guard_max_risk_score': 0.70,
+            'runner_hot_stop_floor': 7.5,
+            # 结构性趋势持有保护：已显著盈利且长趋势结构未破坏时，抑制“过早趋势转空退出”
+            'structural_trend_hold_enabled': False,
+            'structural_trend_hold_min_profit': 12.0,
+            'structural_trend_hold_min_days': 20,
+            'structural_trend_hold_ret120_min': 22.0,
+            'structural_trend_hold_range20_min': 10.0,
+            'structural_trend_hold_ma120_lookback': 40,
+            'structural_trend_hold_ma120_slope_min': 0.4,
+            'structural_trend_hold_price_ma120_buffer': -2.0,
+            'structural_trend_hold_rsi_diff_min': -2.0,
+            'structural_trend_hold_require_trend_direction': False,
+            'structural_trend_hold_break_ma120_days': 2,
+            'structural_trend_hold_break_price_ma120_buffer': -4.0,
+            'structural_trend_hold_break_profit_drawdown': 16.0,
+            'structural_trend_hold_disable_eh_swing': True,
 
         }
         if config:
@@ -546,6 +830,182 @@ class RSITrendStrategy(StrategyBase):
             use_strategy_cache=False,
             oscillation_driven=False
         )
+        self.active_profile_mode = 'base'
+        self.active_profile_features: Dict[str, float] = {}
+
+    def _compute_profile_features(self, data: pd.DataFrame) -> Dict[str, float]:
+        close = data['close'].astype(float).values
+        high = data['high'].astype(float).values
+        low = data['low'].astype(float).values
+        bars = len(close)
+
+        log_ret = np.diff(np.log(np.clip(close, 1e-9, None)))
+        vol = float(np.std(log_ret) * np.sqrt(252)) if len(log_ret) > 3 else 0.0
+        total_ret = float(close[-1] / close[0] - 1.0) if close[0] > 0 else 0.0
+        maxdd = float(((np.maximum.accumulate(close) - close) / np.maximum.accumulate(close)).max()) if bars > 1 else 0.0
+        if len(log_ret) > 2:
+            s0 = np.sign(log_ret[:-1])
+            s1 = np.sign(log_ret[1:])
+            switch = float(((s0 != 0) & (s1 != 0) & (s0 != s1)).mean())
+        else:
+            switch = 0.0
+        range20 = float(
+            ((pd.Series(high).rolling(20, min_periods=5).max()
+              / pd.Series(low).rolling(20, min_periods=5).min() - 1.0) * 100.0).mean()
+        )
+
+        personality = 'unknown'
+        min_bars = max(60, int(self.config.get('adaptive_profile_min_bars', 120)))
+        if bars >= max(90, min_bars):
+            try:
+                from .personality.segmenter import StockPersonalityEngine
+                dates = pd.to_datetime(data['date']).dt.strftime('%Y-%m-%d').values if 'date' in data.columns else None
+                pe = StockPersonalityEngine(close, dates)
+                personality = pe.get_personality_at_bar(bars - 1)
+            except Exception:
+                personality = 'unknown'
+
+        return {
+            'total_ret': total_ret,
+            'maxdd': maxdd,
+            'vol': vol,
+            'switch': switch,
+            'range20': range20,
+            'personality': personality,
+        }
+
+    @staticmethod
+    def _route_profile_mode(feat: Dict[str, float]) -> str:
+        sw = float(feat.get('switch', 0.0))
+        mdd = float(feat.get('maxdd', 0.0))
+        vol = float(feat.get('vol', 0.0))
+        tr = float(feat.get('total_ret', 0.0))
+        rg = float(feat.get('range20', 0.0))
+        personality = str(feat.get('personality', 'unknown'))
+
+        # 结构性弱势高噪声标的：切到防守档，优先控制亏损与过度交易
+        if tr <= -0.70 and mdd >= 0.80 and vol >= 0.60:
+            return 'def'
+
+        if sw <= 0.514545:
+            if sw <= 0.467007:
+                if mdd <= 0.564533:
+                    return 'a'
+                return 'c7'
+
+            if sw <= 0.479289:
+                if sw <= 0.47707:
+                    return 'base'
+                if tr <= 2.048403:
+                    return 'c7'
+                return 'c14'
+
+            if personality == 'breakout_runner':
+                return 'a'
+
+            if vol <= 0.498349:
+                if rg <= 23.394988:
+                    return 'c16'
+                return 'c7'
+
+            if vol <= 0.519152:
+                if tr <= 2.626775:
+                    return 'a'
+                return 'base'
+
+            if sw <= 0.49528:
+                if rg <= 33.344429:
+                    return 's5'
+                return 'base'
+
+            if mdd <= 0.682888:
+                return 'a'
+            if mdd <= 0.832203:
+                return 'base'
+            if personality == 'trend_persistent':
+                return 'c14'
+            return 'c7'
+
+        if mdd <= 0.646072:
+            if vol <= 0.489533:
+                return 'a'
+            return 'c14'
+
+        if tr <= -0.318397:
+            return 'a'
+        return 's5'
+
+    @staticmethod
+    def _profile_mode_overrides(mode: str) -> Dict:
+        mode_overrides = {
+            'base': {
+                'dynamic_switch_enabled': False,
+                'extended_hold_drawdown': 5,
+            },
+            'c16': {
+                'dynamic_switch_enabled': False,
+                'extended_hold_drawdown': 6,
+                'trend_stop_loss_pct': 9.5,
+                'hard_loss_cap_pct': 9.5,
+                'golden_cross_stop_loss_pct': 6.5,
+                'discount_zone_stop_loss_pct': 6.5,
+            },
+            'c7': {
+                'dynamic_switch_enabled': False,
+                'extended_hold_drawdown': 6,
+                'trailing_stop_trigger': 10,
+            },
+            'c14': {
+                'dynamic_switch_enabled': False,
+                'extended_hold_drawdown': 6,
+                'eh_pattern_enabled': True,
+            },
+            's5': {
+                'dynamic_switch_enabled': False,
+                'extended_hold_drawdown': 6,
+                'trend_stop_loss_pct': 9.5,
+                'hard_loss_cap_pct': 9.5,
+                'golden_cross_stop_loss_pct': 6.5,
+                'discount_zone_stop_loss_pct': 6.5,
+                'trailing_stop_level': 1.0,
+            },
+            'a': {
+                'dynamic_switch_enabled': True,
+                'adaptive_entry_require_ma120_trend': False,
+                'adaptive_entry_allow_without_ma120': True,
+                'adaptive_entry_max_dist_ma20': 12.0,
+                'adaptive_entry_min_trend_conf': 0.32,
+                'adaptive_entry_max_risk_score': 0.86,
+                'adaptive_noise_threshold': 0.65,
+                'adaptive_guard_risk_floor': 0.72,
+                'adaptive_guard_drawdown_floor': 30.0,
+                'adaptive_dual_channel_min_trend_conf': 0.50,
+                'adaptive_dual_channel_max_risk_score': 0.72,
+            },
+            'def': {
+                'dynamic_switch_enabled': True,
+                'dynamic_switch_allow_reversal_any': False,
+                'adaptive_entry_require_ma120_trend': True,
+                'adaptive_entry_allow_without_ma120': False,
+                'adaptive_entry_max_dist_ma20': 7.0,
+                'adaptive_entry_min_trend_conf': 0.72,
+                'adaptive_entry_max_risk_score': 0.42,
+                'adaptive_fee_pressure_threshold': 0.0,
+                'adaptive_noise_threshold': 0.0,
+                'adaptive_guard_risk_floor': 0.0,
+                'adaptive_guard_drawdown_floor': 0.0,
+                'adaptive_dual_channel_min_trend_conf': 0.80,
+                'adaptive_dual_channel_max_risk_score': 0.42,
+            },
+        }
+        return mode_overrides.get(mode, mode_overrides['base']).copy()
+
+    def _apply_adaptive_profile_router(self, data: pd.DataFrame) -> None:
+        # 禁用按股票/按股票分型路由：
+        # 仅保留买点级别的动态机制（见 dynamic_switch / adaptive_*）。
+        self.active_profile_mode = 'base'
+        self.active_profile_features = {}
+        return
 
     # --------------------------------------------------------------------- #
     # Market Regime Filter                                                  #
@@ -661,6 +1121,8 @@ class RSITrendStrategy(StrategyBase):
             return None, None
 
         data = self._prepare_dataframe(df)
+        # 明确不执行按股票分型路由，避免引入按股静态画像分流。
+        self._apply_adaptive_profile_router(data)
 
         fast_period = int(self.config['trend_rsi_fast_period'])
         slow_period = int(self.config['trend_rsi_slow_period'])
@@ -1336,13 +1798,108 @@ class RSITrendStrategy(StrategyBase):
                     float(self.config.get('slow_pullback_exit_family_weekly_macd_min', 5.35)),
                     float(self.config.get('slow_pullback_exit_family_weekly_macd_max', 6.2)),
                 )
-                & (data['lr_slope_20'] <= float(self.config.get('slow_pullback_exit_family_lr20_max', 0.30)))
-                & (data['range_20d_pct'] <= float(self.config.get('slow_pullback_exit_family_range20_max', 17.5)))
+                & (data['lr_slope_20'] <= float(self.config.get('slow_pullback_exit_family_lr20_max', 0.40)))
+                & (data['range_20d_pct'] <= float(self.config.get('slow_pullback_exit_family_range20_max', 24.0)))
                 & (data['dist_ma20'] <= float(self.config.get('slow_pullback_exit_family_dist_ma20_max', 9.5)))
             )
         else:
             data['slow_pullback_slow_family'] = False
         data['slow_pullback_entry'] = slow_pullback_entry
+
+        ma_family_router_regime = pd.Series(False, index=data.index)
+        if bool(self.config.get('slow_regime_block_golden_cross_enabled', False)):
+            _slow_gc_ret60 = (data['close'] / data['close'].shift(60) - 1) * 100
+            _slow_gc_anchor_rising = data['ma_55'] > data['ma_55'].shift(20)
+            _slow_gc_ma120_rising = data['ma_120'] > data['ma_120'].shift(40)
+            ma_family_router_regime = (
+                _slow_gc_anchor_rising.fillna(False)
+                & _slow_gc_ma120_rising.fillna(False)
+                & (data['close'] >= data['ma_120'])
+                & (_slow_gc_ret60 >= float(self.config.get('slow_regime_block_gc_ret60_min', 0.0)))
+                & (_slow_gc_ret60 <= float(self.config.get('slow_regime_block_gc_ret60_max', 35.0)))
+                & (data['dist_ma20'] >= float(self.config.get('slow_regime_block_gc_dist_ma20_min', 1.0)))
+                & (data['dist_ma20'] <= float(self.config.get('slow_regime_block_gc_dist_ma20_max', 14.0)))
+                & (data['dist_ma60'] <= float(self.config.get('slow_regime_block_gc_dist_ma60_max', 8.0)))
+                & (data['lt_elder_weekly_macd'] >= float(self.config.get('slow_regime_block_gc_weekly_macd_min', 3.8)))
+                & (data['lt_elder_weekly_macd'] <= float(self.config.get('slow_regime_block_gc_weekly_macd_max', 7.0)))
+                & (data['lr_slope_20'] >= float(self.config.get('slow_regime_block_gc_lr20_min', -0.05)))
+                & (data['lr_slope_20'] <= float(self.config.get('slow_regime_block_gc_lr20_max', 0.55)))
+                & (data['range_20d_pct'] >= float(self.config.get('slow_regime_block_gc_range20_min', 10.0)))
+                & (data['range_20d_pct'] <= float(self.config.get('slow_regime_block_gc_range20_max', 28.0)))
+                & (data['atr_pct'] <= float(self.config.get('ma_family_hard_route_atr_pct_max', 4.5)))
+                & (data['bb_percent'] <= float(self.config.get('ma_family_hard_route_bb_percent_max', 1.02)))
+            )
+            _slow_gc_block = (
+                standard_entry
+                & data['golden_cross']
+                & (~rsi_relaxed_condition)
+                & ma_family_router_regime
+                & ~(ma60_factor_pullback_entry | slow_pullback_entry)
+            )
+            standard_entry = standard_entry & ~_slow_gc_block
+        data['ma_family_router_regime'] = ma_family_router_regime
+
+        if bool(self.config.get('ma_family_hard_route_enabled', False)):
+            _ma_route_block = ma_family_router_regime
+            standard_entry = standard_entry & ~_ma_route_block
+            dual_channel_entry = dual_channel_entry & ~_ma_route_block
+            discount_zone_entry = discount_zone_entry & ~_ma_route_block
+            divergence_entry = divergence_entry & ~_ma_route_block
+            rsi_momentum_entry = rsi_momentum_entry & ~_ma_route_block
+            sideways_entry = sideways_entry & ~_ma_route_block
+            w_bottom_entry = w_bottom_entry & ~_ma_route_block
+
+        # bar级分型路由：仅使用截至当下的历史窗口特征，不依赖未来数据
+        profile_mode_bar = pd.Series('base', index=data.index, dtype=object)
+        profile_bar_def_block = pd.Series(False, index=data.index)
+        if bool(self.config.get('profile_bar_router_enabled', False)):
+            _pb_defense_block_enabled = bool(self.config.get('profile_bar_defense_block_enabled', True))
+            _pb_min_bars = max(60, int(self.config.get('profile_bar_router_min_bars', 120)))
+            _pb_log_ret = np.log(data['close'] / data['close'].shift(1))
+            _pb_vol = (_pb_log_ret.expanding(min_periods=20).std() * np.sqrt(252)).fillna(0.0)
+            _pb_sign = np.sign(_pb_log_ret)
+            _pb_switch_flag = (
+                (_pb_sign != 0)
+                & (_pb_sign.shift(1) != 0)
+                & (_pb_sign != _pb_sign.shift(1))
+            ).astype(float)
+            _pb_switch = _pb_switch_flag.expanding(min_periods=20).mean().fillna(0.0)
+            _pb_total_ret = (data['close'] / data['close'].iloc[0] - 1.0).fillna(0.0)
+            _pb_dd = (
+                (data['close'].cummax() - data['close'])
+                / data['close'].cummax().replace(0, np.nan)
+            ).fillna(0.0)
+            _pb_mdd = _pb_dd.expanding(min_periods=20).max().fillna(0.0)
+            _pb_rg = data['range_20d_pct'].fillna(0.0).expanding(min_periods=20).mean().fillna(0.0)
+
+            _pb_modes: List[str] = []
+            for _idx, (_tr, _mdd, _vol, _sw, _rgv) in enumerate(
+                zip(_pb_total_ret.values, _pb_mdd.values, _pb_vol.values, _pb_switch.values, _pb_rg.values)
+            ):
+                if _idx < _pb_min_bars:
+                    _pb_modes.append('base')
+                    continue
+                _pb_modes.append(
+                    self._route_profile_mode({
+                        'total_ret': float(_tr),
+                        'maxdd': float(_mdd),
+                        'vol': float(_vol),
+                        'switch': float(_sw),
+                        'range20': float(_rgv),
+                        'personality': 'unknown',
+                    })
+                )
+
+            profile_mode_bar = pd.Series(_pb_modes, index=data.index, dtype=object)
+            if _pb_defense_block_enabled:
+                profile_bar_def_block = profile_mode_bar == 'def'
+                # 防守档仅收紧连续追随买点，反转/回踩/震荡家族保持通路
+                standard_entry = standard_entry & (~profile_bar_def_block)
+                dual_channel_entry = dual_channel_entry & (~profile_bar_def_block)
+                rsi_momentum_entry = rsi_momentum_entry & (~profile_bar_def_block)
+
+        data['profile_mode_bar'] = profile_mode_bar
+        data['profile_bar_def_block'] = profile_bar_def_block
 
         # 入场质量过滤器（基于多因子分析，按类型选择性应用）
         data['standard_entry_raw'] = standard_entry.copy()
@@ -1416,9 +1973,460 @@ class RSITrendStrategy(StrategyBase):
                 (data['fast_rsi'] < 35) &
                 lr_filter_condition
             )
-            entry_condition = entry_condition | gap_fade_entry
+            if bool(self.config.get('ma_family_hard_route_enabled', False)):
+                gap_fade_entry = gap_fade_entry & ~data['ma_family_router_regime']
             logger.debug(f"[Gap Fade] 跳空回补入场: {gap_fade_entry.sum()}条")
+
+        trend_reclaim_entry = pd.Series(False, index=data.index)
+        if bool(self.config.get('trend_reclaim_entry_enabled', False)):
+            tr_lookback = max(30, int(self.config.get('trend_reclaim_entry_lookback', 80)))
+            tr_buffer = 1.0 + float(self.config.get('trend_reclaim_entry_buffer_pct', 0.2)) / 100.0
+            tr_ma120_lb = max(20, int(self.config.get('trend_reclaim_entry_ma120_lookback', 40)))
+            tr_ma120_slope_min = float(self.config.get('trend_reclaim_entry_ma120_slope_min', 0.3))
+            tr_rsi_diff_min = float(self.config.get('trend_reclaim_entry_rsi_diff_min', 1.0))
+            tr_ret120_min = float(self.config.get('trend_reclaim_entry_ret120_min', 15.0))
+            tr_vol_mult = float(self.config.get('trend_reclaim_entry_volume_mult', 0.9))
+            tr_max_dist_ma20 = float(self.config.get('trend_reclaim_entry_max_dist_ma20', 18.0))
+
+            tr_break_line = data['high'].rolling(
+                tr_lookback,
+                min_periods=max(20, tr_lookback // 2),
+            ).max().shift(1)
+            tr_ma120_slope = (data['ma_120'] / data['ma_120'].shift(tr_ma120_lb) - 1.0) * 100.0
+            tr_ret120 = (data['close'] / data['close'].shift(120) - 1.0) * 100.0
+            tr_vol_ok = pd.Series(True, index=data.index)
+            if 'volume' in data.columns and 'volume_ma20' in data.columns and tr_vol_mult > 0:
+                tr_vol_ok = (
+                    (data['volume_ma20'] > 0)
+                    & (data['volume'] >= data['volume_ma20'] * tr_vol_mult)
+                ).fillna(False)
+
+            trend_reclaim_entry = (
+                (direction == 1)
+                & (data['close'] >= tr_break_line * tr_buffer)
+                & (data['close'] >= data['ma_120'])
+                & (tr_ma120_slope >= tr_ma120_slope_min)
+                & (data['rsi_diff'] >= tr_rsi_diff_min)
+                & (tr_ret120 >= tr_ret120_min)
+                & tr_vol_ok
+            ).fillna(False)
+            if tr_max_dist_ma20 > 0 and 'dist_ma20' in data.columns:
+                trend_reclaim_entry = trend_reclaim_entry & (data['dist_ma20'].fillna(999.0) <= tr_max_dist_ma20)
+
+        # 动态切换机制：自适应调节而非硬拦截（保留信号通路，按行为画像调节门槛）
+        runner_breakout_entry = pd.Series(False, index=data.index)
+        dynamic_switch_enabled = bool(self.config.get('dynamic_switch_enabled', False))
+        if dynamic_switch_enabled:
+            trend_aroon_min = float(self.config.get('dynamic_switch_trend_aroon_min', 42))
+            sideways_aroon_max = float(self.config.get('dynamic_switch_sideways_aroon_max', 18))
+            ma120_slope_lookback = max(5, int(self.config.get('dynamic_switch_ma120_slope_lookback', 20)))
+            high_vol_range20 = float(self.config.get('dynamic_switch_high_vol_range20', 24.0))
+            allow_reversal_any = bool(self.config.get('dynamic_switch_allow_reversal_any', True))
+
+            aroon_abs = data['aroon_osc'].abs().fillna(0.0)
+            ma120_slope = (data['ma_120'] / data['ma_120'].shift(ma120_slope_lookback) - 1) * 100
+            ma120_slope_safe = ma120_slope.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            data['dynamic_ma120_slope'] = ma120_slope_safe
+            high_vol_regime = data['range_20d_pct'].fillna(0.0) >= high_vol_range20
+            downtrend_regime = ((direction != 1) | (ma120_slope_safe < 0)).fillna(False)
+
+            trend_regime = (
+                (direction == 1)
+                & (aroon_abs >= trend_aroon_min)
+                & (ma120_slope_safe >= -0.2)
+            ).fillna(False)
+
+            sideways_regime = (
+                ((aroon_abs <= sideways_aroon_max) | data['is_sideways'])
+                & (ma120_slope_safe.abs() <= 1.8)
+            ).fillna(False)
+
+            risk_off_regime = (
+                high_vol_regime
+                & downtrend_regime
+                & (ma120_slope_safe < -1.2)
+                & (aroon_abs < (trend_aroon_min - 8.0))
+            ).fillna(False)
+            sideways_regime = sideways_regime & ~trend_regime & ~risk_off_regime
+            down_regime = (downtrend_regime & ~trend_regime & ~sideways_regime & ~risk_off_regime).fillna(False)
+
+            denom = max(1.0, trend_aroon_min - sideways_aroon_max)
+            trend_conf = (
+                ((aroon_abs - sideways_aroon_max) / denom).clip(0, 1) * 0.48
+                + (direction == 1).astype(float) * 0.34
+                + ((ma120_slope_safe + 2.0) / 6.0).clip(0, 1) * 0.18
+            ).clip(0, 1)
+            sideways_conf = (
+                ((trend_aroon_min - aroon_abs) / max(1.0, trend_aroon_min)).clip(0, 1) * 0.50
+                + data['is_sideways'].astype(float) * 0.30
+                + ((35.0 - data['fast_rsi']) / 20.0).clip(0, 1) * 0.20
+            ).clip(0, 1)
+            risk_score = (
+                high_vol_regime.astype(float) * 0.45
+                + (direction != 1).astype(float) * 0.35
+                + ((-ma120_slope_safe) / 3.0).clip(0, 1) * 0.20
+            ).clip(0, 1)
+            reversal_conf = (
+                risk_score * 0.55
+                + ((40.0 - data['fast_rsi']) / 20.0).clip(0, 1) * 0.20
+                + ((50.0 - aroon_abs) / 50.0).clip(0, 1) * 0.25
+            ).clip(0, 1)
+            trend_conf = trend_conf.replace([np.inf, -np.inf], np.nan).fillna(0.5)
+            sideways_conf = sideways_conf.replace([np.inf, -np.inf], np.nan).fillna(0.5)
+            risk_score = risk_score.replace([np.inf, -np.inf], np.nan).fillna(0.5)
+            reversal_conf = reversal_conf.replace([np.inf, -np.inf], np.nan).fillna(0.5)
+            data['dynamic_trend_conf'] = trend_conf
+            data['dynamic_sideways_conf'] = sideways_conf
+            data['dynamic_risk_score'] = risk_score
+            data['dynamic_reversal_conf'] = reversal_conf
+
+            roundtrip_fee_pct = self._estimate_roundtrip_fee_pct()
+            range20 = data['range_20d_pct'].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            atr_pct_feat = (
+                data['atr_pct'] if 'atr_pct' in data.columns
+                else (data['atr'] / data['close'] * 100.0)
+            )
+            atr_pct_feat = atr_pct_feat.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            fee_pressure_score = (roundtrip_fee_pct / atr_pct_feat.clip(lower=1.2)).clip(0, 1)
+            direction_flip_rate = (direction != direction.shift(1)).astype(float).rolling(20, min_periods=5).mean().fillna(0.0)
+            price_chop = (
+                (data['close'].rolling(10, min_periods=5).max()
+                 / data['close'].rolling(10, min_periods=5).min()) - 1.0
+            ) * 100.0
+            noise_score = (
+                direction_flip_rate.clip(0, 1) * 0.52
+                + ((25.0 - range20) / 20.0).clip(0, 1) * 0.23
+                + ((3.5 - price_chop) / 3.5).clip(0, 1) * 0.25
+            ).clip(0, 1)
+            drawdown_120 = (
+                (data['high'].rolling(120, min_periods=40).max().shift(1) - data['close'])
+                / data['high'].rolling(120, min_periods=40).max().shift(1)
+            ) * 100.0
+            drawdown_120 = drawdown_120.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+            adaptive_fee_pressure_threshold = float(self.config.get('adaptive_fee_pressure_threshold', 0.045))
+            adaptive_noise_threshold = float(self.config.get('adaptive_noise_threshold', 0.46))
+            adaptive_guard_risk_floor = float(self.config.get('adaptive_guard_risk_floor', 0.52))
+            adaptive_guard_drawdown_floor = float(self.config.get('adaptive_guard_drawdown_floor', 22.0))
+
+            runner_profile_enabled = bool(self.config.get('runner_profile_enabled', True))
+            runner_profile_min_score = float(self.config.get('runner_profile_min_score', 0.58))
+            runner_profile_ret120_min = float(self.config.get('runner_profile_ret120_min', 18.0))
+            runner_profile_ma120_slope_min = float(self.config.get('runner_profile_ma120_slope_min', 1.2))
+            runner_profile_max_drawdown = float(self.config.get('runner_profile_max_drawdown', 18.0))
+            runner_profile_breakout_lookback = max(60, int(self.config.get('runner_profile_breakout_lookback', 120)))
+            ret120 = (data['close'] / data['close'].shift(120) - 1.0) * 100.0
+            ret250 = (data['close'] / data['close'].shift(250) - 1.0) * 100.0
+            long_high = data['high'].rolling(
+                runner_profile_breakout_lookback,
+                min_periods=max(40, runner_profile_breakout_lookback // 3),
+            ).max().shift(1)
+            near_long_high = (data['close'] >= long_high * 0.985).fillna(False)
+            drawdown_quality = ((runner_profile_max_drawdown - drawdown_120) / max(1.0, runner_profile_max_drawdown)).clip(0, 1)
+            risk_quality = (1.0 - risk_score).clip(0, 1)
+            runner_score = (
+                trend_conf * 0.30
+                + (ret120 / max(1.0, runner_profile_ret120_min)).clip(0, 1) * 0.24
+                + (ret250 / max(1.0, runner_profile_ret120_min * 1.4)).clip(0, 1) * 0.12
+                + (ma120_slope_safe / max(1.0, runner_profile_ma120_slope_min * 2.5)).clip(0, 1) * 0.14
+                + near_long_high.astype(float) * 0.10
+                + drawdown_quality * 0.10
+                + risk_quality * 0.10
+            ).clip(0, 1)
+            runner_profile = (
+                (runner_score >= runner_profile_min_score)
+                & ((ret120 >= runner_profile_ret120_min) | near_long_high)
+                & (ma120_slope_safe >= -0.4)
+                & (trend_conf >= 0.45)
+                & (risk_score <= 0.72)
+                & (drawdown_120 <= runner_profile_max_drawdown)
+            ).fillna(False)
+            if not runner_profile_enabled:
+                runner_profile = pd.Series(False, index=data.index)
+
+            fee_sensitive_profile = (
+                (fee_pressure_score >= adaptive_fee_pressure_threshold)
+                | (noise_score >= adaptive_noise_threshold)
+                | ((risk_score >= adaptive_guard_risk_floor) & (trend_conf < 0.72))
+                | ((drawdown_120 >= adaptive_guard_drawdown_floor) & (trend_conf < 0.80))
+            ).fillna(False)
+
+            data['dynamic_runner_score'] = runner_score
+            data['dynamic_ret120_pct'] = ret120
+            data['dynamic_runner_profile'] = runner_profile
+            data['dynamic_fee_pressure_score'] = fee_pressure_score
+            data['dynamic_noise_score'] = noise_score
+            data['dynamic_drawdown_120'] = drawdown_120
+            data['dynamic_fee_sensitive_profile'] = fee_sensitive_profile
+            adaptive_gate_mask = (fee_sensitive_profile | risk_off_regime).fillna(False)
+            data['dynamic_gate_mask'] = adaptive_gate_mask
+
+            runner_breakout_raw = pd.Series(False, index=data.index)
+            if bool(self.config.get('runner_breakout_enabled', True)):
+                rb_lookback = max(20, int(self.config.get('runner_breakout_lookback', 55)))
+                rb_buffer = 1.0 + float(self.config.get('runner_breakout_buffer_pct', 0.3)) / 100.0
+                rb_vol_mult = float(self.config.get('runner_breakout_volume_mult', 1.05))
+                rb_min_trend_conf = float(self.config.get('runner_breakout_min_trend_conf', 0.52))
+                rb_max_risk = float(self.config.get('runner_breakout_max_risk_score', 0.70))
+                rb_rsi_min = float(self.config.get('runner_breakout_rsi_min', 44))
+                rb_rsi_max = float(self.config.get('runner_breakout_rsi_max', 82))
+                breakout_line = data['high'].rolling(
+                    rb_lookback,
+                    min_periods=max(15, rb_lookback // 2),
+                ).max().shift(1)
+                runner_breakout_raw = (
+                    runner_profile
+                    & (data['close'] >= breakout_line * rb_buffer)
+                    & (data['volume'] >= data['volume_ma20'] * rb_vol_mult)
+                    & (data['fast_rsi'] >= rb_rsi_min)
+                    & (data['fast_rsi'] <= rb_rsi_max)
+                    & (trend_conf >= rb_min_trend_conf)
+                    & (risk_score <= rb_max_risk)
+                ).fillna(False)
+                if 'dist_ma20' in data.columns:
+                    runner_breakout_raw = runner_breakout_raw & (data['dist_ma20'].fillna(999.0) <= 12.5)
+
+            trend_family_before = (
+                standard_entry
+                | dual_channel_entry
+                | rsi_momentum_entry
+                | ma60_factor_pullback_entry
+                | slow_pullback_entry
+                | trend_reclaim_entry
+                | runner_breakout_raw
+            )
+            mean_revert_family_before = sideways_entry | discount_zone_entry | gap_fade_entry
+            reversal_family_before = divergence_entry | w_bottom_entry
+            router_candidates_before = trend_family_before | mean_revert_family_before | reversal_family_before
+
+            trend_soft_confirm = (
+                data['golden_cross']
+                | (data['rsi_diff'] >= float(self.config.get('trend_relaxed_min_gap', 1.9)) + 0.8)
+                | ((data['close'] >= data['ma_20']) & (data['fast_rsi'] > data['fast_rsi'].shift(1)))
+                | ((data['volume'] >= data['volume_ma20']) & (direction == 1))
+            ).fillna(False)
+            mean_revert_soft_confirm = (
+                ((data['fast_rsi'] <= min(30.0, _sw_entry_rsi + 2.0)) & (data['bb_percent'] <= min(0.26, _sw_entry_bb + 0.08)))
+                | ((data['close'] >= data['ma_120'] * 0.95) & (data['fast_rsi'] < 35))
+            ).fillna(False)
+            risk_rebound_confirm = (
+                (data['close'] >= data['ma_20'])
+                & (data['fast_rsi'] > data['fast_rsi'].shift(1))
+            ).fillna(False)
+
+            trend_gate = (trend_conf >= 0.32) | trend_soft_confirm | runner_profile
+            pullback_gate = (trend_conf >= 0.28) | trend_soft_confirm | runner_profile
+            mean_revert_gate = (sideways_conf >= 0.30) | mean_revert_soft_confirm
+            non_reversal_gate = (risk_score < 0.72) | risk_rebound_confirm | (runner_profile & (risk_score < 0.82))
+            extreme_risk_gate = (risk_score < 0.88) | (trend_soft_confirm & mean_revert_soft_confirm) | (runner_profile & (risk_score < 0.90))
+            reversal_gate = (
+                pd.Series(True, index=data.index)
+                if allow_reversal_any
+                else (reversal_conf >= 0.25)
+            )
+
+            trend_gate_final = trend_gate & non_reversal_gate & extreme_risk_gate
+            pullback_gate_final = pullback_gate & non_reversal_gate & extreme_risk_gate
+            mean_revert_gate_final = mean_revert_gate & non_reversal_gate & extreme_risk_gate
+            adaptive_passthrough = ~adaptive_gate_mask
+
+            standard_entry = standard_entry & (adaptive_passthrough | trend_gate_final)
+            dual_channel_entry = dual_channel_entry & (adaptive_passthrough | trend_gate_final)
+            rsi_momentum_entry = rsi_momentum_entry & (adaptive_passthrough | trend_gate_final)
+            ma60_factor_pullback_entry = ma60_factor_pullback_entry
+            slow_pullback_entry = slow_pullback_entry
+            runner_breakout_entry = runner_breakout_raw
+            sideways_entry = sideways_entry
+            discount_zone_entry = discount_zone_entry
+            gap_fade_entry = gap_fade_entry
+            divergence_entry = divergence_entry
+            w_bottom_entry = w_bottom_entry
+
+            router_candidates_after = (
+                standard_entry
+                | dual_channel_entry
+                | rsi_momentum_entry
+                | ma60_factor_pullback_entry
+                | slow_pullback_entry
+                | trend_reclaim_entry
+                | runner_breakout_entry
+                | sideways_entry
+                | discount_zone_entry
+                | gap_fade_entry
+                | divergence_entry
+                | w_bottom_entry
+            )
+            router_blocked = router_candidates_before & ~router_candidates_after
+
+            regime_label = pd.Series('MIXED', index=data.index, dtype=object)
+            regime_label.loc[trend_conf >= 0.58] = 'TREND'
+            regime_label.loc[(sideways_conf >= 0.58) & (trend_conf < 0.58)] = 'SIDEWAYS'
+            regime_label.loc[(risk_score >= 0.58) & (trend_conf < 0.52)] = 'DOWN'
+            regime_label.loc[risk_off_regime] = 'RISK_OFF'
+            data['dynamic_regime_label'] = regime_label
+
+            strategy_bucket = pd.Series('hybrid', index=data.index, dtype=object)
+            strategy_bucket.loc[trend_conf >= 0.58] = 'trend_following'
+            strategy_bucket.loc[runner_profile] = 'runner_trend'
+            strategy_bucket.loc[(sideways_conf >= 0.58) & (trend_conf < 0.58)] = 'mean_reversion'
+            strategy_bucket.loc[(risk_score >= 0.58) & (trend_conf < 0.52)] = 'reversal_preferred'
+            strategy_bucket.loc[risk_off_regime] = 'reversal_only'
+            data['dynamic_strategy_bucket'] = strategy_bucket
+
+            block_reason = pd.Series('', index=data.index, dtype=object)
+            block_reason.loc[router_blocked & risk_off_regime] = 'adaptive_extreme_risk'
+            block_reason.loc[router_blocked & fee_sensitive_profile] = 'adaptive_fee_noise_guard'
+            block_reason.loc[router_blocked & adaptive_gate_mask & (trend_conf < 0.32)] = 'adaptive_trend_confirm'
+            block_reason.loc[router_blocked & adaptive_gate_mask & (sideways_conf < 0.30)] = 'adaptive_sideways_confirm'
+            block_reason.loc[router_blocked & adaptive_gate_mask & (risk_score >= 0.72)] = 'adaptive_risk_rebound_needed'
+            data['dynamic_switch_block_reason'] = block_reason
+            data['dynamic_router_blocked'] = router_blocked
+        else:
+            runner_context_enabled = bool(self.config.get('runner_context_enabled', False))
+            if runner_context_enabled:
+                trend_aroon_min = float(self.config.get('dynamic_switch_trend_aroon_min', 42))
+                sideways_aroon_max = float(self.config.get('dynamic_switch_sideways_aroon_max', 18))
+                ma120_slope_lookback = max(5, int(self.config.get('dynamic_switch_ma120_slope_lookback', 20)))
+                high_vol_range20 = float(self.config.get('dynamic_switch_high_vol_range20', 24.0))
+
+                aroon_abs = data['aroon_osc'].abs().fillna(0.0)
+                ma120_slope = (data['ma_120'] / data['ma_120'].shift(ma120_slope_lookback) - 1) * 100
+                ma120_slope_safe = ma120_slope.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                data['dynamic_ma120_slope'] = ma120_slope_safe
+
+                high_vol_regime = data['range_20d_pct'].fillna(0.0) >= high_vol_range20
+                denom = max(1.0, trend_aroon_min - sideways_aroon_max)
+                trend_conf = (
+                    ((aroon_abs - sideways_aroon_max) / denom).clip(0, 1) * 0.48
+                    + (direction == 1).astype(float) * 0.34
+                    + ((ma120_slope_safe + 2.0) / 6.0).clip(0, 1) * 0.18
+                ).clip(0, 1)
+                risk_score = (
+                    high_vol_regime.astype(float) * 0.45
+                    + (direction != 1).astype(float) * 0.35
+                    + ((-ma120_slope_safe) / 3.0).clip(0, 1) * 0.20
+                ).clip(0, 1)
+                trend_conf = trend_conf.replace([np.inf, -np.inf], np.nan).fillna(0.5)
+                risk_score = risk_score.replace([np.inf, -np.inf], np.nan).fillna(0.5)
+
+                runner_profile_enabled = bool(self.config.get('runner_profile_enabled', True))
+                runner_profile_min_score = float(self.config.get('runner_profile_min_score', 0.58))
+                runner_profile_ret120_min = float(self.config.get('runner_profile_ret120_min', 18.0))
+                runner_profile_ma120_slope_min = float(self.config.get('runner_profile_ma120_slope_min', 1.2))
+                runner_profile_max_drawdown = float(self.config.get('runner_profile_max_drawdown', 18.0))
+                runner_profile_breakout_lookback = max(60, int(self.config.get('runner_profile_breakout_lookback', 120)))
+                ret120 = (data['close'] / data['close'].shift(120) - 1.0) * 100.0
+                ret250 = (data['close'] / data['close'].shift(250) - 1.0) * 100.0
+                long_high = data['high'].rolling(
+                    runner_profile_breakout_lookback,
+                    min_periods=max(40, runner_profile_breakout_lookback // 3),
+                ).max().shift(1)
+                near_long_high = (data['close'] >= long_high * 0.985).fillna(False)
+                drawdown_120 = (
+                    (data['high'].rolling(120, min_periods=40).max().shift(1) - data['close'])
+                    / data['high'].rolling(120, min_periods=40).max().shift(1)
+                ) * 100.0
+                drawdown_120 = drawdown_120.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+                drawdown_quality = ((runner_profile_max_drawdown - drawdown_120) / max(1.0, runner_profile_max_drawdown)).clip(0, 1)
+                risk_quality = (1.0 - risk_score).clip(0, 1)
+                runner_score = (
+                    trend_conf * 0.30
+                    + (ret120 / max(1.0, runner_profile_ret120_min)).clip(0, 1) * 0.24
+                    + (ret250 / max(1.0, runner_profile_ret120_min * 1.4)).clip(0, 1) * 0.12
+                    + (ma120_slope_safe / max(1.0, runner_profile_ma120_slope_min * 2.5)).clip(0, 1) * 0.14
+                    + near_long_high.astype(float) * 0.10
+                    + drawdown_quality * 0.10
+                    + risk_quality * 0.10
+                ).clip(0, 1)
+                runner_profile = (
+                    (runner_score >= runner_profile_min_score)
+                    & ((ret120 >= runner_profile_ret120_min) | near_long_high)
+                    & (ma120_slope_safe >= -0.4)
+                    & (trend_conf >= 0.45)
+                    & (risk_score <= 0.72)
+                    & (drawdown_120 <= runner_profile_max_drawdown)
+                ).fillna(False)
+                if not runner_profile_enabled:
+                    runner_profile = pd.Series(False, index=data.index)
+
+                data['dynamic_gate_mask'] = False
+                data['dynamic_regime_label'] = 'DISABLED_RUNNER_ONLY'
+                data['dynamic_strategy_bucket'] = 'runner_only'
+                data['dynamic_switch_block_reason'] = ''
+                data['dynamic_router_blocked'] = False
+                data['dynamic_trend_conf'] = trend_conf
+                data['dynamic_sideways_conf'] = 0.5
+                data['dynamic_risk_score'] = risk_score
+                data['dynamic_reversal_conf'] = 0.5
+                data['dynamic_runner_score'] = runner_score
+                data['dynamic_ret120_pct'] = ret120
+                data['dynamic_runner_profile'] = runner_profile
+                data['dynamic_fee_pressure_score'] = 0.0
+                data['dynamic_noise_score'] = 0.0
+                data['dynamic_drawdown_120'] = drawdown_120
+                data['dynamic_fee_sensitive_profile'] = False
+
+                runner_breakout_raw = pd.Series(False, index=data.index)
+                if bool(self.config.get('runner_breakout_enabled', True)):
+                    rb_lookback = max(20, int(self.config.get('runner_breakout_lookback', 55)))
+                    rb_buffer = 1.0 + float(self.config.get('runner_breakout_buffer_pct', 0.3)) / 100.0
+                    rb_vol_mult = float(self.config.get('runner_breakout_volume_mult', 1.05))
+                    rb_min_trend_conf = float(self.config.get('runner_breakout_min_trend_conf', 0.52))
+                    rb_max_risk = float(self.config.get('runner_breakout_max_risk_score', 0.70))
+                    rb_rsi_min = float(self.config.get('runner_breakout_rsi_min', 44))
+                    rb_rsi_max = float(self.config.get('runner_breakout_rsi_max', 82))
+                    breakout_line = data['high'].rolling(
+                        rb_lookback,
+                        min_periods=max(15, rb_lookback // 2),
+                    ).max().shift(1)
+                    runner_breakout_raw = (
+                        runner_profile
+                        & (data['close'] >= breakout_line * rb_buffer)
+                        & (data['volume'] >= data['volume_ma20'] * rb_vol_mult)
+                        & (data['fast_rsi'] >= rb_rsi_min)
+                        & (data['fast_rsi'] <= rb_rsi_max)
+                        & (trend_conf >= rb_min_trend_conf)
+                        & (risk_score <= rb_max_risk)
+                    ).fillna(False)
+                    if 'dist_ma20' in data.columns:
+                        runner_breakout_raw = runner_breakout_raw & (data['dist_ma20'].fillna(999.0) <= 12.5)
+                runner_breakout_entry = runner_breakout_raw
+            else:
+                data['dynamic_ma120_slope'] = (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100
+                data['dynamic_gate_mask'] = False
+                data['dynamic_regime_label'] = 'DISABLED'
+                data['dynamic_strategy_bucket'] = 'disabled'
+                data['dynamic_switch_block_reason'] = ''
+                data['dynamic_router_blocked'] = False
+                data['dynamic_trend_conf'] = 0.5
+                data['dynamic_sideways_conf'] = 0.5
+                data['dynamic_risk_score'] = 0.5
+                data['dynamic_reversal_conf'] = 0.5
+                data['dynamic_runner_score'] = 0.0
+                data['dynamic_ret120_pct'] = 0.0
+                data['dynamic_runner_profile'] = False
+                data['dynamic_fee_pressure_score'] = 0.0
+                data['dynamic_noise_score'] = 0.0
+                data['dynamic_drawdown_120'] = 0.0
+                data['dynamic_fee_sensitive_profile'] = False
+
         data['gap_fade_signal'] = gap_fade_entry
+        data['trend_reclaim_entry'] = trend_reclaim_entry
+        data['runner_breakout_entry'] = runner_breakout_entry
+
+        entry_condition = (
+            standard_entry
+            | divergence_entry
+            | dual_channel_entry
+            | w_bottom_entry
+            | discount_zone_entry
+            | sideways_entry
+            | rsi_momentum_entry
+            | ma60_factor_pullback_entry
+            | slow_pullback_entry
+            | gap_fade_entry
+            | trend_reclaim_entry
+            | runner_breakout_entry
+        )
 
         # Hurst Exponent策略选择器 — 根据市场状态过滤不适合的入场类型
         hurst_enabled = bool(self.config['hurst_enabled'])
@@ -1547,6 +2555,10 @@ class RSITrendStrategy(StrategyBase):
             after_count = entry_condition.sum()
             if before_count != after_count:
                 logger.debug(f"[Regime Filter] pp250>{pp250_min} slope<{slope250_max}% er<{er250_max}: {before_count}->{after_count}")
+
+        # 趋势跑者突破点可按配置直通入场判定（默认关闭）
+        if bool(self.config.get('runner_breakout_force_entry', False)):
+            entry_condition = entry_condition | runner_breakout_entry.fillna(False)
 
         # 整理内存碎片，消除后续列赋值的PerformanceWarning
         data = data.copy()
@@ -2352,6 +3364,11 @@ class RSITrendStrategy(StrategyBase):
         entry_price = None
         current_entry_reason = ''
         current_entry_class = ''
+        current_slow_suspect = False
+        current_slow_stop_reentry_candidate = False
+        current_continuation_weak = False
+        current_continuation_slow_fake = False
+        current_golden_cross_weak = False
 
         # 追高冷却期状态
         chase_cooldown_active = False
@@ -2437,6 +3454,16 @@ class RSITrendStrategy(StrategyBase):
                     stop_flags[i] = 1
                     entry_price = None
 
+            if continuation_cooldown_enabled and exit_flags[i] == 1:
+                _cd_reason = str(exit_reasons[i])
+                _cd_stop_like = (
+                    ('止损' in _cd_reason)
+                    or ('硬性亏损上限' in _cd_reason)
+                    or ('硬性止损上限' in _cd_reason)
+                )
+                if (not continuation_cooldown_stop_only) or _cd_stop_like:
+                    continuation_cooldown_until = max(continuation_cooldown_until, i + continuation_cooldown_days)
+
             position[i] = 1 if in_position else 0
 
         return position, entry_flags, exit_flags, stop_flags
@@ -2486,6 +3513,13 @@ class RSITrendStrategy(StrategyBase):
         exit_reasons = [''] * n   # 真实出场原因（在回测循环中直接记录）
         in_position = False
         entry_price = None
+        current_entry_reason = ''
+        current_entry_class = ''
+        current_slow_suspect = False
+        current_slow_stop_reentry_candidate = False
+        current_continuation_weak = False
+        current_continuation_slow_fake = False
+        current_golden_cross_weak = False
         is_divergence_entry = False  # 标记当前持仓是否为底背离买入
         is_w_bottom_entry = False  # 标记当前持仓是否为W底买入
         is_sideways_entry = False  # 标记当前持仓是否为震荡市场买入
@@ -2509,6 +3543,20 @@ class RSITrendStrategy(StrategyBase):
         _hot_entry_enabled = bool(self.config.get('hot_entry_enabled', False))
         _hot_entry_thresh = float(self.config.get('hot_entry_thresh_pct', 8))  # 20天涨幅阈值
         _hot_entry_sl = float(self.config.get('hot_entry_stop_loss_pct', 5.0))  # 过热时的止损%
+        _cont_hot_entry_floor = float(self.config.get('continuation_hot_entry_stop_floor', 0.0))
+        _cont_hot_bypass_enabled = bool(self.config.get('continuation_hot_bypass_enabled', False))
+        _cont_hot_bypass_rsi_diff = float(self.config.get('continuation_hot_bypass_rsi_diff', 3.2))
+        _cont_hot_bypass_ma60_lb = max(5, int(self.config.get('continuation_hot_bypass_ma60_lookback', 20)))
+        _cont_hot_bypass_require_ma60_rising = bool(
+            self.config.get('continuation_hot_bypass_require_ma60_rising', True)
+        )
+        _cont_hot_bypass_max_dist_ma20 = float(self.config.get('continuation_hot_bypass_max_dist_ma20', 10.0))
+        _cont_hot_bypass_price_position_max = float(
+            self.config.get('continuation_hot_bypass_price_position_max', 0.0)
+        )
+        _cont_hot_bypass_range20_min = float(
+            self.config.get('continuation_hot_bypass_range20_min', 0.0)
+        )
         _hot_entry_lookback = int(self.config.get('hot_entry_lookback', 20))
         # 入场类型专属止损
         _gc_sl = float(self.config.get('golden_cross_stop_loss_pct', 0))
@@ -2525,8 +3573,13 @@ class RSITrendStrategy(StrategyBase):
         wb_buffer_stop_pct = float(self.config['wb_buffer_stop_pct'])
         wb_buffer_profit_pct = float(self.config['wb_buffer_profit_pct'])
         ma60_factor_min_hold_days = int(self.config.get('ma60_factor_min_hold_days', 3))
+        ma60_factor_graduate_hold_enabled = bool(self.config.get('ma60_factor_graduate_hold_enabled', True))
+        ma60_factor_graduate_profit_min = float(self.config.get('ma60_factor_graduate_profit_min', 3.0))
+        ma60_factor_graduate_dist_ma20_min = float(self.config.get('ma60_factor_graduate_dist_ma20_min', 0.0))
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
+        _cont_staged_cap_entry_active = False  # RSI多头延续的分段硬止损是否在本笔交易生效
+        _profile_mode_now = 'base'
 
         # 反弹卖出参数（bounce exit）：避免暴跌中卖出，等待反弹再卖
         bounce_exit_enabled = bool(self.config.get('bounce_exit_enabled', True))
@@ -2561,6 +3614,33 @@ class RSITrendStrategy(StrategyBase):
         continuation_hard_stop_cap_min = float(self.config.get('continuation_hard_stop_cap_min', 3.5))
         continuation_hard_stop_cap_max = float(self.config.get('continuation_hard_stop_cap_max', 4.5))
         continuation_hard_stop_emergency_buffer = float(self.config.get('continuation_hard_stop_emergency_buffer', 2.0))
+        continuation_staged_hard_cap_enabled = bool(self.config.get('continuation_staged_hard_cap_enabled', False))
+        continuation_staged_hard_cap_apply_max = float(self.config.get('continuation_staged_hard_cap_apply_max', 4.5))
+        continuation_staged_hard_cap_day1 = max(1, int(self.config.get('continuation_staged_hard_cap_day1', 3)))
+        continuation_staged_hard_cap_pct_day1 = float(self.config.get('continuation_staged_hard_cap_pct_day1', 5.6))
+        continuation_staged_hard_cap_day2 = max(
+            continuation_staged_hard_cap_day1,
+            int(self.config.get('continuation_staged_hard_cap_day2', 7))
+        )
+        continuation_staged_hard_cap_pct_day2 = float(self.config.get('continuation_staged_hard_cap_pct_day2', 4.9))
+        continuation_staged_hard_cap_rsi_diff_min = float(
+            self.config.get('continuation_staged_hard_cap_rsi_diff_min', 2.8)
+        )
+        continuation_staged_hard_cap_trend_conf_min = float(
+            self.config.get('continuation_staged_hard_cap_trend_conf_min', 0.50)
+        )
+        continuation_staged_hard_cap_risk_score_max = float(
+            self.config.get('continuation_staged_hard_cap_risk_score_max', 0.75)
+        )
+        continuation_staged_hard_cap_atr_min = float(
+            self.config.get('continuation_staged_hard_cap_atr_min', 3.3)
+        )
+        continuation_staged_hard_cap_range20_min = float(
+            self.config.get('continuation_staged_hard_cap_range20_min', 14.0)
+        )
+        continuation_staged_hard_cap_dist_ma20_max = float(
+            self.config.get('continuation_staged_hard_cap_dist_ma20_max', 10.0)
+        )
         pending_exit = False  # 是否处于待卖出状态
         pending_exit_price = 0  # 触发卖出信号时的价格
         pending_exit_days = 0  # 等待天数
@@ -2662,7 +3742,16 @@ class RSITrendStrategy(StrategyBase):
         # 亏损冷却期：止损退出后N天内不再入场（减少反复止损）
         loss_cooldown_days = int(self.config.get('loss_cooldown_days', 0))  # 0=关闭
         _last_loss_exit_idx = -9999  # 上次止损退出的bar index
-
+        slow_pullback_suspect_rsi_cooldown_days = int(self.config.get('slow_pullback_suspect_rsi_cooldown_days', 0))
+        _last_slow_suspect_exit_idx = -9999
+        slow_pullback_suspect_strict_cooldown_days = int(self.config.get('slow_pullback_suspect_strict_cooldown_days', 0))
+        _last_slow_suspect_strict_exit_idx = -9999
+        slow_pullback_trend_exit_rsi_cooldown_days = int(self.config.get('slow_pullback_trend_exit_rsi_cooldown_days', 0))
+        _last_slow_trend_exit_idx = -9999
+        continuation_weak_cooldown_days = int(self.config.get('continuation_weak_cooldown_days', 0))
+        _last_continuation_weak_exit_idx = -9999
+        continuation_slow_fake_cooldown_days = int(self.config.get('continuation_slow_fake_cooldown_days', 0))
+        _last_continuation_slow_fake_exit_idx = -9999
         # 趋势感知trailing stop参数
         ts_uptrend_enabled = bool(self.config.get('trailing_stop_uptrend_enabled', True))
         ts_uptrend_level   = float(self.config.get('trailing_stop_uptrend_level', -10))
@@ -2745,6 +3834,207 @@ class RSITrendStrategy(StrategyBase):
 
         # 入场成交量确认：要求入场日成交量达到均量X倍（过滤弱信号）
         entry_vol_confirm_mult = float(self.config['entry_vol_confirm_mult'])  # 0=关闭, 如1.0=要求放量
+
+        # 动态切换最小入场间隔：限制短期重复开仓，降低手续费拖累
+        entry_cooldown_days = max(0, int(self.config.get('dynamic_switch_entry_cooldown_days', 0)))
+        cooldown_reversal_bypass = bool(self.config.get('dynamic_switch_allow_reversal_any', True))
+        _last_entry_idx = -10**9
+        if data is not None and 'dynamic_cooldown_block' not in data.columns:
+            data['dynamic_cooldown_block'] = False
+        continuation_cooldown_enabled = bool(self.config.get('continuation_cooldown_enabled', False))
+        continuation_cooldown_days = max(1, int(self.config.get('continuation_cooldown_days', 12)))
+        continuation_cooldown_stop_only = bool(self.config.get('continuation_cooldown_stop_only', True))
+        continuation_cooldown_tight_hard_cap_only = bool(
+            self.config.get('continuation_cooldown_tight_hard_cap_only', False)
+        )
+        continuation_cooldown_hard_cap_max = float(
+            self.config.get('continuation_cooldown_hard_cap_max', 4.2)
+        )
+        continuation_cooldown_require_ma120_weak = bool(
+            self.config.get('continuation_cooldown_require_ma120_weak', False)
+        )
+        continuation_cooldown_ma120_lookback = max(
+            5,
+            int(self.config.get('continuation_cooldown_ma120_lookback', 40))
+        )
+        continuation_cooldown_ma120_slope_max = float(
+            self.config.get('continuation_cooldown_ma120_slope_max', 0.0)
+        )
+        continuation_cooldown_reclaim_enabled = bool(
+            self.config.get('continuation_cooldown_reclaim_enabled', False)
+        )
+        continuation_cooldown_reclaim_lookback = max(
+            20,
+            int(self.config.get('continuation_cooldown_reclaim_lookback', 40))
+        )
+        continuation_cooldown_reclaim_buffer_pct = float(
+            self.config.get('continuation_cooldown_reclaim_buffer_pct', 0.0)
+        )
+        continuation_cooldown_reclaim_rsi_diff_min = float(
+            self.config.get('continuation_cooldown_reclaim_rsi_diff_min', 1.8)
+        )
+        continuation_cooldown_reclaim_vol_mult = float(
+            self.config.get('continuation_cooldown_reclaim_vol_mult', 1.0)
+        )
+        continuation_cooldown_reclaim_require_trend = bool(
+            self.config.get('continuation_cooldown_reclaim_require_trend', True)
+        )
+        continuation_cooldown_quality_bypass_enabled = bool(
+            self.config.get('continuation_cooldown_quality_bypass_enabled', False)
+        )
+        continuation_cooldown_quality_rsi_diff_min = float(
+            self.config.get('continuation_cooldown_quality_rsi_diff_min', 2.2)
+        )
+        continuation_cooldown_quality_rsi_diff_min_gc = float(
+            self.config.get('continuation_cooldown_quality_rsi_diff_min_gc', 1.5)
+        )
+        continuation_cooldown_quality_fast_rsi_min = float(
+            self.config.get('continuation_cooldown_quality_fast_rsi_min', 54.0)
+        )
+        continuation_cooldown_quality_fast_rsi_min_gc = float(
+            self.config.get('continuation_cooldown_quality_fast_rsi_min_gc', 48.0)
+        )
+        continuation_cooldown_quality_dist_ma20_min = float(
+            self.config.get('continuation_cooldown_quality_dist_ma20_min', 2.0)
+        )
+        continuation_cooldown_quality_dist_ma20_min_gc = float(
+            self.config.get('continuation_cooldown_quality_dist_ma20_min_gc', 0.0)
+        )
+        continuation_cooldown_quality_vq_min = float(
+            self.config.get('continuation_cooldown_quality_vq_min', 55.0)
+        )
+        continuation_cooldown_quality_atr_pct_min = float(
+            self.config.get('continuation_cooldown_quality_atr_pct_min', 3.0)
+        )
+        continuation_cooldown_quality_range20_min = float(
+            self.config.get('continuation_cooldown_quality_range20_min', 10.0)
+        )
+        continuation_cooldown_quality_dist_ma60_min = float(
+            self.config.get('continuation_cooldown_quality_dist_ma60_min', -10.0)
+        )
+        continuation_cooldown_quality_dist_ma60_max = float(
+            self.config.get('continuation_cooldown_quality_dist_ma60_max', 18.0)
+        )
+        continuation_cooldown_quality_gc_ma_spread_std_hard_min = float(
+            self.config.get('continuation_cooldown_quality_gc_ma_spread_std_hard_min', 1.0)
+        )
+        continuation_cooldown_quality_gc_ma_spread_std_soft_min = float(
+            self.config.get('continuation_cooldown_quality_gc_ma_spread_std_soft_min', 3.0)
+        )
+        continuation_cooldown_quality_gc_soft_dist_ma20_min = float(
+            self.config.get('continuation_cooldown_quality_gc_soft_dist_ma20_min', 6.0)
+        )
+        continuation_cooldown_quality_neg_weekly_min = float(
+            self.config.get('continuation_cooldown_quality_neg_weekly_min', -5.0)
+        )
+        continuation_cooldown_quality_neg_weekly_dist_ma20_min = float(
+            self.config.get('continuation_cooldown_quality_neg_weekly_dist_ma20_min', 5.0)
+        )
+        continuation_cooldown_quality_neg_weekly_short_gain_min = float(
+            self.config.get('continuation_cooldown_quality_neg_weekly_short_gain_min', 5.0)
+        )
+        continuation_cooldown_quality_momentum_weekly_macd_max = float(
+            self.config.get('continuation_cooldown_quality_momentum_weekly_macd_max', -5.0)
+        )
+        continuation_cooldown_quality_momentum_short_gain_max = float(
+            self.config.get('continuation_cooldown_quality_momentum_short_gain_max', 2.0)
+        )
+        continuation_cooldown_quality_momentum_dist_ma20_min = float(
+            self.config.get('continuation_cooldown_quality_momentum_dist_ma20_min', 2.0)
+        )
+        continuation_cooldown_quality_momentum_dist_ma20_max = float(
+            self.config.get('continuation_cooldown_quality_momentum_dist_ma20_max', 4.5)
+        )
+        continuation_cooldown_until = -1
+        if data is not None and 'continuation_cooldown_block' not in data.columns:
+            data['continuation_cooldown_block'] = False
+        # 行为画像自适应模式：在噪声/手续费敏感分段动态收紧，趋势跑者分段放行
+        adaptive_fee_aware_mode = bool(self.config.get('adaptive_fee_aware_mode', True))
+        adaptive_entry_min_trend_conf = float(self.config.get('adaptive_entry_min_trend_conf', 0.50))
+        adaptive_entry_max_risk_score = float(self.config.get('adaptive_entry_max_risk_score', 0.66))
+        adaptive_entry_require_ma120_trend = bool(
+            self.config.get('adaptive_entry_require_ma120_trend', True)
+        )
+        adaptive_entry_ma120_lookback = max(
+            5, int(self.config.get('adaptive_entry_ma120_lookback', 20))
+        )
+        adaptive_entry_allow_without_ma120 = bool(
+            self.config.get('adaptive_entry_allow_without_ma120', True)
+        )
+        adaptive_entry_max_dist_ma20 = float(
+            self.config.get('adaptive_entry_max_dist_ma20', 8.0)
+        )
+        adaptive_dual_channel_min_trend_conf = float(
+            self.config.get('adaptive_dual_channel_min_trend_conf', 0.62)
+        )
+        adaptive_dual_channel_max_risk_score = float(
+            self.config.get('adaptive_dual_channel_max_risk_score', 0.58)
+        )
+        adaptive_w_bottom_min_reversal_conf = float(
+            self.config.get('adaptive_w_bottom_min_reversal_conf', 0.62)
+        )
+        adaptive_w_bottom_max_risk_score = float(
+            self.config.get('adaptive_w_bottom_max_risk_score', 0.72)
+        )
+        adaptive_flat_exit_min_hold_days = int(
+            self.config.get('adaptive_flat_exit_min_hold_days', 7)
+        )
+        adaptive_flat_exit_profit_floor = float(
+            self.config.get('adaptive_flat_exit_profit_floor', -2.0)
+        )
+        adaptive_flat_exit_profit_ceiling = float(
+            self.config.get('adaptive_flat_exit_profit_ceiling', 2.5)
+        )
+        adaptive_hot_stop_floor = float(self.config.get('adaptive_hot_stop_floor', 5.8))
+        runner_hold_guard_days = max(0, int(self.config.get('runner_hold_guard_days', 16)))
+        runner_hold_guard_profit_floor = float(self.config.get('runner_hold_guard_profit_floor', -4.0))
+        runner_hold_guard_profit_ceiling = float(self.config.get('runner_hold_guard_profit_ceiling', 7.5))
+        runner_hold_guard_min_trend_conf = float(self.config.get('runner_hold_guard_min_trend_conf', 0.50))
+        runner_hold_guard_max_risk_score = float(self.config.get('runner_hold_guard_max_risk_score', 0.70))
+        runner_hot_stop_floor = float(self.config.get('runner_hot_stop_floor', 7.5))
+        structural_trend_hold_enabled = bool(self.config.get('structural_trend_hold_enabled', False))
+        structural_trend_hold_min_profit = float(self.config.get('structural_trend_hold_min_profit', 12.0))
+        structural_trend_hold_min_days = max(1, int(self.config.get('structural_trend_hold_min_days', 20)))
+        structural_trend_hold_ret120_min = float(self.config.get('structural_trend_hold_ret120_min', 22.0))
+        structural_trend_hold_range20_min = float(self.config.get('structural_trend_hold_range20_min', 10.0))
+        structural_trend_hold_ma120_lookback = max(20, int(self.config.get('structural_trend_hold_ma120_lookback', 40)))
+        structural_trend_hold_ma120_slope_min = float(self.config.get('structural_trend_hold_ma120_slope_min', 0.4))
+        structural_trend_hold_price_ma120_buffer = float(self.config.get('structural_trend_hold_price_ma120_buffer', -2.0))
+        structural_trend_hold_rsi_diff_min = float(self.config.get('structural_trend_hold_rsi_diff_min', -2.0))
+        structural_trend_hold_require_trend_direction = bool(
+            self.config.get('structural_trend_hold_require_trend_direction', False)
+        )
+        structural_trend_hold_break_ma120_days = max(
+            1, int(self.config.get('structural_trend_hold_break_ma120_days', 2))
+        )
+        structural_trend_hold_break_price_ma120_buffer = float(
+            self.config.get('structural_trend_hold_break_price_ma120_buffer', -4.0)
+        )
+        structural_trend_hold_break_profit_drawdown = float(
+            self.config.get('structural_trend_hold_break_profit_drawdown', 16.0)
+        )
+        structural_trend_hold_disable_eh_swing = bool(
+            self.config.get('structural_trend_hold_disable_eh_swing', True)
+        )
+        adaptive_late_chase_price_position = float(self.config.get('adaptive_late_chase_price_position', 0.82))
+        adaptive_late_chase_ret120_min = float(self.config.get('adaptive_late_chase_ret120_min', 55.0))
+        adaptive_late_chase_risk_min = float(self.config.get('adaptive_late_chase_risk_min', 0.40))
+        dual_channel_quality_enabled = bool(self.config.get('dual_channel_quality_enabled', True))
+        dual_channel_quality_ret120_min = float(self.config.get('dual_channel_quality_ret120_min', 45.0))
+        dual_channel_quality_price_position_min = float(self.config.get('dual_channel_quality_price_position_min', 0.76))
+        dual_channel_quality_macd_min = float(self.config.get('dual_channel_quality_macd_min', 0.0))
+        dual_channel_quality_rsi_diff_min = float(self.config.get('dual_channel_quality_rsi_diff_min', 0.0))
+        profile_bar_stop_override_enabled = bool(self.config.get('profile_bar_stop_override_enabled', True))
+        profile_bar_stop_loose = float(self.config.get('profile_bar_stop_loose', 9.5))
+        profile_bar_c7_trigger = float(self.config.get('profile_bar_c7_trigger', 10.0))
+        profile_bar_s5_trailing_level = float(self.config.get('profile_bar_s5_trailing_level', 1.0))
+        profile_bar_c14_relaxed_min_gap = max(0.0, float(self.config.get('profile_bar_c14_relaxed_min_gap', 0.0)))
+        if data is not None and 'adaptive_fee_block' not in data.columns:
+            data['adaptive_fee_block'] = False
+        if data is not None and 'profile_bar_c14_block' not in data.columns:
+            data['profile_bar_c14_block'] = False
+        if data is not None and 'structural_trend_hold_block' not in data.columns:
+            data['structural_trend_hold_block'] = False
 
         # MA60趋势过滤: 若MA60下降(40日斜率为负)则不入场, 避免长期下降趋势中入场
         entry_ma60_rising_required = bool(self.config.get('entry_ma60_rising_required', False))
@@ -2873,6 +4163,9 @@ class RSITrendStrategy(StrategyBase):
         _eh_swing_armed = False  # 武装模式激活中
         _eh_swing_armed_idx = 0  # 武装模式开始索引
         _eh_swing_armed_peak = 0.0  # 武装后最高价格
+        # 结构性趋势持有模式：激活后进入“只在结构破坏时退出”的持有状态
+        _structural_hold_mode = False
+        _structural_hold_break_count = 0
 
         # 主升浪再入场：高盈利退出后120天内，绕过ef_ma60_max过滤
         post_wave_reentry_countdown = 0  # >0时允许再入场
@@ -2908,6 +4201,54 @@ class RSITrendStrategy(StrategyBase):
         chase_hard_block_gain = self.config.get('chase_hard_block_gain', 30)  # 10日涨幅阈值
         chase_hard_block = False  # 当前是否处于硬屏蔽状态
         chase_max_drop_pct = self.config.get('chase_max_drop_pct', 0)  # 急跌跌幅上限，0=不限
+        chase_trend_bypass_enabled = bool(self.config.get('chase_trend_bypass_enabled', False))
+        chase_trend_bypass_ma120_lookback = max(20, int(self.config.get('chase_trend_bypass_ma120_lookback', 40)))
+        chase_trend_bypass_ma120_slope_min = float(self.config.get('chase_trend_bypass_ma120_slope_min', 1.0))
+        chase_trend_bypass_rsi_diff_min = float(self.config.get('chase_trend_bypass_rsi_diff_min', 2.0))
+        chase_trend_bypass_ret120_min = float(self.config.get('chase_trend_bypass_ret120_min', 18.0))
+        chase_trend_bypass_short_gain_10d_max = float(self.config.get('chase_trend_bypass_short_gain_10d_max', 40.0))
+        chase_trend_bypass_volume_ratio_max = float(self.config.get('chase_trend_bypass_volume_ratio_max', 2.8))
+        chase_trend_bypass_volume_ratio_min = float(self.config.get('chase_trend_bypass_volume_ratio_min', 0.0))
+        chase_trend_bypass_max_dist_ma20 = float(self.config.get('chase_trend_bypass_max_dist_ma20', 0.0))
+        chase_trend_bypass_price_position_min = float(
+            self.config.get('chase_trend_bypass_price_position_min', 0.0)
+        )
+        chase_trend_bypass_require_golden_cross = bool(
+            self.config.get('chase_trend_bypass_require_golden_cross', False)
+        )
+        chase_cooldown_quality_bypass_enabled = bool(
+            self.config.get('chase_cooldown_quality_bypass_enabled', False)
+        )
+        chase_cooldown_quality_bypass_require_non_chase = bool(
+            self.config.get('chase_cooldown_quality_bypass_require_non_chase', True)
+        )
+        chase_cooldown_quality_bypass_require_pullback_family = bool(
+            self.config.get('chase_cooldown_quality_bypass_require_pullback_family', False)
+        )
+        chase_cooldown_quality_bypass_ma120_slope_min = float(
+            self.config.get('chase_cooldown_quality_bypass_ma120_slope_min', 2.5)
+        )
+        chase_cooldown_quality_bypass_ret120_min = float(
+            self.config.get('chase_cooldown_quality_bypass_ret120_min', 25.0)
+        )
+        chase_cooldown_quality_bypass_rsi_diff_min = float(
+            self.config.get('chase_cooldown_quality_bypass_rsi_diff_min', 2.2)
+        )
+        chase_cooldown_quality_bypass_volume_ratio_min = float(
+            self.config.get('chase_cooldown_quality_bypass_volume_ratio_min', 0.8)
+        )
+        chase_cooldown_quality_bypass_volume_ratio_max = float(
+            self.config.get('chase_cooldown_quality_bypass_volume_ratio_max', 2.2)
+        )
+        chase_cooldown_quality_bypass_max_dist_ma20 = float(
+            self.config.get('chase_cooldown_quality_bypass_max_dist_ma20', 10.0)
+        )
+        chase_cooldown_quality_bypass_price_position_min = float(
+            self.config.get('chase_cooldown_quality_bypass_price_position_min', 0.96)
+        )
+        chase_cooldown_quality_bypass_require_golden_cross = bool(
+            self.config.get('chase_cooldown_quality_bypass_require_golden_cross', False)
+        )
 
         # 高抛低吸参数
         swing_trade_enabled = bool(self.config['swing_trade_enabled'])
@@ -2977,6 +4318,53 @@ class RSITrendStrategy(StrategyBase):
             is_w_entry = bool(w_bottom_entry.iloc[i]) if not pd.isna(w_bottom_entry.iloc[i]) else False
             is_sw_entry = bool(sideways_entry.iloc[i]) if not pd.isna(sideways_entry.iloc[i]) else False
             curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
+            _structural_hold_now = False
+            # 基于“上一根K线真实退出结果”更新冷却窗口，避免在同一状态机中遗漏continue分支
+            # 仅使用已发生的信息（i-1），不引入未来数据。
+            if continuation_cooldown_enabled and i > 0 and exit_flags[i - 1] == 1:
+                _cd_prev_reason = str(exit_reasons[i - 1]) if i - 1 < len(exit_reasons) else ''
+                _cd_prev_stop_like = (
+                    ('止损' in _cd_prev_reason)
+                    or ('硬性亏损上限' in _cd_prev_reason)
+                    or ('硬性止损上限' in _cd_prev_reason)
+                )
+                _cd_prev_reason_ok = True
+                if continuation_cooldown_tight_hard_cap_only:
+                    _cd_prev_reason_ok = False
+                    if '硬性止损上限(' in _cd_prev_reason and '%' in _cd_prev_reason:
+                        try:
+                            _cd_cap_txt = _cd_prev_reason.split('硬性止损上限(')[1].split('%')[0]
+                            _cd_cap_val = float(_cd_cap_txt)
+                            _cd_prev_reason_ok = _cd_cap_val <= continuation_cooldown_hard_cap_max
+                        except Exception:
+                            _cd_prev_reason_ok = False
+                _cd_prev_trend_ok = True
+                if continuation_cooldown_require_ma120_weak:
+                    _cd_prev_trend_ok = False
+                    _cd_prev_i = i - 1
+                    if (data is not None and 'ma_120' in data.columns
+                            and _cd_prev_i >= continuation_cooldown_ma120_lookback):
+                        _cd_ma_now = data['ma_120'].iloc[_cd_prev_i]
+                        _cd_ma_prev = data['ma_120'].iloc[_cd_prev_i - continuation_cooldown_ma120_lookback]
+                        if (not np.isnan(_cd_ma_now) and _cd_ma_now > 0
+                                and not np.isnan(_cd_ma_prev) and _cd_ma_prev > 0):
+                            _cd_ma_slope = (_cd_ma_now / _cd_ma_prev - 1.0) * 100.0
+                            _cd_prev_trend_ok = _cd_ma_slope <= continuation_cooldown_ma120_slope_max
+                if (((not continuation_cooldown_stop_only) or _cd_prev_stop_like)
+                        and _cd_prev_reason_ok
+                        and _cd_prev_trend_ok):
+                    continuation_cooldown_until = max(
+                        continuation_cooldown_until,
+                        (i - 1) + continuation_cooldown_days
+                    )
+            _runner_breakout_now = (
+                bool(data['runner_breakout_entry'].iloc[i])
+                if data is not None and 'runner_breakout_entry' in data.columns else False
+            )
+            _runner_force_entry_now = (
+                _runner_breakout_now
+                and bool(self.config.get('runner_breakout_force_entry', False))
+            )
 
             # 高抛放弃后的影子仓位处理：模拟原本仓位的退出逻辑
             if shadow_position_active and swing_giveup_blocking:
@@ -3045,87 +4433,214 @@ class RSITrendStrategy(StrategyBase):
                 row = data.iloc[i]
                 ma_120 = row.get('ma_120', np.nan)
                 short_gain_10d = row.get('short_gain_10d', np.nan)
+                rsi_diff_now = row.get('rsi_diff', np.nan)
+                trend_direction_now = row.get('trend_direction', np.nan)
+                dist_ma20_now = row.get('dist_ma20', np.nan)
+                price_position_now = row.get('price_position', np.nan)
+                golden_cross_now = bool(row.get('golden_cross', False))
+                vol = row.get('volume', np.nan)
+                vol_ma20 = row.get('volume_ma20', np.nan)
+                row_vol_ratio = (
+                    (vol / vol_ma20)
+                    if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0
+                    else 1.0
+                )
+                ma120_slope_now = np.nan
+                if ('ma_120' in data.columns and i >= chase_trend_bypass_ma120_lookback):
+                    _ma_now = data['ma_120'].iloc[i]
+                    _ma_prev = data['ma_120'].iloc[i - chase_trend_bypass_ma120_lookback]
+                    if (not np.isnan(_ma_now) and _ma_now > 0
+                            and not np.isnan(_ma_prev) and _ma_prev > 0):
+                        ma120_slope_now = (_ma_now / _ma_prev - 1.0) * 100.0
+                ret120_now = np.nan
+                if i >= 120:
+                    _close_120 = data['close'].iloc[i - 120]
+                    if not np.isnan(_close_120) and _close_120 > 0 and not np.isnan(curr_price):
+                        ret120_now = (curr_price / _close_120 - 1.0) * 100.0
 
                 price_vs_ma120 = ((curr_price / ma_120 - 1) * 100) if not np.isnan(ma_120) and not np.isnan(curr_price) and ma_120 > 0 else 0
 
                 is_chase_condition = (price_vs_ma120 > 15) and (not np.isnan(short_gain_10d) and short_gain_10d > 15)
+                chase_trend_bypass_ok = (
+                    chase_trend_bypass_enabled
+                    and entry_active
+                    and not in_position
+                    and not np.isnan(ma120_slope_now)
+                    and ma120_slope_now >= chase_trend_bypass_ma120_slope_min
+                    and not np.isnan(ret120_now)
+                    and ret120_now >= chase_trend_bypass_ret120_min
+                    and not np.isnan(rsi_diff_now)
+                    and rsi_diff_now >= chase_trend_bypass_rsi_diff_min
+                    and not np.isnan(trend_direction_now)
+                    and int(trend_direction_now) == 1
+                    and (np.isnan(short_gain_10d) or short_gain_10d <= chase_trend_bypass_short_gain_10d_max)
+                    and row_vol_ratio >= chase_trend_bypass_volume_ratio_min
+                    and row_vol_ratio <= chase_trend_bypass_volume_ratio_max
+                    and (
+                        chase_trend_bypass_max_dist_ma20 <= 0
+                        or (
+                            not np.isnan(dist_ma20_now)
+                            and dist_ma20_now <= chase_trend_bypass_max_dist_ma20
+                        )
+                    )
+                    and (
+                        chase_trend_bypass_price_position_min <= 0
+                        or (
+                            not np.isnan(price_position_now)
+                            and price_position_now >= chase_trend_bypass_price_position_min
+                        )
+                    )
+                    and (
+                        (not chase_trend_bypass_require_golden_cross)
+                        or golden_cross_now
+                    )
+                )
+                ma60_pullback_now = row.get('ma60_factor_pullback_entry', False)
+                slow_pullback_now = row.get('slow_pullback_entry', False)
+                trend_reclaim_now = row.get('trend_reclaim_entry', False)
+                runner_breakout_now = row.get('runner_breakout_entry', False)
+                if pd.isna(ma60_pullback_now):
+                    ma60_pullback_now = False
+                if pd.isna(slow_pullback_now):
+                    slow_pullback_now = False
+                if pd.isna(trend_reclaim_now):
+                    trend_reclaim_now = False
+                if pd.isna(runner_breakout_now):
+                    runner_breakout_now = False
+                pullback_family_now = bool(
+                    ma60_pullback_now
+                    or slow_pullback_now
+                    or trend_reclaim_now
+                    or runner_breakout_now
+                )
+                chase_cooldown_quality_bypass_ok = (
+                    chase_cooldown_quality_bypass_enabled
+                    and entry_active
+                    and not in_position
+                    and (
+                        (not chase_cooldown_quality_bypass_require_non_chase)
+                        or (not is_chase_condition)
+                    )
+                    and (
+                        (not chase_cooldown_quality_bypass_require_pullback_family)
+                        or pullback_family_now
+                    )
+                    and not np.isnan(ma120_slope_now)
+                    and ma120_slope_now >= chase_cooldown_quality_bypass_ma120_slope_min
+                    and not np.isnan(ret120_now)
+                    and ret120_now >= chase_cooldown_quality_bypass_ret120_min
+                    and not np.isnan(rsi_diff_now)
+                    and rsi_diff_now >= chase_cooldown_quality_bypass_rsi_diff_min
+                    and not np.isnan(trend_direction_now)
+                    and int(trend_direction_now) == 1
+                    and row_vol_ratio >= chase_cooldown_quality_bypass_volume_ratio_min
+                    and row_vol_ratio <= chase_cooldown_quality_bypass_volume_ratio_max
+                    and (
+                        chase_cooldown_quality_bypass_max_dist_ma20 <= 0
+                        or (
+                            not np.isnan(dist_ma20_now)
+                            and dist_ma20_now <= chase_cooldown_quality_bypass_max_dist_ma20
+                        )
+                    )
+                    and (
+                        chase_cooldown_quality_bypass_price_position_min <= 0
+                        or (
+                            not np.isnan(price_position_now)
+                            and price_position_now >= chase_cooldown_quality_bypass_price_position_min
+                        )
+                    )
+                    and (
+                        (not chase_cooldown_quality_bypass_require_golden_cross)
+                        or golden_cross_now
+                    )
+                )
 
                 if is_chase_condition and not chase_cooldown_active and not in_position:
-                    chase_cooldown_active = True
-                    chase_peak_price = curr_price if not np.isnan(curr_price) else 0
-                    chase_start_idx = i
-                    # 记录追高时的成交量倍数
-                    vol = row.get('volume', np.nan)
-                    vol_ma20 = row.get('volume_ma20', np.nan)
-                    if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0:
-                        chase_rise_vol_ratio = vol / vol_ma20
+                    if chase_trend_bypass_ok or chase_cooldown_quality_bypass_ok:
+                        avoid_extreme_chase = False
+                        chase_cooldown_active = False
+                        chase_hard_block = False
                     else:
-                        chase_rise_vol_ratio = 1.0
-                    # 硬屏蔽判定：巨量+10日暴涨 → 完全不允许回调买入
-                    chase_hard_block = (
-                        chase_hard_block_vol > 0 and chase_hard_block_gain > 0
-                        and chase_rise_vol_ratio > chase_hard_block_vol
-                        and not np.isnan(short_gain_10d) and short_gain_10d > chase_hard_block_gain
-                    )
-                    avoid_extreme_chase = True
+                        chase_cooldown_active = True
+                        chase_peak_price = curr_price if not np.isnan(curr_price) else 0
+                        chase_start_idx = i
+                        # 记录追高时的成交量倍数
+                        chase_rise_vol_ratio = row_vol_ratio
+                        # 硬屏蔽判定：巨量+10日暴涨 → 完全不允许回调买入
+                        chase_hard_block = (
+                            chase_hard_block_vol > 0 and chase_hard_block_gain > 0
+                            and chase_rise_vol_ratio > chase_hard_block_vol
+                            and not np.isnan(short_gain_10d) and short_gain_10d > chase_hard_block_gain
+                        )
+                        avoid_extreme_chase = True
                 elif chase_cooldown_active and not in_position:
-                    if chase_mode == 'block':
-                        # 纯阻断模式：条件期间一直阻断
-                        if is_chase_condition:
-                            avoid_extreme_chase = True
-                        else:
-                            chase_cooldown_active = False
+                    if chase_trend_bypass_ok or chase_cooldown_quality_bypass_ok:
+                        chase_cooldown_active = False
+                        chase_hard_block = False
+                        avoid_extreme_chase = False
+                        chase_pullback_buy = False
                     else:
-                        # cooldown模式：追踪高点，满足任一profile条件后允许回调买入
-                        if not np.isnan(curr_price) and curr_price > chase_peak_price:
-                            chase_peak_price = curr_price
-
-                        days_in_cooldown = i - chase_start_idx
-                        if days_in_cooldown > chase_cooldown_days:
-                            chase_cooldown_active = False
-                        elif chase_peak_price > 0 and not np.isnan(curr_price):
-                            drop_from_peak = (1 - curr_price / chase_peak_price) * 100
-                            chase_cleared = not is_chase_condition
-                            # 计算回调时成交量比
-                            vol = row.get('volume', np.nan)
-                            vol_ma20 = row.get('volume_ma20', np.nan)
-                            curr_vol_ratio = (vol / vol_ma20) if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0 else 1.0
-                            drop_speed = (drop_from_peak / days_in_cooldown) if days_in_cooldown > 0 else 0
-
-                            # 急跌跌幅上限：回调超过X%视为崩盘，不买入
-                            if chase_max_drop_pct > 0 and drop_from_peak > chase_max_drop_pct:
-                                avoid_extreme_chase = True
-                            # 硬屏蔽：完全不允许回调买入，只能等冷却期结束
-                            elif chase_hard_block:
+                        if chase_mode == 'block':
+                            # 纯阻断模式：条件期间一直阻断
+                            if is_chase_condition:
                                 avoid_extreme_chase = True
                             else:
-                                # OR逻辑：任一profile满足即允许买入
-                                any_profile_ok = False
-                                for profile in chase_profiles:
-                                    p_pb = profile.get('pullback_pct', 5)
-                                    p_clr = profile.get('require_cleared', True)
-                                    p_vol = profile.get('vol_min_ratio', 0.8)
-                                    p_rvm = profile.get('rise_vol_max', 0)
-                                    p_mds = profile.get('min_drop_speed', 0)
+                                chase_cooldown_active = False
+                        else:
+                            # cooldown模式：追踪高点，满足任一profile条件后允许回调买入
+                            if not np.isnan(curr_price) and curr_price > chase_peak_price:
+                                chase_peak_price = curr_price
 
-                                    if drop_from_peak < p_pb:
-                                        continue
-                                    if p_clr and not chase_cleared:
-                                        continue
-                                    if p_vol > 0 and curr_vol_ratio < p_vol:
-                                        continue
-                                    if p_rvm > 0 and chase_rise_vol_ratio > p_rvm:
-                                        continue
-                                    if p_mds > 0 and drop_speed < p_mds:
-                                        continue
-                                    any_profile_ok = True
-                                    break
+                            days_in_cooldown = i - chase_start_idx
+                            if days_in_cooldown > chase_cooldown_days:
+                                chase_cooldown_active = False
+                            elif chase_peak_price > 0 and not np.isnan(curr_price):
+                                drop_from_peak = (1 - curr_price / chase_peak_price) * 100
+                                chase_cleared = not is_chase_condition
+                                # 计算回调时成交量比
+                                vol = row.get('volume', np.nan)
+                                vol_ma20 = row.get('volume_ma20', np.nan)
+                                curr_vol_ratio = (vol / vol_ma20) if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0 else 1.0
+                                drop_speed = (drop_from_peak / days_in_cooldown) if days_in_cooldown > 0 else 0
 
-                                if any_profile_ok and entry_active:
-                                    chase_pullback_buy = True
-                                    chase_cooldown_active = False
-                                else:
+                                # 急跌跌幅上限：回调超过X%视为崩盘，不买入
+                                if chase_max_drop_pct > 0 and drop_from_peak > chase_max_drop_pct:
                                     avoid_extreme_chase = True
+                                # 硬屏蔽：完全不允许回调买入，只能等冷却期结束
+                                elif chase_hard_block:
+                                    avoid_extreme_chase = True
+                                else:
+                                    # OR逻辑：任一profile满足即允许买入
+                                    any_profile_ok = False
+                                    for profile in chase_profiles:
+                                        p_pb = profile.get('pullback_pct', 5)
+                                        p_clr = profile.get('require_cleared', True)
+                                        p_vol = profile.get('vol_min_ratio', 0.8)
+                                        p_rvm = profile.get('rise_vol_max', 0)
+                                        p_mds = profile.get('min_drop_speed', 0)
+
+                                        if drop_from_peak < p_pb:
+                                            continue
+                                        if p_clr and not chase_cleared:
+                                            continue
+                                        if p_vol > 0 and curr_vol_ratio < p_vol:
+                                            continue
+                                        if p_rvm > 0 and chase_rise_vol_ratio > p_rvm:
+                                            continue
+                                        if p_mds > 0 and drop_speed < p_mds:
+                                            continue
+                                        any_profile_ok = True
+                                        break
+
+                                    if any_profile_ok and entry_active:
+                                        chase_pullback_buy = True
+                                        chase_cooldown_active = False
+                                    else:
+                                        avoid_extreme_chase = True
+
+            # 趋势跑者突破可按配置绕过“追高冷却”拦截
+            if _runner_force_entry_now and not in_position and entry_active:
+                avoid_extreme_chase = False
 
             # EH做T：等待回买状态处理（EH期间卖出后等回补）
             if _eh_swing_active and not in_position and data is not None:
@@ -3411,12 +4926,18 @@ class RSITrendStrategy(StrategyBase):
             # 卖出后智能回补: trailing stop退出后，短窗口内价格强势突破则回补
             if reentry_enabled and _reentry_watching and not in_position and not np.isnan(curr_price):
                 _reentry_days += 1
-                _reentry_window_limit = 5 if _reentry_mode == 'hot_stop_4' else reentry_window
+                if _reentry_mode == 'hot_stop_4':
+                    _reentry_window_limit = 5
+                elif _reentry_mode == 'slow_stop':
+                    _reentry_window_limit = int(self.config.get('slow_pullback_stop_reentry_window', 20))
+                else:
+                    _reentry_window_limit = reentry_window
                 if _reentry_days > _reentry_window_limit:
                     _reentry_watching = False  # 超窗口，放弃
                     _reentry_mode = ''
                 else:
                     _hot_stop_reentry_mode = (_reentry_mode == 'hot_stop_4')
+                    _slow_stop_reentry_mode = (_reentry_mode == 'slow_stop')
                     if _hot_stop_reentry_mode:
                         _re_price_ok = (curr_price > _reentry_exit_price * 1.02)
                         _re_rsi_ok = True
@@ -3437,6 +4958,16 @@ class RSITrendStrategy(StrategyBase):
                                 and not np.isnan(_re_vol)
                                 and _re_vol >= _re_vol_ma
                             )
+                    elif _slow_stop_reentry_mode:
+                        _re_price_ok = (curr_price > _reentry_exit_price * (1 + float(self.config.get('slow_pullback_stop_reentry_price_pct', 3.0)) / 100.0))
+                        _re_rsi_ok = True
+                        if data is not None and 'fast_rsi' in data.columns:
+                            _re_rsi = data['fast_rsi'].iloc[i]
+                            _re_rsi_ok = (
+                                not np.isnan(_re_rsi)
+                                and _re_rsi >= float(self.config.get('slow_pullback_stop_reentry_rsi_min', 55.0))
+                            )
+                        _re_vol_ok = True
                     else:
                         _re_price_ok = (curr_price > _reentry_exit_price * (1 + reentry_price_pct / 100))
                         _re_rsi_ok = True
@@ -3538,9 +5069,77 @@ class RSITrendStrategy(StrategyBase):
             # 入场前过滤检查（亏损冷却、成交量确认、MA对齐）
             _entry_filters_ok = True
             if not in_position and ((entry_active and not avoid_extreme_chase) or chase_pullback_buy):
+                _runner_force_entry = _runner_force_entry_now
                 # 亏损冷却期检查
                 if loss_cooldown_days > 0 and (i - _last_loss_exit_idx) <= loss_cooldown_days:
                     _entry_filters_ok = False
+                if _entry_filters_ok and slow_pullback_suspect_strict_cooldown_days > 0 and (i - _last_slow_suspect_strict_exit_idx) <= slow_pullback_suspect_strict_cooldown_days:
+                    _strict_slow_entry = (
+                        (data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]))
+                        or (data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]))
+                    )
+                    if not _strict_slow_entry:
+                        _entry_filters_ok = False
+                if _entry_filters_ok and slow_pullback_trend_exit_rsi_cooldown_days > 0 and (i - _last_slow_trend_exit_idx) <= slow_pullback_trend_exit_rsi_cooldown_days:
+                    _trend_exit_special_entry = (
+                        chase_pullback_buy
+                        or is_sw_entry
+                        or is_div_entry
+                        or is_w_entry
+                        or (data is not None and 'rsi_momentum_entry' in data.columns and bool(data['rsi_momentum_entry'].iloc[i]))
+                        or (data is not None and 'discount_zone_entry' in data.columns and bool(data['discount_zone_entry'].iloc[i]))
+                        or (data is not None and 'dual_channel_signal' in data.columns and bool(data['dual_channel_signal'].iloc[i]))
+                        or (data is not None and 'gap_fade_signal' in data.columns and bool(data.get('gap_fade_signal', pd.Series(False)).iloc[i]))
+                        or (data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]))
+                        or (data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]))
+                    )
+                    if not _trend_exit_special_entry:
+                        _entry_filters_ok = False
+                if _entry_filters_ok and slow_pullback_suspect_rsi_cooldown_days > 0 and (i - _last_slow_suspect_exit_idx) <= slow_pullback_suspect_rsi_cooldown_days:
+                    _is_special_entry = (
+                        chase_pullback_buy
+                        or is_sw_entry
+                        or is_div_entry
+                        or is_w_entry
+                        or (data is not None and 'rsi_momentum_entry' in data.columns and bool(data['rsi_momentum_entry'].iloc[i]))
+                        or (data is not None and 'discount_zone_entry' in data.columns and bool(data['discount_zone_entry'].iloc[i]))
+                        or (data is not None and 'dual_channel_signal' in data.columns and bool(data['dual_channel_signal'].iloc[i]))
+                        or (data is not None and 'gap_fade_signal' in data.columns and bool(data.get('gap_fade_signal', pd.Series(False)).iloc[i]))
+                        or (data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]))
+                        or (data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]))
+                    )
+                    if not _is_special_entry:
+                        _entry_filters_ok = False
+                if _entry_filters_ok and continuation_weak_cooldown_days > 0 and (i - _last_continuation_weak_exit_idx) <= continuation_weak_cooldown_days:
+                    _continuation_cooldown_special_entry = (
+                        chase_pullback_buy
+                        or is_sw_entry
+                        or is_div_entry
+                        or is_w_entry
+                        or (data is not None and 'rsi_momentum_entry' in data.columns and bool(data['rsi_momentum_entry'].iloc[i]))
+                        or (data is not None and 'discount_zone_entry' in data.columns and bool(data['discount_zone_entry'].iloc[i]))
+                        or (data is not None and 'dual_channel_signal' in data.columns and bool(data['dual_channel_signal'].iloc[i]))
+                        or (data is not None and 'gap_fade_signal' in data.columns and bool(data.get('gap_fade_signal', pd.Series(False)).iloc[i]))
+                        or (data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]))
+                        or (data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]))
+                    )
+                    if not _continuation_cooldown_special_entry:
+                        _entry_filters_ok = False
+                if _entry_filters_ok and continuation_slow_fake_cooldown_days > 0 and (i - _last_continuation_slow_fake_exit_idx) <= continuation_slow_fake_cooldown_days:
+                    _continuation_slow_fake_special_entry = (
+                        chase_pullback_buy
+                        or is_sw_entry
+                        or is_div_entry
+                        or is_w_entry
+                        or (data is not None and 'rsi_momentum_entry' in data.columns and bool(data['rsi_momentum_entry'].iloc[i]))
+                        or (data is not None and 'discount_zone_entry' in data.columns and bool(data['discount_zone_entry'].iloc[i]))
+                        or (data is not None and 'dual_channel_signal' in data.columns and bool(data['dual_channel_signal'].iloc[i]))
+                        or (data is not None and 'gap_fade_signal' in data.columns and bool(data.get('gap_fade_signal', pd.Series(False)).iloc[i]))
+                        or (data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]))
+                        or (data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]))
+                    )
+                    if not _continuation_slow_fake_special_entry:
+                        _entry_filters_ok = False
                 # 入场成交量确认
                 if _entry_filters_ok and entry_vol_confirm_mult > 0 and data is not None and 'volume' in data.columns and 'volume_ma20' in data.columns:
                     _ev = data['volume'].iloc[i]
@@ -3596,10 +5195,300 @@ class RSITrendStrategy(StrategyBase):
                             if np.isnan(_rdi) or _rdi < _early_trend_gap:
                                 _entry_filters_ok = False
 
+                # c14分型下仅收紧“RSI多头延续”入场：要求更高的rsi_diff，避免弱延续反复交易
+                if (_entry_filters_ok and profile_bar_c14_relaxed_min_gap > 0 and data is not None
+                        and not is_div_entry and not is_w_entry and not is_sw_entry and not chase_pullback_buy):
+                    _pm_c14 = ''
+                    if 'profile_mode_bar' in data.columns:
+                        _pm_val = data['profile_mode_bar'].iloc[i]
+                        _pm_c14 = _pm_val if isinstance(_pm_val, str) else ''
+                    _is_gc = bool(data['golden_cross'].iloc[i]) if 'golden_cross' in data.columns else False
+                    _is_relaxed = bool(data['rsi_relaxed_condition'].iloc[i]) if 'rsi_relaxed_condition' in data.columns else False
+                    if _pm_c14 == 'c14' and _is_relaxed and (not _is_gc):
+                        _rdi = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
+                        if np.isnan(_rdi) or _rdi < profile_bar_c14_relaxed_min_gap:
+                            _entry_filters_ok = False
+                            if 'profile_bar_c14_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('profile_bar_c14_block')] = True
+
+                # 同步限制短期重复开仓（反转信号可选绕过）
+                if _entry_filters_ok and entry_cooldown_days > 0:
+                    if (i - _last_entry_idx) <= entry_cooldown_days:
+                        if not (cooldown_reversal_bypass and (is_div_entry or is_w_entry)):
+                            _entry_filters_ok = False
+                            if data is not None and 'dynamic_cooldown_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('dynamic_cooldown_block')] = True
+
+                # 连续追随买点冷却：止损型退出后短窗内抑制重复追随交易
+                if _entry_filters_ok and continuation_cooldown_enabled and i <= continuation_cooldown_until:
+                    _is_discount_entry = bool(data['discount_zone_entry'].iloc[i]) if data is not None and 'discount_zone_entry' in data.columns else False
+                    _is_gap_fade_entry = bool(data['gap_fade_signal'].iloc[i]) if data is not None and 'gap_fade_signal' in data.columns else False
+                    _is_ma60_pullback = bool(data['ma60_factor_pullback_entry'].iloc[i]) if data is not None and 'ma60_factor_pullback_entry' in data.columns else False
+                    _is_slow_pullback = bool(data['slow_pullback_entry'].iloc[i]) if data is not None and 'slow_pullback_entry' in data.columns else False
+                    _is_trend_reclaim = bool(data['trend_reclaim_entry'].iloc[i]) if data is not None and 'trend_reclaim_entry' in data.columns else False
+                    _is_runner_breakout = bool(data['runner_breakout_entry'].iloc[i]) if data is not None and 'runner_breakout_entry' in data.columns else False
+                    _is_continuation_family = (
+                        (not is_div_entry)
+                        and (not is_w_entry)
+                        and (not is_sw_entry)
+                        and (not chase_pullback_buy)
+                        and (not _is_discount_entry)
+                        and (not _is_gap_fade_entry)
+                        and (not _is_ma60_pullback)
+                        and (not _is_slow_pullback)
+                        and (not _is_trend_reclaim)
+                        and (not _is_runner_breakout)
+                    )
+                    if _is_continuation_family:
+                        _cd_reclaim_ok = False
+                        _cd_quality_retry_ok = False
+                        if continuation_cooldown_reclaim_enabled and data is not None:
+                            _cd_break_line = np.nan
+                            if 'high' in data.columns and i > 0:
+                                _cd_lb = min(i, continuation_cooldown_reclaim_lookback)
+                                if _cd_lb >= 5:
+                                    _cd_break_line = data['high'].iloc[max(0, i - _cd_lb):i].max()
+                            _cd_price_ok = (
+                                not np.isnan(_cd_break_line)
+                                and not np.isnan(curr_price)
+                                and curr_price >= _cd_break_line * (
+                                    1.0 + continuation_cooldown_reclaim_buffer_pct / 100.0
+                                )
+                            )
+                            _cd_rsi_ok = True
+                            if 'rsi_diff' in data.columns:
+                                _cd_rsi_val = data['rsi_diff'].iloc[i]
+                                _cd_rsi_ok = (
+                                    not np.isnan(_cd_rsi_val)
+                                    and _cd_rsi_val >= continuation_cooldown_reclaim_rsi_diff_min
+                                )
+                            _cd_vol_ok = True
+                            if ('volume' in data.columns and 'volume_ma20' in data.columns
+                                    and continuation_cooldown_reclaim_vol_mult > 0):
+                                _cd_v = data['volume'].iloc[i]
+                                _cd_vm = data['volume_ma20'].iloc[i]
+                                _cd_vol_ok = (
+                                    not np.isnan(_cd_v)
+                                    and not np.isnan(_cd_vm)
+                                    and _cd_vm > 0
+                                    and _cd_v >= _cd_vm * continuation_cooldown_reclaim_vol_mult
+                                )
+                            _cd_trend_ok = True
+                            if continuation_cooldown_reclaim_require_trend and 'trend_direction' in data.columns:
+                                _cd_td = data['trend_direction'].iloc[i]
+                                _cd_trend_ok = (not np.isnan(_cd_td) and int(_cd_td) == 1)
+                            _cd_reclaim_ok = _cd_price_ok and _cd_rsi_ok and _cd_vol_ok and _cd_trend_ok
+                        if continuation_cooldown_quality_bypass_enabled and data is not None:
+                            _cd_is_gc = bool(data['golden_cross'].iloc[i]) if 'golden_cross' in data.columns else False
+                            _cd_is_momentum = bool(data['rsi_momentum_entry'].iloc[i]) if 'rsi_momentum_entry' in data.columns else False
+                            _cd_fast_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns else np.nan
+                            _cd_rsi_diff = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
+                            _cd_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                            _cd_dist_ma60 = data['dist_ma60'].iloc[i] if 'dist_ma60' in data.columns else np.nan
+                            _cd_atr_pct = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
+                            _cd_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                            _cd_vq = data['volume_quality_score'].iloc[i] if 'volume_quality_score' in data.columns else np.nan
+                            _cd_td = data['trend_direction'].iloc[i] if 'trend_direction' in data.columns else np.nan
+                            _cd_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
+                            _cd_ma_spread_std = data['ma_spread_std'].iloc[i] if 'ma_spread_std' in data.columns else np.nan
+                            _cd_short_gain_10d = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
+                            _cd_fast_rsi_min = (
+                                continuation_cooldown_quality_fast_rsi_min_gc
+                                if _cd_is_gc else continuation_cooldown_quality_fast_rsi_min
+                            )
+                            _cd_rsi_diff_min = (
+                                continuation_cooldown_quality_rsi_diff_min_gc
+                                if _cd_is_gc else continuation_cooldown_quality_rsi_diff_min
+                            )
+                            _cd_dist_ma20_min = (
+                                continuation_cooldown_quality_dist_ma20_min_gc
+                                if _cd_is_gc else continuation_cooldown_quality_dist_ma20_min
+                            )
+                            _cd_energy_ok = (
+                                (not np.isnan(_cd_atr_pct) and _cd_atr_pct >= continuation_cooldown_quality_atr_pct_min)
+                                or (not np.isnan(_cd_range20) and _cd_range20 >= continuation_cooldown_quality_range20_min)
+                            )
+                            _cd_gc_structure_ok = (
+                                (not _cd_is_gc)
+                                or (
+                                    not np.isnan(_cd_ma_spread_std)
+                                    and (
+                                        _cd_ma_spread_std >= continuation_cooldown_quality_gc_ma_spread_std_soft_min
+                                        or (
+                                            _cd_ma_spread_std >= continuation_cooldown_quality_gc_ma_spread_std_hard_min
+                                            and not np.isnan(_cd_dist_ma20)
+                                            and _cd_dist_ma20 < continuation_cooldown_quality_gc_soft_dist_ma20_min
+                                        )
+                                    )
+                                )
+                            )
+                            _cd_neg_weekly_hot_ok = (
+                                _cd_is_gc
+                                or np.isnan(_cd_weekly_macd)
+                                or _cd_weekly_macd >= 0
+                                or _cd_weekly_macd < continuation_cooldown_quality_neg_weekly_min
+                                or np.isnan(_cd_dist_ma20)
+                                or _cd_dist_ma20 < continuation_cooldown_quality_neg_weekly_dist_ma20_min
+                                or np.isnan(_cd_short_gain_10d)
+                                or _cd_short_gain_10d < continuation_cooldown_quality_neg_weekly_short_gain_min
+                            )
+                            _cd_momentum_ok = (
+                                (not _cd_is_momentum)
+                                or (
+                                    not np.isnan(_cd_weekly_macd)
+                                    and _cd_weekly_macd <= continuation_cooldown_quality_momentum_weekly_macd_max
+                                    and not np.isnan(_cd_short_gain_10d)
+                                    and _cd_short_gain_10d <= continuation_cooldown_quality_momentum_short_gain_max
+                                    and not np.isnan(_cd_dist_ma20)
+                                    and _cd_dist_ma20 >= continuation_cooldown_quality_momentum_dist_ma20_min
+                                    and _cd_dist_ma20 <= continuation_cooldown_quality_momentum_dist_ma20_max
+                                )
+                            )
+                            _cd_quality_retry_ok = (
+                                _cd_momentum_ok
+                                and
+                                not np.isnan(_cd_td) and int(_cd_td) == 1
+                                and not np.isnan(_cd_fast_rsi) and _cd_fast_rsi >= _cd_fast_rsi_min
+                                and not np.isnan(_cd_rsi_diff) and _cd_rsi_diff >= _cd_rsi_diff_min
+                                and not np.isnan(_cd_vq) and _cd_vq >= continuation_cooldown_quality_vq_min
+                                and not np.isnan(_cd_dist_ma20) and _cd_dist_ma20 >= _cd_dist_ma20_min
+                                and not np.isnan(_cd_dist_ma60)
+                                and _cd_dist_ma60 >= continuation_cooldown_quality_dist_ma60_min
+                                and _cd_dist_ma60 <= continuation_cooldown_quality_dist_ma60_max
+                                and _cd_energy_ok
+                                and _cd_gc_structure_ok
+                                and _cd_neg_weekly_hot_ok
+                            )
+                        if _cd_reclaim_ok or _cd_quality_retry_ok:
+                            if data is not None and 'continuation_cooldown_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('continuation_cooldown_block')] = False
+                        else:
+                            _entry_filters_ok = False
+                            if data is not None and 'continuation_cooldown_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('continuation_cooldown_block')] = True
+
+                # 画像驱动入场过滤：只在“噪声+手续费敏感”分段收紧；趋势跑者分段保持通路
+                if _entry_filters_ok and adaptive_fee_aware_mode and data is not None and not is_div_entry:
+                    _ad_trend_conf = data['dynamic_trend_conf'].iloc[i] if 'dynamic_trend_conf' in data.columns else np.nan
+                    _ad_risk_score = data['dynamic_risk_score'].iloc[i] if 'dynamic_risk_score' in data.columns else np.nan
+                    _ad_reversal_conf = data['dynamic_reversal_conf'].iloc[i] if 'dynamic_reversal_conf' in data.columns else np.nan
+                    _runner_profile = bool(data['dynamic_runner_profile'].iloc[i]) if 'dynamic_runner_profile' in data.columns else False
+                    _fee_sensitive_profile = (
+                        bool(data['dynamic_fee_sensitive_profile'].iloc[i])
+                        if 'dynamic_fee_sensitive_profile' in data.columns else False
+                    )
+                    _apply_noise_guard = _fee_sensitive_profile and not (_runner_profile and _runner_breakout_now)
+                    _ad_relax_for_oversold = (
+                        is_sw_entry
+                        and 'fast_rsi' in data.columns
+                        and not pd.isna(data['fast_rsi'].iloc[i])
+                        and data['fast_rsi'].iloc[i] <= 26
+                    )
+                    if (_apply_noise_guard and not _ad_relax_for_oversold
+                            and ((not np.isnan(_ad_trend_conf) and _ad_trend_conf < adaptive_entry_min_trend_conf)
+                                 or (not np.isnan(_ad_risk_score) and _ad_risk_score > adaptive_entry_max_risk_score))):
+                        _entry_filters_ok = False
+                        if 'adaptive_fee_block' in data.columns:
+                            data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                    if _entry_filters_ok and _apply_noise_guard and not _ad_relax_for_oversold:
+                        if adaptive_entry_require_ma120_trend:
+                            _ad_ma120_ok = False
+                            if 'ma_120' in data.columns and i >= adaptive_entry_ma120_lookback:
+                                _ad_ma = data['ma_120'].iloc[i]
+                                _ad_ma_prev = data['ma_120'].iloc[i - adaptive_entry_ma120_lookback]
+                                _ad_ma120_ok = (
+                                    not np.isnan(_ad_ma) and _ad_ma > 0
+                                    and not np.isnan(_ad_ma_prev)
+                                    and _ad_ma > _ad_ma_prev
+                                    and curr_price > _ad_ma
+                                )
+                            elif adaptive_entry_allow_without_ma120:
+                                _ad_ma120_ok = True
+                            if not _ad_ma120_ok:
+                                _entry_filters_ok = False
+                                if 'adaptive_fee_block' in data.columns:
+                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                        if _entry_filters_ok and adaptive_entry_max_dist_ma20 > 0:
+                            _ad_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                            if not np.isnan(_ad_dist_ma20) and _ad_dist_ma20 > adaptive_entry_max_dist_ma20:
+                                _entry_filters_ok = False
+                                if 'adaptive_fee_block' in data.columns:
+                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                        # 弱斜率高位不追：价格处于区间高位但MA120上行不足时，避免中继失败
+                        if _entry_filters_ok and 'price_position' in data.columns and 'dynamic_ma120_slope' in data.columns:
+                            _ad_pp = data['price_position'].iloc[i]
+                            _ad_m120s = data['dynamic_ma120_slope'].iloc[i]
+                            if (not np.isnan(_ad_pp) and not np.isnan(_ad_m120s)
+                                    and _ad_pp >= 0.72 and _ad_m120s < 1.0):
+                                _entry_filters_ok = False
+                                if 'adaptive_fee_block' in data.columns:
+                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                        # 过热高位追涨过滤：120日涨幅过大且位于区间高位时，避免在主升末端追入
+                        if _entry_filters_ok and 'price_position' in data.columns:
+                            _ad_pp = data['price_position'].iloc[i]
+                            _ad_ret120 = data['dynamic_ret120_pct'].iloc[i] if 'dynamic_ret120_pct' in data.columns else np.nan
+                            _runner_breakout_now = (
+                                bool(data['runner_breakout_entry'].iloc[i])
+                                if 'runner_breakout_entry' in data.columns else False
+                            )
+                            if (not _runner_breakout_now
+                                    and not np.isnan(_ad_pp) and not np.isnan(_ad_ret120)
+                                    and _ad_pp >= adaptive_late_chase_price_position
+                                    and _ad_ret120 >= adaptive_late_chase_ret120_min
+                                    and (np.isnan(_ad_risk_score) or _ad_risk_score >= adaptive_late_chase_risk_min)):
+                                _entry_filters_ok = False
+                                if 'adaptive_fee_block' in data.columns:
+                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                    # 双通道质量门槛：在高位高涨幅阶段要求MACD/RSI同向，避免逆势“假突破”入场
+                    if (_entry_filters_ok and dual_channel_quality_enabled and 'dual_channel_signal' in data.columns
+                            and bool(data['dual_channel_signal'].iloc[i])):
+                        _dc_macd = data['macd_hist'].iloc[i] if 'macd_hist' in data.columns else np.nan
+                        _dc_rsid = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
+                        _dc_pp = data['price_position'].iloc[i] if 'price_position' in data.columns else np.nan
+                        _dc_ret120 = data['dynamic_ret120_pct'].iloc[i] if 'dynamic_ret120_pct' in data.columns else np.nan
+                        _dc_high_chase = (
+                            not np.isnan(_dc_pp) and _dc_pp >= dual_channel_quality_price_position_min
+                            and not np.isnan(_dc_ret120) and _dc_ret120 >= dual_channel_quality_ret120_min
+                        )
+                        if _dc_high_chase:
+                            _dc_macd_ok = (not np.isnan(_dc_macd) and _dc_macd >= dual_channel_quality_macd_min)
+                            _dc_rsid_ok = (not np.isnan(_dc_rsid) and _dc_rsid >= dual_channel_quality_rsi_diff_min)
+                            if not (_dc_macd_ok and _dc_rsid_ok):
+                                _entry_filters_ok = False
+                                if 'adaptive_fee_block' in data.columns:
+                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+
+                    # 双通道在噪声敏感段需更高确认，趋势跑者不触发该收缩
+                    if (_entry_filters_ok and _apply_noise_guard and 'dual_channel_signal' in data.columns
+                            and bool(data['dual_channel_signal'].iloc[i])):
+                        _ad_macd_ok = ('macd_hist' in data.columns and not np.isnan(data['macd_hist'].iloc[i]) and data['macd_hist'].iloc[i] > 0)
+                        _ad_rsid_ok = ('rsi_diff' in data.columns and not np.isnan(data['rsi_diff'].iloc[i]) and data['rsi_diff'].iloc[i] > 0)
+                        if ((not np.isnan(_ad_trend_conf) and _ad_trend_conf < adaptive_dual_channel_min_trend_conf)
+                                or (not np.isnan(_ad_risk_score) and _ad_risk_score > adaptive_dual_channel_max_risk_score)):
+                            _entry_filters_ok = False
+                            if 'adaptive_fee_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                        if _entry_filters_ok and (not _ad_macd_ok or not _ad_rsid_ok):
+                            _entry_filters_ok = False
+                            if 'adaptive_fee_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                    # W底在噪声敏感段也需反转质量确认
+                    if _entry_filters_ok and _apply_noise_guard and is_w_entry:
+                        if ((not np.isnan(_ad_reversal_conf) and _ad_reversal_conf < adaptive_w_bottom_min_reversal_conf)
+                                or (not np.isnan(_ad_risk_score) and _ad_risk_score > adaptive_w_bottom_max_risk_score)):
+                            _entry_filters_ok = False
+                            if 'adaptive_fee_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+
+                # 趋势跑者突破点允许按配置直通执行层（默认关闭）
+                if _runner_force_entry:
+                    _entry_filters_ok = True
+
             if _entry_filters_ok and not in_position and ((entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position)):
                 in_position = True
                 entry_flags[i] = 1
                 entry_price = curr_price if not np.isnan(curr_price) else None
+                _last_entry_idx = i
                 _sig_exit_vol_skip_count = 0    # 新持仓重置信号退出缩量跳过计数
                 _sig_exit_ma20_delay_count = 0  # 新持仓重置MA20延迟计数
                 _sig_exit_peak_delay_count = 0  # 新持仓重置峰值保护延迟计数
@@ -3615,6 +5504,10 @@ class RSITrendStrategy(StrategyBase):
                     entry_reasons[i] = '底背离信号'
                 elif is_w_entry:
                     entry_reasons[i] = 'W底形态'
+                elif data is not None and 'trend_reclaim_entry' in data.columns and bool(data['trend_reclaim_entry'].iloc[i]):
+                    entry_reasons[i] = '趋势再突破'
+                elif data is not None and 'runner_breakout_entry' in data.columns and bool(data['runner_breakout_entry'].iloc[i]):
+                    entry_reasons[i] = '趋势跑者突破'
                 elif data is not None and 'rsi_momentum_entry' in data.columns and bool(data['rsi_momentum_entry'].iloc[i]):
                     entry_reasons[i] = 'RSI动量加速'
                 elif data is not None and 'discount_zone_entry' in data.columns and bool(data['discount_zone_entry'].iloc[i]):
@@ -3642,11 +5535,126 @@ class RSITrendStrategy(StrategyBase):
                         entry_reasons[i] = 'RSI趋势买入'
                 current_entry_reason = entry_reasons[i]
                 current_entry_class = entry_reasons[i]
+                _cont_staged_cap_entry_active = False
+                if (continuation_staged_hard_cap_enabled
+                        and current_entry_class == 'RSI多头延续'
+                        and data is not None):
+                    _cse_rdi = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
+                    _cse_tdi = data['trend_direction'].iloc[i] if 'trend_direction' in data.columns else np.nan
+                    _cse_dma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                    _cse_tc = data['dynamic_trend_conf'].iloc[i] if 'dynamic_trend_conf' in data.columns else np.nan
+                    _cse_rs = data['dynamic_risk_score'].iloc[i] if 'dynamic_risk_score' in data.columns else np.nan
+                    _cse_atr = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
+                    _cse_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                    _cont_staged_cap_entry_active = (
+                        not np.isnan(_cse_rdi) and _cse_rdi >= continuation_staged_hard_cap_rsi_diff_min
+                        and not np.isnan(_cse_tdi) and int(_cse_tdi) == 1
+                        and not np.isnan(_cse_atr) and _cse_atr >= continuation_staged_hard_cap_atr_min
+                        and not np.isnan(_cse_range20) and _cse_range20 >= continuation_staged_hard_cap_range20_min
+                        and (np.isnan(_cse_tc) or _cse_tc >= continuation_staged_hard_cap_trend_conf_min)
+                        and (np.isnan(_cse_rs) or _cse_rs <= continuation_staged_hard_cap_risk_score_max)
+                        and (np.isnan(_cse_dma20) or _cse_dma20 <= continuation_staged_hard_cap_dist_ma20_max)
+                    )
+                _profile_mode_now = 'base'
+                if data is not None and 'profile_mode_bar' in data.columns:
+                    _pm = data['profile_mode_bar'].iloc[i]
+                    if isinstance(_pm, str) and _pm:
+                        _profile_mode_now = _pm
+                current_slow_suspect = False
+                current_slow_stop_reentry_candidate = False
+                current_continuation_weak = False
+                current_continuation_slow_fake = False
+                current_golden_cross_weak = False
                 if (current_entry_class == '慢牛回踩因子'
                         and data is not None
                         and 'slow_pullback_slow_family' in data.columns
                         and bool(data['slow_pullback_slow_family'].iloc[i])):
                     current_entry_class = '慢牛回踩因子-慢牛'
+                    _sp_suspect_aroon = data['aroon_osc'].iloc[i] if 'aroon_osc' in data.columns else np.nan
+                    _sp_suspect_short_gain = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
+                    current_slow_suspect = (
+                        not np.isnan(_sp_suspect_aroon)
+                        and not np.isnan(_sp_suspect_short_gain)
+                        and _sp_suspect_aroon > float(self.config.get('slow_pullback_suspect_aroon_min', -20.0))
+                        and _sp_suspect_short_gain > float(self.config.get('slow_pullback_suspect_short_gain_min', 6.0))
+                    )
+                    _sp_sr_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
+                    _sp_sr_lr20 = data['lr_slope_20'].iloc[i] if 'lr_slope_20' in data.columns else np.nan
+                    _sp_sr_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                    _sp_sr_short_gain = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
+                    _sp_sr_mfi14 = data['mfi_14'].iloc[i] if 'mfi_14' in data.columns else np.nan
+                    current_slow_stop_reentry_candidate = (
+                        bool(self.config.get('slow_pullback_stop_reentry_enabled', True))
+                        and not current_slow_suspect
+                        and not np.isnan(_sp_sr_weekly_macd)
+                        and float(self.config.get('slow_pullback_stop_reentry_weekly_macd_min', 5.2)) <= _sp_sr_weekly_macd <= float(self.config.get('slow_pullback_stop_reentry_weekly_macd_max', 5.7))
+                        and not np.isnan(_sp_sr_lr20)
+                        and float(self.config.get('slow_pullback_stop_reentry_lr20_min', 0.0)) <= _sp_sr_lr20 <= float(self.config.get('slow_pullback_stop_reentry_lr20_max', 0.35))
+                        and not np.isnan(_sp_sr_dist_ma20)
+                        and float(self.config.get('slow_pullback_stop_reentry_dist_ma20_min', 3.0)) <= _sp_sr_dist_ma20 <= float(self.config.get('slow_pullback_stop_reentry_dist_ma20_max', 6.5))
+                        and not np.isnan(_sp_sr_mfi14)
+                        and _sp_sr_mfi14 >= float(self.config.get('slow_pullback_stop_reentry_mfi14_min', 50.0))
+                        and not np.isnan(_sp_sr_short_gain)
+                        and _sp_sr_short_gain <= float(self.config.get('slow_pullback_stop_reentry_short_gain_10d_max', 5.0))
+                    )
+                elif current_entry_class == 'RSI多头延续' and data is not None:
+                    _cw_atr_pct = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
+                    _cw_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                    _cw_lr20 = data['lr_slope_20'].iloc[i] if 'lr_slope_20' in data.columns else np.nan
+                    _cw_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                    _cw_aroon = data['aroon_osc'].iloc[i] if 'aroon_osc' in data.columns else np.nan
+                    _cw_bb = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns else np.nan
+                    _cw_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
+                    _cw_mfi14 = data['mfi_14'].iloc[i] if 'mfi_14' in data.columns else np.nan
+                    _cw_ma_spread_std = data['ma_spread_std'].iloc[i] if 'ma_spread_std' in data.columns else np.nan
+                    _cw_strong_trend_exempt = (
+                        not np.isnan(_cw_weekly_macd)
+                        and _cw_weekly_macd >= float(self.config.get('continuation_weak_exempt_weekly_macd_min', 99.0))
+                        and not np.isnan(_cw_ma_spread_std)
+                        and _cw_ma_spread_std >= float(self.config.get('continuation_weak_exempt_ma_spread_std_min', 99.0))
+                    )
+                    current_continuation_weak = (
+                        not np.isnan(_cw_atr_pct) and _cw_atr_pct <= float(self.config.get('continuation_weak_atr_pct_max', 2.5))
+                        and not np.isnan(_cw_range20) and _cw_range20 <= float(self.config.get('continuation_weak_range20_max', 12.0))
+                        and not np.isnan(_cw_lr20) and _cw_lr20 <= float(self.config.get('continuation_weak_lr20_max', 0.55))
+                        and not np.isnan(_cw_dist_ma20) and _cw_dist_ma20 >= float(self.config.get('continuation_weak_dist_ma20_min', 3.0))
+                        and not np.isnan(_cw_aroon) and _cw_aroon <= float(self.config.get('continuation_weak_aroon_max', -60.0))
+                        and not np.isnan(_cw_bb) and _cw_bb >= float(self.config.get('continuation_weak_bb_percent_min', 0.95))
+                        and not _cw_strong_trend_exempt
+                    )
+                    current_continuation_slow_fake = (
+                        bool(self.config.get('continuation_slow_fake_enabled', True))
+                        and not current_continuation_weak
+                        and not np.isnan(_cw_weekly_macd)
+                        and float(self.config.get('continuation_slow_fake_weekly_macd_min', -4.0)) <= _cw_weekly_macd <= float(self.config.get('continuation_slow_fake_weekly_macd_max', 1.0))
+                        and not np.isnan(_cw_atr_pct)
+                        and float(self.config.get('continuation_slow_fake_atr_pct_min', 1.5)) <= _cw_atr_pct <= float(self.config.get('continuation_slow_fake_atr_pct_max', 3.2))
+                        and not np.isnan(_cw_range20)
+                        and float(self.config.get('continuation_slow_fake_range20_min', 8.0)) <= _cw_range20 <= float(self.config.get('continuation_slow_fake_range20_max', 14.0))
+                        and not np.isnan(_cw_ma_spread_std)
+                        and _cw_ma_spread_std <= float(self.config.get('continuation_slow_fake_ma_spread_std_max', 1.9))
+                        and not np.isnan(_cw_mfi14)
+                        and _cw_mfi14 >= float(self.config.get('continuation_slow_fake_mfi14_min', 67.0))
+                    )
+                elif current_entry_class == 'RSI金叉' and data is not None:
+                    _gcw_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
+                    _gcw_dist_ma60 = data['dist_ma60'].iloc[i] if 'dist_ma60' in data.columns else np.nan
+                    _gcw_ma_spread_std = data['ma_spread_std'].iloc[i] if 'ma_spread_std' in data.columns else np.nan
+                    _gcw_mfi14 = data['mfi_14'].iloc[i] if 'mfi_14' in data.columns else np.nan
+                    _gcw_bb = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns else np.nan
+                    current_golden_cross_weak = (
+                        bool(self.config.get('golden_cross_weak_enabled', True))
+                        and not np.isnan(_gcw_weekly_macd)
+                        and float(self.config.get('golden_cross_weak_weekly_macd_min', -1.0)) <= _gcw_weekly_macd <= float(self.config.get('golden_cross_weak_weekly_macd_max', 1.5))
+                        and not np.isnan(_gcw_dist_ma60)
+                        and _gcw_dist_ma60 <= float(self.config.get('golden_cross_weak_dist_ma60_max', 4.0))
+                        and not np.isnan(_gcw_ma_spread_std)
+                        and _gcw_ma_spread_std <= float(self.config.get('golden_cross_weak_ma_spread_std_max', 3.0))
+                        and not np.isnan(_gcw_mfi14)
+                        and _gcw_mfi14 >= float(self.config.get('golden_cross_weak_mfi14_min', 50.0))
+                        and not np.isnan(_gcw_bb)
+                        and _gcw_bb >= float(self.config.get('golden_cross_weak_bb_percent_min', 0.60))
+                    )
                 _trade_stop_loss = stop_loss_pct  # 默认使用正常止损
                 # 自适应止损：根据入场时大盘regime决定止损幅度
                 if _adaptive_sl_enabled and _regime_signal is not None and len(_regime_signal) > 0:
@@ -3659,16 +5667,79 @@ class RSITrendStrategy(StrategyBase):
                     if not np.isnan(_he_price_ago) and _he_price_ago > 0:
                         _he_chg = (curr_price - _he_price_ago) / _he_price_ago * 100
                         if _he_chg > _hot_entry_thresh:
-                            _trade_stop_loss = min(_trade_stop_loss, _hot_entry_sl)
+                            _adaptive_trend_ok = False
+                            _runner_profile_now = (
+                                bool(data['dynamic_runner_profile'].iloc[i])
+                                if 'dynamic_runner_profile' in data.columns else False
+                            )
+                            if _runner_profile_now:
+                                _adaptive_trend_ok = True
+                            elif adaptive_fee_aware_mode and 'dynamic_trend_conf' in data.columns and 'dynamic_risk_score' in data.columns:
+                                _ad_tc = data['dynamic_trend_conf'].iloc[i]
+                                _ad_rs = data['dynamic_risk_score'].iloc[i]
+                                _adaptive_trend_ok = (
+                                    not np.isnan(_ad_tc) and _ad_tc >= adaptive_entry_min_trend_conf + 0.08
+                                    and not np.isnan(_ad_rs) and _ad_rs <= adaptive_entry_max_risk_score
+                                )
+                            if (not _adaptive_trend_ok and _cont_hot_bypass_enabled
+                                    and current_entry_class == 'RSI多头延续'
+                                    and data is not None and i >= _cont_hot_bypass_ma60_lb):
+                                _rdi = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
+                                _tdi = data['trend_direction'].iloc[i] if 'trend_direction' in data.columns else np.nan
+                                _ma60_now = data['ma_60'].iloc[i] if 'ma_60' in data.columns else np.nan
+                                _ma60_prev = (
+                                    data['ma_60'].iloc[i - _cont_hot_bypass_ma60_lb]
+                                    if 'ma_60' in data.columns else np.nan
+                                )
+                                _dma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                                _pp = data['price_position'].iloc[i] if 'price_position' in data.columns else np.nan
+                                _range20 = (
+                                    data['range_20d_pct'].iloc[i]
+                                    if 'range_20d_pct' in data.columns else np.nan
+                                )
+                                _adaptive_trend_ok = (
+                                    (not np.isnan(_rdi)) and _rdi >= _cont_hot_bypass_rsi_diff
+                                    and (not np.isnan(_tdi)) and int(_tdi) == 1
+                                    and (
+                                        (not _cont_hot_bypass_require_ma60_rising)
+                                        or (
+                                            (not np.isnan(_ma60_now))
+                                            and (not np.isnan(_ma60_prev))
+                                            and _ma60_now > _ma60_prev
+                                        )
+                                    )
+                                    and (np.isnan(_dma20) or _dma20 <= _cont_hot_bypass_max_dist_ma20)
+                                    and (
+                                        _cont_hot_bypass_price_position_max <= 0
+                                        or (not np.isnan(_pp) and _pp <= _cont_hot_bypass_price_position_max)
+                                    )
+                                    and (
+                                        _cont_hot_bypass_range20_min <= 0
+                                        or (not np.isnan(_range20) and _range20 >= _cont_hot_bypass_range20_min)
+                                    )
+                                )
+                            if not _adaptive_trend_ok:
+                                _hot_entry_target_sl = _hot_entry_sl
+                                if _cont_hot_entry_floor > 0 and current_entry_class == 'RSI多头延续':
+                                    _hot_entry_target_sl = max(_hot_entry_target_sl, _cont_hot_entry_floor)
+                                _trade_stop_loss = min(_trade_stop_loss, _hot_entry_target_sl)
                 # 入场类型专属止损：弱势入场类型使用更紧止损（scan42/48/49验证）
                 if current_entry_class == 'RSI金叉' and _gc_sl > 0:
                     _trade_stop_loss = min(_trade_stop_loss, _gc_sl)
+                    if current_golden_cross_weak:
+                        _trade_stop_loss = min(_trade_stop_loss, float(self.config.get('golden_cross_weak_stop_loss_pct', 4.5)))
                 elif current_entry_class == 'W底形态' and _wb_sl_custom > 0:
                     _trade_stop_loss = min(_trade_stop_loss, _wb_sl_custom)
                 elif current_entry_class == '折价区补仓' and _disc_sl > 0:
                     _trade_stop_loss = min(_trade_stop_loss, _disc_sl)
                 elif current_entry_class == '双通道信号' and _dc_sl > 0:
                     _trade_stop_loss = min(_trade_stop_loss, _dc_sl)
+                elif current_entry_class == '慢牛回踩因子-慢牛' and current_slow_suspect:
+                    _trade_stop_loss = min(_trade_stop_loss, float(self.config.get('slow_pullback_suspect_stop_loss', 3.0)))
+                elif current_entry_class == 'RSI多头延续' and current_continuation_weak:
+                    _trade_stop_loss = min(_trade_stop_loss, float(self.config.get('continuation_weak_stop_loss_pct', 3.375)))
+                elif current_entry_class == 'RSI多头延续' and current_continuation_slow_fake:
+                    _trade_stop_loss = min(_trade_stop_loss, float(self.config.get('continuation_slow_fake_stop_loss_pct', 5.5)))
                 # 入场类型专属trailing触发点（弱势入场更早激活保护）
                 _current_ts_trigger = trailing_stop_trigger
                 if _gc_ts_trigger > 0 and current_entry_class == 'RSI金叉':
@@ -3679,6 +5750,8 @@ class RSITrendStrategy(StrategyBase):
                     _current_ts_trigger = _dc_ts_trigger
                 elif _disc_ts_trigger > 0 and current_entry_class == '折价区补仓':
                     _current_ts_trigger = _disc_ts_trigger
+                if profile_bar_stop_override_enabled and _profile_mode_now == 'c7':
+                    _current_ts_trigger = max(_current_ts_trigger, profile_bar_c7_trigger)
                 # 入场类型专属trailing floor
                 _current_ts_level = trailing_stop_level
                 if _gc_ts_level > 0 and current_entry_class == 'RSI金叉':
@@ -3693,6 +5766,8 @@ class RSITrendStrategy(StrategyBase):
                     _current_ts_level = _disc_ts_level
                 elif _wb_ts_level > 0 and current_entry_class == 'W底形态':
                     _current_ts_level = _wb_ts_level
+                if profile_bar_stop_override_enabled and _profile_mode_now == 's5':
+                    _current_ts_level = min(_current_ts_level, profile_bar_s5_trailing_level)
                 # 标记回调买入
                 if chase_pullback_buy and data is not None and 'chase_pullback_entry' in data.columns:
                     data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
@@ -3722,6 +5797,8 @@ class RSITrendStrategy(StrategyBase):
                 _eh_overbought_seen = False  # 重置超买标记
                 _eh_below_ma45_count = 0  # 重置MA45计数
                 _eh_chandelier_count = 0  # 重置Chandelier计数
+                _structural_hold_mode = False
+                _structural_hold_break_count = 0
                 # post_wave_reentry_countdown 不重置：允许跨多笔交易持续生效
 
                 # 调试W底买入
@@ -3758,11 +5835,14 @@ class RSITrendStrategy(StrategyBase):
                             _pw_exit_price = data['close'].iloc[i - 1]
 
             if not in_position:
+                _cont_staged_cap_entry_active = False
                 _gap_fade_position = False
                 _gap_fade_entry_idx = -1
                 _gap_fade_prev_close = np.nan
                 _gap_fade_reclaimed = False
                 _gap_fade_reclaim_idx = -1
+                _structural_hold_mode = False
+                _structural_hold_break_count = 0
 
             if in_position:
                 hold_days += 1
@@ -3772,7 +5852,7 @@ class RSITrendStrategy(StrategyBase):
                     exit_active = False
                 _pw_last_trade_profit = 0.0  # 初始值，每天更新
                 _pw_last_trade_hold = hold_days
-
+                _ma60_factor_graduate_hold = False
                 # 更新当前交易最大浮盈
                 if entry_price and not pd.isna(curr_price) and entry_price > 0:
                     curr_profit_pct = (curr_price / entry_price - 1) * 100
@@ -3783,6 +5863,26 @@ class RSITrendStrategy(StrategyBase):
                     else:
                         _days_since_peak += 1  # 未创新高，累计天数
 
+                    if (ma60_factor_graduate_hold_enabled
+                            and current_entry_class == 'MA回踩因子'
+                            and max_profit_in_trade >= ma60_factor_graduate_profit_min
+                            and curr_profit_pct >= 0.0
+                            and data is not None
+                            and 'ma_120' in data.columns
+                            and 'dist_ma20' in data.columns
+                            and i >= 40):
+                        _mfg_ma120 = data['ma_120'].iloc[i]
+                        _mfg_ma120_prev = data['ma_120'].iloc[i - 40]
+                        _mfg_dist_ma20 = data['dist_ma20'].iloc[i]
+                        _ma60_factor_graduate_hold = (
+                            not np.isnan(_mfg_ma120) and _mfg_ma120 > 0
+                            and curr_price > _mfg_ma120
+                            and not np.isnan(_mfg_ma120_prev)
+                            and _mfg_ma120 > _mfg_ma120_prev
+                            and not np.isnan(_mfg_dist_ma20)
+                            and _mfg_dist_ma20 >= ma60_factor_graduate_dist_ma20_min
+                        )
+
                     if (_gap_fade_position and not _gap_fade_reclaimed and _gap_fade_entry_idx >= 0
                             and i > _gap_fade_entry_idx and (i - _gap_fade_entry_idx) <= 2
                             and not np.isnan(_gap_fade_prev_close) and data is not None
@@ -3792,9 +5892,155 @@ class RSITrendStrategy(StrategyBase):
                             _gap_fade_reclaimed = True
                             _gap_fade_reclaim_idx = i
 
+                    _ad_tc = data['dynamic_trend_conf'].iloc[i] if data is not None and 'dynamic_trend_conf' in data.columns else np.nan
+                    _ad_rs = data['dynamic_risk_score'].iloc[i] if data is not None and 'dynamic_risk_score' in data.columns else np.nan
+                    _runner_profile_now = (
+                        bool(data['dynamic_runner_profile'].iloc[i])
+                        if data is not None and 'dynamic_runner_profile' in data.columns else False
+                    )
+                    _fee_sensitive_now = (
+                        bool(data['dynamic_fee_sensitive_profile'].iloc[i])
+                        if data is not None and 'dynamic_fee_sensitive_profile' in data.columns else False
+                    )
+                    # 噪声手续费敏感分段：持仓初期若仅小幅波动，避免被频繁磨损
+                    if (adaptive_fee_aware_mode and _fee_sensitive_now and (not _runner_profile_now)
+                            and exit_active and hold_days <= adaptive_flat_exit_min_hold_days):
+                        _ad_near_flat = (adaptive_flat_exit_profit_floor <= curr_profit_pct <= adaptive_flat_exit_profit_ceiling)
+                        _ad_trend_still_ok = (
+                            (np.isnan(_ad_tc) or _ad_tc >= adaptive_entry_min_trend_conf)
+                            and (np.isnan(_ad_rs) or _ad_rs <= adaptive_entry_max_risk_score + 0.08)
+                        )
+                        if _ad_near_flat and _ad_trend_still_ok:
+                            exit_active = False
+
+                    # 趋势跑者持有保护：主升段初期不因小波动提前下车
+                    if (_runner_profile_now and exit_active and hold_days <= runner_hold_guard_days
+                            and current_entry_class in ('趋势跑者突破', '趋势再突破', 'RSI金叉', 'RSI多头延续', 'RSI趋势买入', 'RSI动量加速', 'MA回踩因子', '慢牛回踩因子', '慢牛回踩因子-慢牛')):
+                        _runner_near_guard = (
+                            runner_hold_guard_profit_floor <= curr_profit_pct <= runner_hold_guard_profit_ceiling
+                        )
+                        _runner_trend_ok = (
+                            (np.isnan(_ad_tc) or _ad_tc >= runner_hold_guard_min_trend_conf)
+                            and (np.isnan(_ad_rs) or _ad_rs <= runner_hold_guard_max_risk_score)
+                        )
+                        if _runner_near_guard and _runner_trend_ok:
+                            exit_active = False
+
+                    # 结构性趋势持有保护（带迟滞）：激活后仅在“MA120结构明显破坏”时退出
+                    if (structural_trend_hold_enabled and data is not None
+                            and current_entry_class in (
+                                '趋势跑者突破', '趋势再突破', 'RSI金叉', 'RSI多头延续', 'RSI趋势买入',
+                                'RSI动量加速', 'MA回踩因子', '慢牛回踩因子', '慢牛回踩因子-慢牛'
+                            )):
+                        _sth_ret120 = np.nan
+                        _sth_ret_ok = False
+                        if i >= 120:
+                            _sth_close_120 = data['close'].iloc[i - 120]
+                            if not np.isnan(_sth_close_120) and _sth_close_120 > 0:
+                                _sth_ret120 = (curr_price / _sth_close_120 - 1.0) * 100.0
+                                _sth_ret_ok = _sth_ret120 >= structural_trend_hold_ret120_min
+
+                        _sth_ma120 = data['ma_120'].iloc[i] if 'ma_120' in data.columns else np.nan
+                        _sth_ma120_prev = (
+                            data['ma_120'].iloc[i - structural_trend_hold_ma120_lookback]
+                            if ('ma_120' in data.columns and i >= structural_trend_hold_ma120_lookback)
+                            else np.nan
+                        )
+                        _sth_ma120_slope = np.nan
+                        if (not np.isnan(_sth_ma120) and _sth_ma120 > 0
+                                and not np.isnan(_sth_ma120_prev) and _sth_ma120_prev > 0):
+                            _sth_ma120_slope = (_sth_ma120 / _sth_ma120_prev - 1.0) * 100.0
+
+                        _sth_price_ok = (
+                            not np.isnan(_sth_ma120)
+                            and _sth_ma120 > 0
+                            and not np.isnan(curr_price)
+                            and curr_price >= _sth_ma120 * (1.0 + structural_trend_hold_price_ma120_buffer / 100.0)
+                        )
+                        _sth_slope_ok = (
+                            not np.isnan(_sth_ma120_slope)
+                            and _sth_ma120_slope >= structural_trend_hold_ma120_slope_min
+                        )
+                        _sth_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
+                        _sth_range_ok = (
+                            np.isnan(_sth_range20)
+                            or _sth_range20 >= structural_trend_hold_range20_min
+                        )
+                        _sth_rsi_diff = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
+                        _sth_rsi_ok = (
+                            np.isnan(_sth_rsi_diff)
+                            or _sth_rsi_diff >= structural_trend_hold_rsi_diff_min
+                        )
+                        _sth_dir_ok = True
+                        if structural_trend_hold_require_trend_direction and 'trend_direction' in data.columns:
+                            _sth_td = data['trend_direction'].iloc[i]
+                            _sth_dir_ok = (not np.isnan(_sth_td) and int(_sth_td) == 1)
+
+                        _sth_activate = (
+                            (not _structural_hold_mode)
+                            and hold_days >= structural_trend_hold_min_days
+                            and curr_profit_pct >= structural_trend_hold_min_profit
+                            and _sth_ret_ok and _sth_price_ok and _sth_slope_ok
+                            and _sth_range_ok and _sth_rsi_ok and _sth_dir_ok
+                        )
+                        if _sth_activate:
+                            _structural_hold_mode = True
+                            _structural_hold_break_count = 0
+
+                        if _structural_hold_mode:
+                            _sth_profit_break = (
+                                structural_trend_hold_break_profit_drawdown > 0
+                                and max_profit_in_trade > 0
+                                and (max_profit_in_trade - curr_profit_pct) >= structural_trend_hold_break_profit_drawdown
+                            )
+                            if not np.isnan(_sth_ma120) and _sth_ma120 > 0 and not np.isnan(curr_price):
+                                _sth_break_price = curr_price < _sth_ma120 * (
+                                    1.0 + structural_trend_hold_break_price_ma120_buffer / 100.0
+                                )
+                                if _sth_break_price:
+                                    _structural_hold_break_count += 1
+                                else:
+                                    _structural_hold_break_count = 0
+                                if _structural_hold_break_count >= structural_trend_hold_break_ma120_days:
+                                    _structural_hold_mode = False
+                                    _structural_hold_break_count = 0
+                            else:
+                                _structural_hold_mode = False
+                                _structural_hold_break_count = 0
+                            if _sth_profit_break:
+                                _structural_hold_mode = False
+                                _structural_hold_break_count = 0
+
+                        _structural_hold_now = _structural_hold_mode
+                        if _structural_hold_now and exit_active:
+                            exit_active = False
+                            if 'structural_trend_hold_block' in data.columns:
+                                data.iloc[i, data.columns.get_loc('structural_trend_hold_block')] = True
+                    else:
+                        _structural_hold_mode = False
+                        _structural_hold_break_count = 0
+
                     # Hard Loss Cap — 硬性最大亏损上限（所有入场类型生效）
                     # 如果有过热自适应止损, 使用更紧的止损
                     _effective_cap = min(hard_loss_cap_pct, _trade_stop_loss) if _trade_stop_loss < hard_loss_cap_pct else hard_loss_cap_pct
+                    if (adaptive_fee_aware_mode and _fee_sensitive_now and (not _runner_profile_now)
+                            and current_entry_class in ('RSI金叉', 'RSI多头延续', 'RSI趋势买入')):
+                        if ((np.isnan(_ad_tc) or _ad_tc >= adaptive_entry_min_trend_conf)
+                                and (np.isnan(_ad_rs) or _ad_rs <= adaptive_entry_max_risk_score + 0.05)):
+                            _effective_cap = max(_effective_cap, adaptive_hot_stop_floor)
+                    if (_runner_profile_now
+                            and current_entry_class in ('趋势跑者突破', '趋势再突破', 'RSI金叉', 'RSI多头延续', 'RSI趋势买入', 'RSI动量加速')
+                            and (np.isnan(_ad_tc) or _ad_tc >= runner_hold_guard_min_trend_conf)
+                            and (np.isnan(_ad_rs) or _ad_rs <= runner_hold_guard_max_risk_score + 0.08)):
+                        _effective_cap = max(_effective_cap, runner_hot_stop_floor)
+                    if (continuation_staged_hard_cap_enabled
+                            and current_entry_class == 'RSI多头延续'
+                            and _cont_staged_cap_entry_active
+                            and _effective_cap <= continuation_staged_hard_cap_apply_max):
+                        if hold_days <= continuation_staged_hard_cap_day1:
+                            _effective_cap = max(_effective_cap, continuation_staged_hard_cap_pct_day1)
+                        elif hold_days <= continuation_staged_hard_cap_day2:
+                            _effective_cap = max(_effective_cap, continuation_staged_hard_cap_pct_day2)
                     _discount_hard_stop_pending = (pending_exit and pending_exit_source == 'discount_hard_stop')
                     _discount_hard_stop_guard = False
                     _momentum_hard_stop_pending = (pending_exit and pending_exit_source == 'momentum_hard_stop')
@@ -3907,6 +6153,10 @@ class RSITrendStrategy(StrategyBase):
                         in_position = False
                         exit_flags[i] = 1
                         stop_flags[i] = 1
+                        if current_continuation_weak:
+                            _last_continuation_weak_exit_idx = i
+                        if current_continuation_slow_fake:
+                            _last_continuation_slow_fake_exit_idx = i
                         exit_reasons[i] = f'硬性止损上限({_effective_cap:.1f}%)'
                         if _hot_hard_stop_reentry or _hot_hard_stop_special:
                             # 热入场4%止损更像早期验证失败；若随后强势突破，允许复用现有re-entry语义接回。
@@ -3946,7 +6196,33 @@ class RSITrendStrategy(StrategyBase):
                                 _eh_below_ma45_count += 1
                             else:
                                 _eh_below_ma45_count = 0  # 未有效跌破则重置
-                        _eh_profit_floor = extended_hold_trigger_profit - eh_drawdown_limit
+                        _eh_effective_drawdown_limit = eh_drawdown_limit
+                        if (_eh_recent_low_rebuy
+                                and bool(self.config.get('extended_hold_low_rebuy_tight_drawdown_enabled', False))
+                                and _eh_swing_rebuy_idx > 0):
+                            _eh_since_rebuy = i - _eh_swing_rebuy_idx
+                            _eh_tight_days = int(self.config.get('extended_hold_low_rebuy_tight_drawdown_days', 0))
+                            if 3 < _eh_since_rebuy <= _eh_tight_days:
+                                _eh_effective_drawdown_limit = min(
+                                    _eh_effective_drawdown_limit,
+                                    float(self.config.get('extended_hold_low_rebuy_tight_drawdown', _eh_effective_drawdown_limit))
+                                )
+                        if (not _eh_recent_low_rebuy
+                                and bool(self.config.get('extended_hold_targeted_tight_drawdown_enabled', False))):
+                            _eh_entry_class = str(current_entry_class or '')
+                            if _eh_entry_class in ('RSI金叉', 'RSI多头延续', 'RSI动量加速', '折价区补仓'):
+                                _eh_wk = data['lt_elder_weekly_macd'].iloc[i] if data is not None and 'lt_elder_weekly_macd' in data.columns else np.nan
+                                _eh_spread = data['ma_spread_std'].iloc[i] if data is not None and 'ma_spread_std' in data.columns else np.nan
+                                _eh_strong_runner = (
+                                    (not np.isnan(_eh_wk) and _eh_wk >= float(self.config.get('extended_hold_targeted_exempt_weekly_macd_min', 10.0)))
+                                    or (not np.isnan(_eh_spread) and _eh_spread >= float(self.config.get('extended_hold_targeted_exempt_ma_spread_std_min', 8.5)))
+                                )
+                                if not _eh_strong_runner:
+                                    _eh_effective_drawdown_limit = min(
+                                        _eh_effective_drawdown_limit,
+                                        float(self.config.get('extended_hold_targeted_tight_drawdown', _eh_effective_drawdown_limit))
+                                    )
+                        _eh_profit_floor = extended_hold_trigger_profit - _eh_effective_drawdown_limit
                         # 比例保护底线：保护已有增益的ratio%（随浮盈自动上升）
                         if eh_gain_protection_ratio > 0 and extended_hold_max_profit > extended_hold_trigger_profit:
                             _eh_gain = extended_hold_max_profit - extended_hold_trigger_profit
@@ -4009,6 +6285,23 @@ class RSITrendStrategy(StrategyBase):
                                 if _eh_below_ma120_count >= eh_ma120_confirm_days:
                                     _eh_ma_trigger = True
                                     _eh_trigger_reason = f'延长持仓-跌破MA120({eh_ma120_confirm_days}天确认)'
+                        if not _eh_ma_trigger and bool(self.config.get('extended_hold_momentum_trend_break_exit_enabled', False)):
+                            _eh_entry_class = str(current_entry_class or '')
+                            _eh_td_now = data['trend_direction'].iloc[i] if data is not None and 'trend_direction' in data.columns else np.nan
+                            _eh_dist_ma20 = data['dist_ma20'].iloc[i] if data is not None and 'dist_ma20' in data.columns else np.nan
+                            _eh_wk_now = data['lt_elder_weekly_macd'].iloc[i] if data is not None and 'lt_elder_weekly_macd' in data.columns else np.nan
+                            if (
+                                _eh_entry_class == 'RSI动量加速'
+                                and hold_days >= int(self.config.get('extended_hold_momentum_trend_break_min_days', 9999))
+                                and not np.isnan(_eh_td_now)
+                                and int(_eh_td_now) < 0
+                                and not np.isnan(_eh_dist_ma20)
+                                and _eh_dist_ma20 <= float(self.config.get('extended_hold_momentum_trend_break_dist_ma20_max', -999.0))
+                                and not np.isnan(_eh_wk_now)
+                                and _eh_wk_now <= float(self.config.get('extended_hold_momentum_trend_break_weekly_macd_max', 999.0))
+                            ):
+                                _eh_ma_trigger = True
+                                _eh_trigger_reason = '延长持仓-动量转弱锁盈'
                         _eh_floor_broken = curr_profit_pct < _eh_effective_floor
                         # 低吸回补后先给价格一点恢复空间，避免EH floor立即把仓位洗掉
                         if (_eh_recent_low_rebuy and _eh_swing_rebuy_idx > 0
@@ -4035,7 +6328,9 @@ class RSITrendStrategy(StrategyBase):
 
                         # EH做T高抛：在EH期间超买时卖出，等待回调再接回（支持多次做T，冷却期控制）
                         _ehs_cooldown_ok = (i - _eh_swing_rebuy_idx >= eh_swing_cooldown_days) if _eh_swing_rebuy_idx > 0 else True
-                        if (eh_swing_enabled and not _eh_swing_active and not _eh_swing_used
+                        if (eh_swing_enabled
+                                and not (structural_trend_hold_disable_eh_swing and _structural_hold_now)
+                                and not _eh_swing_active and not _eh_swing_used
                                 and _ehs_cooldown_ok and swing_state == 0 and data is not None and entry_price and not np.isnan(curr_price)):
                             _ehs_profit_above_trigger = curr_profit_pct - extended_hold_trigger_profit
                             if _ehs_profit_above_trigger >= eh_swing_min_gain_above_trigger:
@@ -4188,12 +6483,15 @@ class RSITrendStrategy(StrategyBase):
                                     position[i] = 0
                                     continue
 
+                    _structural_hold_now = False
+
                     # 检查止盈保护（trailing stop）
                     if _current_ts_trigger > 0 and not trailing_stop_active:
                         if max_profit_in_trade >= _current_ts_trigger:
                             trailing_stop_active = True
 
                     if (trailing_stop_active and current_entry_class != '慢牛回踩因子-慢牛'
+                            and not _ma60_factor_graduate_hold
                             and not (pending_exit and pending_exit_source == 'trailing_winner')
                             and (not is_w_bottom_entry or _wb_std_exit)
                             and not is_sideways_entry and not _gap_fade_position):
@@ -4412,12 +6710,146 @@ class RSITrendStrategy(StrategyBase):
                                 _ts_pending = False
                                 _ts_pending_days = 0
 
+                    # 慢牛回踩单由专属出口链独占管理，避免被通用退出逻辑串扰。
+                    if current_entry_class == '慢牛回踩因子-慢牛' and entry_price and not pd.isna(curr_price):
+                        _sp_profit = (curr_price / entry_price - 1) * 100
+                        _sp_anchor_period = int(self.config.get('slow_pullback_anchor_period', 55))
+                        _sp_anchor_col = f'ma_{_sp_anchor_period}'
+                        _sp_anchor_ma = data[_sp_anchor_col].iloc[i] if data is not None and _sp_anchor_col in data.columns else np.nan
+                        _sp_ma20 = data['bb_middle'].iloc[i] if data is not None and 'bb_middle' in data.columns else np.nan
+                        _sp_rsi = data['fast_rsi'].iloc[i] if data is not None and 'fast_rsi' in data.columns else np.nan
+                        _sp_bb = data['bb_percent'].iloc[i] if data is not None and 'bb_percent' in data.columns else np.nan
+                        _sp_min_hold = int(self.config.get('slow_pullback_min_hold_days', 8))
+                        _sp_signal_hold = int(self.config.get('slow_pullback_exit_signal_hold_days', 12))
+                        _sp_anchor_break_pct = float(self.config.get('slow_pullback_exit_anchor_break_pct', 0.5))
+                        _sp_profit_take = float(self.config.get('slow_pullback_exit_profit_take_pct', 16.0))
+                        _sp_peak_trigger = float(self.config.get('slow_pullback_exit_peak_trigger_pct', 12.0))
+                        _sp_peak_drawdown = float(self.config.get('slow_pullback_exit_peak_drawdown_pct', 5.0))
+                        if current_slow_suspect:
+                            _sp_signal_hold = min(_sp_signal_hold, int(self.config.get('slow_pullback_suspect_signal_hold_days', _sp_signal_hold)))
+                            _sp_peak_trigger = min(_sp_peak_trigger, float(self.config.get('slow_pullback_suspect_peak_trigger_pct', _sp_peak_trigger)))
+                            _sp_peak_drawdown = min(_sp_peak_drawdown, float(self.config.get('slow_pullback_suspect_peak_drawdown_pct', _sp_peak_drawdown)))
+                        _sp_rsi_ob = float(self.config.get('slow_pullback_exit_rsi_overbought', 78.0))
+                        _sp_bb_ob = float(self.config.get('slow_pullback_exit_bb_overbought', 0.92))
+                        _sp_curr_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if data is not None and 'lt_elder_weekly_macd' in data.columns else np.nan
+                        _sp_curr_lr20 = data['lr_slope_20'].iloc[i] if data is not None and 'lr_slope_20' in data.columns else np.nan
+                        _sp_curr_range20 = data['range_20d_pct'].iloc[i] if data is not None and 'range_20d_pct' in data.columns else np.nan
+                        _sp_family_weekly_macd_max = float(self.config.get('slow_pullback_exit_family_weekly_macd_max', 6.5))
+                        _sp_family_lr20_max = float(self.config.get('slow_pullback_exit_family_lr20_max', 0.40))
+                        _sp_family_range20_max = float(self.config.get('slow_pullback_exit_family_range20_max', 24.0))
+                        _sp_family_dist_ma20_max = float(self.config.get('slow_pullback_exit_family_dist_ma20_max', 9.5))
+
+                        if _trade_stop_loss > 0:
+                            _sp_threshold = entry_price * (1 - _trade_stop_loss / 100.0)
+                            if curr_price <= _sp_threshold:
+                                in_position = False
+                                exit_flags[i] = 1
+                                stop_flags[i] = 1
+                                exit_reasons[i] = f'慢牛回踩-止损({_trade_stop_loss:.1f}%)'
+                                entry_price = None
+                                hold_days = 0
+                                trailing_stop_active = False
+                                dynamic_profit_active = False
+                                max_profit_in_trade = 0
+                                pending_exit = False
+                                pending_exit_days = 0
+                                if current_slow_stop_reentry_candidate and reentry_enabled and not np.isnan(curr_price):
+                                    _reentry_watching = True
+                                    _reentry_exit_price = curr_price
+                                    _reentry_days = 0
+                                    _reentry_skip_uptrend = False
+                                    _reentry_prev_profit = curr_profit_pct
+                                    _reentry_mode = 'slow_stop'
+                                position[i] = 0
+                                continue
+
+                        if hold_days < _sp_min_hold:
+                            position[i] = 1
+                            continue
+
+                        _sp_anchor_broken = (
+                            not np.isnan(_sp_anchor_ma) and _sp_anchor_ma > 0
+                            and curr_price < _sp_anchor_ma * (1 - _sp_anchor_break_pct / 100.0)
+                        )
+                        _sp_ma20_broken = (not np.isnan(_sp_ma20) and curr_price < _sp_ma20)
+                        _sp_overbought = (
+                            not np.isnan(_sp_rsi) and _sp_rsi >= _sp_rsi_ob
+                            and not np.isnan(_sp_bb) and _sp_bb >= _sp_bb_ob
+                        )
+                        _sp_peak_draw = max_profit_in_trade - _sp_profit
+                        _sp_graduated_trend = (
+                            (not np.isnan(_sp_curr_weekly_macd) and _sp_curr_weekly_macd > _sp_family_weekly_macd_max)
+                            or (not np.isnan(_sp_curr_lr20) and _sp_curr_lr20 > _sp_family_lr20_max)
+                            or (not np.isnan(_sp_curr_range20) and _sp_curr_range20 > _sp_family_range20_max)
+                            or (not np.isnan(data['dist_ma20'].iloc[i]) and data['dist_ma20'].iloc[i] > _sp_family_dist_ma20_max)
+                        )
+
+                        if _sp_profit >= _sp_profit_take and _sp_overbought:
+                            in_position = False
+                            exit_flags[i] = 1
+                            profit_target_flags[i] = 1
+                            exit_reasons[i] = '慢牛回踩-超买止盈'
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            _last_slow_suspect_exit_idx = i
+                            if current_slow_suspect:
+                                _last_slow_suspect_strict_exit_idx = i
+                            position[i] = 0
+                            continue
+
+                        if (hold_days >= _sp_signal_hold
+                                and not _sp_graduated_trend
+                                and max_profit_in_trade >= _sp_peak_trigger
+                                and _sp_peak_draw >= _sp_peak_drawdown):
+                            in_position = False
+                            exit_flags[i] = 1
+                            profit_target_flags[i] = 1
+                            exit_reasons[i] = '慢牛回踩-回撤止盈'
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            _last_slow_suspect_exit_idx = i
+                            if current_slow_suspect:
+                                _last_slow_suspect_strict_exit_idx = i
+                            position[i] = 0
+                            continue
+
+                        if hold_days >= _sp_signal_hold and _sp_anchor_broken and (_sp_ma20_broken or _sp_profit < 0):
+                            in_position = False
+                            exit_flags[i] = 1
+                            exit_reasons[i] = '慢牛回踩-趋势转空退出'
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            _last_slow_suspect_exit_idx = i
+                            _last_slow_trend_exit_idx = i
+                            if current_slow_suspect:
+                                _last_slow_suspect_strict_exit_idx = i
+                            position[i] = 0
+                            continue
+
+                        position[i] = 1
+                        continue
+
                     # 检查动态止盈（从最高点回撤X%就卖）
                     if dynamic_profit_trigger > 0 and not dynamic_profit_active:
                         if max_profit_in_trade >= dynamic_profit_trigger:
                             dynamic_profit_active = True
 
-                    if dynamic_profit_active and not extended_hold_active and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry:
+                    if dynamic_profit_active and not extended_hold_active and not _ma60_factor_graduate_hold and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry:
                         drawback = max_profit_in_trade - curr_profit_pct
                         if drawback >= dynamic_profit_drawback:
                             in_position = False
@@ -4434,7 +6866,7 @@ class RSITrendStrategy(StrategyBase):
                             continue
 
                     # 成交量分布退出：窗口内多次放量阴线=机构派发
-                    if (dist_exit_enabled and not extended_hold_active and not exit_active
+                    if (dist_exit_enabled and not extended_hold_active and not _ma60_factor_graduate_hold and not exit_active
                             and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry
                             and curr_profit_pct >= dist_exit_min_profit
                             and data is not None and 'volume' in data.columns and 'volume_ma20' in data.columns):
@@ -4462,7 +6894,7 @@ class RSITrendStrategy(StrategyBase):
                             continue
 
                     # 滞涨退出：浮盈达标后连续N天未创新高=动量耗尽
-                    if (stale_peak_enabled and not extended_hold_active and not exit_active
+                    if (stale_peak_enabled and not extended_hold_active and not _ma60_factor_graduate_hold and not exit_active
                             and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry
                             and curr_profit_pct >= stale_peak_min_profit
                             and _days_since_peak >= stale_peak_max_days):
@@ -4481,7 +6913,7 @@ class RSITrendStrategy(StrategyBase):
                         continue
 
                     # 放量阴线+均线偏离退出：高位出货信号
-                    if (dist_madev_exit_enabled and not extended_hold_active and not exit_active
+                    if (dist_madev_exit_enabled and not extended_hold_active and not _ma60_factor_graduate_hold and not exit_active
                             and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry
                             and curr_profit_pct >= dist_madev_exit_min_profit
                             and data is not None and 'volume' in data.columns
@@ -4524,7 +6956,7 @@ class RSITrendStrategy(StrategyBase):
                                         continue
 
                     # 多指标超买集群退出：利润在10-22%区间，多个振荡指标同时超买
-                    if (ob_cluster_exit_enabled and not extended_hold_active and not exit_active
+                    if (ob_cluster_exit_enabled and not extended_hold_active and not _ma60_factor_graduate_hold and not exit_active
                             and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry
                             and curr_profit_pct >= ob_cluster_exit_min_profit
                             and curr_profit_pct < ob_cluster_exit_max_profit
@@ -4558,7 +6990,7 @@ class RSITrendStrategy(StrategyBase):
                             continue
 
                     # 放量冲高回落退出：上影线>实体+收盘下半区+放量=冲高回落
-                    if (vol_climax_exit_enabled and not extended_hold_active and not exit_active
+                    if (vol_climax_exit_enabled and not extended_hold_active and not _ma60_factor_graduate_hold and not exit_active
                             and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry
                             and entry_price and not np.isnan(curr_price)
                             and curr_profit_pct >= vol_climax_exit_min_profit
@@ -4591,7 +7023,7 @@ class RSITrendStrategy(StrategyBase):
                                     continue
 
                     # ROC动量衰竭退出：ROC正值但连续下降=加速度为负
-                    if (roc_fade_exit_enabled and not extended_hold_active and not exit_active
+                    if (roc_fade_exit_enabled and not extended_hold_active and not _ma60_factor_graduate_hold and not exit_active
                             and (not is_w_bottom_entry or _wb_std_exit) and not is_sideways_entry
                             and curr_profit_pct >= roc_fade_exit_min_profit
                             and data is not None and 'roc_10' in data.columns
@@ -4848,118 +7280,6 @@ class RSITrendStrategy(StrategyBase):
 
                     # 继续持有
 
-                elif current_entry_class == '慢牛回踩因子-慢牛' and entry_price and not pd.isna(curr_price):
-                    _sp_profit = (curr_price / entry_price - 1) * 100
-                    _sp_anchor_period = int(self.config.get('slow_pullback_anchor_period', 55))
-                    _sp_anchor_col = f'ma_{_sp_anchor_period}'
-                    _sp_anchor_ma = data[_sp_anchor_col].iloc[i] if data is not None and _sp_anchor_col in data.columns else np.nan
-                    _sp_ma20 = data['bb_middle'].iloc[i] if data is not None and 'bb_middle' in data.columns else np.nan
-                    _sp_rsi = data['fast_rsi'].iloc[i] if data is not None and 'fast_rsi' in data.columns else np.nan
-                    _sp_bb = data['bb_percent'].iloc[i] if data is not None and 'bb_percent' in data.columns else np.nan
-                    _sp_min_hold = int(self.config.get('slow_pullback_min_hold_days', 8))
-                    _sp_signal_hold = int(self.config.get('slow_pullback_exit_signal_hold_days', 12))
-                    _sp_anchor_break_pct = float(self.config.get('slow_pullback_exit_anchor_break_pct', 0.5))
-                    _sp_profit_take = float(self.config.get('slow_pullback_exit_profit_take_pct', 16.0))
-                    _sp_peak_trigger = float(self.config.get('slow_pullback_exit_peak_trigger_pct', 12.0))
-                    _sp_peak_drawdown = float(self.config.get('slow_pullback_exit_peak_drawdown_pct', 5.0))
-                    _sp_rsi_ob = float(self.config.get('slow_pullback_exit_rsi_overbought', 78.0))
-                    _sp_bb_ob = float(self.config.get('slow_pullback_exit_bb_overbought', 0.92))
-                    _sp_curr_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if data is not None and 'lt_elder_weekly_macd' in data.columns else np.nan
-                    _sp_curr_lr20 = data['lr_slope_20'].iloc[i] if data is not None and 'lr_slope_20' in data.columns else np.nan
-                    _sp_curr_range20 = data['range_20d_pct'].iloc[i] if data is not None and 'range_20d_pct' in data.columns else np.nan
-                    _sp_family_weekly_macd_max = float(self.config.get('slow_pullback_exit_family_weekly_macd_max', 6.5))
-                    _sp_family_lr20_max = float(self.config.get('slow_pullback_exit_family_lr20_max', 0.40))
-                    _sp_family_range20_max = float(self.config.get('slow_pullback_exit_family_range20_max', 24.0))
-                    _sp_family_dist_ma20_max = float(self.config.get('slow_pullback_exit_family_dist_ma20_max', 9.5))
-
-                    if _trade_stop_loss > 0:
-                        _sp_threshold = entry_price * (1 - _trade_stop_loss / 100.0)
-                        if curr_price <= _sp_threshold:
-                            in_position = False
-                            exit_flags[i] = 1
-                            stop_flags[i] = 1
-                            exit_reasons[i] = f'慢牛回踩-止损({_trade_stop_loss:.1f}%)'
-                            entry_price = None
-                            hold_days = 0
-                            trailing_stop_active = False
-                            dynamic_profit_active = False
-                            max_profit_in_trade = 0
-                            pending_exit = False
-                            pending_exit_days = 0
-                            position[i] = 0
-                            continue
-
-                    if hold_days < _sp_min_hold:
-                        position[i] = 1
-                        continue
-
-                    _sp_anchor_broken = (
-                        not np.isnan(_sp_anchor_ma) and _sp_anchor_ma > 0
-                        and curr_price < _sp_anchor_ma * (1 - _sp_anchor_break_pct / 100.0)
-                    )
-                    _sp_ma20_broken = (not np.isnan(_sp_ma20) and curr_price < _sp_ma20)
-                    _sp_overbought = (
-                        not np.isnan(_sp_rsi) and _sp_rsi >= _sp_rsi_ob
-                        and not np.isnan(_sp_bb) and _sp_bb >= _sp_bb_ob
-                    )
-                    _sp_peak_draw = max_profit_in_trade - _sp_profit
-                    _sp_graduated_trend = (
-                        (not np.isnan(_sp_curr_weekly_macd) and _sp_curr_weekly_macd > _sp_family_weekly_macd_max)
-                        or (not np.isnan(_sp_curr_lr20) and _sp_curr_lr20 > _sp_family_lr20_max)
-                        or (not np.isnan(_sp_curr_range20) and _sp_curr_range20 > _sp_family_range20_max)
-                        or (not np.isnan(data['dist_ma20'].iloc[i]) and data['dist_ma20'].iloc[i] > _sp_family_dist_ma20_max)
-                    )
-
-                    if _sp_profit >= _sp_profit_take and _sp_overbought:
-                        in_position = False
-                        exit_flags[i] = 1
-                        profit_target_flags[i] = 1
-                        exit_reasons[i] = '慢牛回踩-超买止盈'
-                        entry_price = None
-                        hold_days = 0
-                        trailing_stop_active = False
-                        dynamic_profit_active = False
-                        max_profit_in_trade = 0
-                        pending_exit = False
-                        pending_exit_days = 0
-                        position[i] = 0
-                        continue
-
-                    if (hold_days >= _sp_signal_hold
-                            and not _sp_graduated_trend
-                            and max_profit_in_trade >= _sp_peak_trigger
-                            and _sp_peak_draw >= _sp_peak_drawdown):
-                        in_position = False
-                        exit_flags[i] = 1
-                        profit_target_flags[i] = 1
-                        exit_reasons[i] = '慢牛回踩-回撤止盈'
-                        entry_price = None
-                        hold_days = 0
-                        trailing_stop_active = False
-                        dynamic_profit_active = False
-                        max_profit_in_trade = 0
-                        pending_exit = False
-                        pending_exit_days = 0
-                        position[i] = 0
-                        continue
-
-                    if hold_days >= _sp_signal_hold and _sp_anchor_broken and (_sp_ma20_broken or _sp_profit < 0):
-                        in_position = False
-                        exit_flags[i] = 1
-                        exit_reasons[i] = '慢牛回踩-趋势转空退出'
-                        entry_price = None
-                        hold_days = 0
-                        trailing_stop_active = False
-                        dynamic_profit_active = False
-                        max_profit_in_trade = 0
-                        pending_exit = False
-                        pending_exit_days = 0
-                        position[i] = 0
-                        continue
-
-                    position[i] = 1
-                    continue
-
                 # 非底背离、非W底、非震荡市场买入，按正常逻辑处理
                 elif not is_divergence_entry and not is_w_bottom_entry and not is_sideways_entry:
                     # 高抛低吸：检查是否满足swing sell条件
@@ -5047,6 +7367,13 @@ class RSITrendStrategy(StrategyBase):
                     if _trade_stop_loss > 0 and entry_price and not pd.isna(curr_price):
                         # 使用每笔交易的实际止损；早期止损只负责进一步收紧，不放宽。
                         _effective_sl = _trade_stop_loss
+                        if (continuation_staged_hard_cap_enabled
+                                and _cont_staged_cap_entry_active
+                                and current_entry_class == 'RSI多头延续'):
+                            if hold_days <= continuation_staged_hard_cap_day1:
+                                _effective_sl = max(_effective_sl, continuation_staged_hard_cap_pct_day1)
+                            elif hold_days <= continuation_staged_hard_cap_day2:
+                                _effective_sl = max(_effective_sl, continuation_staged_hard_cap_pct_day2)
                         if early_stop_days > 0 and hold_days <= early_stop_days:
                             _effective_sl = min(_effective_sl, early_stop_loss_pct)
                         threshold = entry_price * (1 - _effective_sl / 100.0)
@@ -5055,6 +7382,10 @@ class RSITrendStrategy(StrategyBase):
                             exit_flags[i] = 1
                             stop_flags[i] = 1
                             _last_loss_exit_idx = i  # 记录止损退出位置（用于冷却期）
+                            if current_continuation_weak:
+                                _last_continuation_weak_exit_idx = i
+                            if current_continuation_slow_fake:
+                                _last_continuation_slow_fake_exit_idx = i
                             if _effective_sl != _trade_stop_loss:
                                 exit_reasons[i] = f'早期止损({_effective_sl:.1f}%,{hold_days}日内)'
                             else:
@@ -5771,6 +8102,12 @@ class RSITrendStrategy(StrategyBase):
                             original_buy_price = trade['buy_price']
                             original_buy_date = trade['buy_date']
                             total_commission = trade.get('commission', 0)
+                            first_capital = trade.get('capital', 0.0)
+                            first_profit_rate = trade.get('profit_rate', 0.0)
+                            if first_capital and (1 + first_profit_rate) != 0:
+                                chain_start_capital = first_capital / (1 + first_profit_rate)
+                            else:
+                                chain_start_capital = 0.0
                             # 做T利润累计：每次卖出-买回的价差
                             swing_profit_sum = 0.0
                             last_swing_sell_price = trade['sell_price']
@@ -5801,11 +8138,8 @@ class RSITrendStrategy(StrategyBase):
                                         final_sell_date = next_trade['sell_date']
                                         final_capital = next_trade.get('capital', 0)
 
-                                        if original_buy_price > 0:
-                                            # 总利润 = 最终退出利润 + 所有做T累计利润
-                                            base_profit_rate = (final_sell_price / original_buy_price - 1)
-                                            commission_rate = total_commission / (original_buy_price * 100)
-                                            merged_profit_rate = base_profit_rate + swing_profit_sum - commission_rate
+                                        if chain_start_capital > 0 and final_capital > 0:
+                                            merged_profit_rate = (final_capital / chain_start_capital) - 1
                                         else:
                                             merged_profit_rate = 0
 
@@ -5826,20 +8160,22 @@ class RSITrendStrategy(StrategyBase):
                                 else:
                                     # 非做T回买（可能是做T放弃后的新交易）
                                     # 终止链：用最后一次做T卖出作为退出
-                                    if original_buy_price > 0:
-                                        base_profit_rate = (last_swing_sell_price / original_buy_price - 1)
-                                        commission_rate = total_commission / (original_buy_price * 100)
-                                        merged_profit_rate = base_profit_rate - commission_rate
+                                    chain_last_trade = trades[j - 1] if j - 1 >= i else trade
+                                    final_capital = chain_last_trade.get('capital', trade.get('capital', 0))
+                                    final_sell_price = chain_last_trade.get('sell_price', last_swing_sell_price)
+                                    final_sell_date = chain_last_trade.get('sell_date', trade['sell_date'])
+                                    if chain_start_capital > 0 and final_capital > 0:
+                                        merged_profit_rate = (final_capital / chain_start_capital) - 1
                                     else:
                                         merged_profit_rate = 0
 
                                     merged_trade = {
                                         'buy_date': original_buy_date,
                                         'buy_price': original_buy_price,
-                                        'sell_date': trade['sell_date'],
-                                        'sell_price': last_swing_sell_price,
+                                        'sell_date': final_sell_date,
+                                        'sell_price': final_sell_price,
                                         'profit_rate': merged_profit_rate,
-                                        'capital': trade.get('capital', 0),
+                                        'capital': final_capital,
                                         'commission': total_commission,
                                         'is_swing_merged': True,
                                         'swing_count': j - i - 1,

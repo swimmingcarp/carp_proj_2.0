@@ -164,14 +164,32 @@ class TestLookAheadBiasSmart(unittest.TestCase):
             self.fail("真实数据回测失败")
 
         # 用于提取信号点的列（只包含离散的买卖信号）
-        signal_cols = ['entry_signal', 'exit_signal', 'w_bottom_signal',
-                      'bullish_divergence_signal', 'sideways_entry',
-                      'rsi_momentum_entry']  # 新增：RSI动量入场信号
+        signal_cols = [
+            'entry_signal',
+            'exit_signal',
+            'w_bottom_signal',
+            'bullish_divergence_signal',
+            'sideways_entry',
+            'rsi_momentum_entry',
+            'slow_bull_rotation_entry',
+            'slow_bull_mtop_reclaim_entry',
+            'slow_bull_mtop_reclaim_extended_entry',
+            'slow_bull_ma_retest_entry',
+            'banklike_ma_pullback_entry',
+            'slow_bull_rotation_exit_signal',
+        ]
 
         # 用于比较的列（包括中间状态，用于检测未来函数）
-        comparison_cols = signal_cols + ['mtf_bias', 'direction',
-                                          'is_sideways', 'aroon_osc',
-                                          'atr_expanding', 'rsi_momentum']
+        comparison_cols = signal_cols + [
+            'mtf_bias',
+            'direction',
+            'is_sideways',
+            'aroon_osc',
+            'atr_expanding',
+            'rsi_momentum',
+            'banklike_slow_switch_mask',
+            'golden_cross_slow_switch_mask',
+        ]
 
         # 提取信号点
         signal_points = self._extract_signal_points(result_full, signal_cols)
@@ -350,6 +368,10 @@ class TestLookAheadBiasSmart(unittest.TestCase):
     def test_300274(self):
         """测试A股300274"""
         self._test_stock('300274', market='CN')
+
+    def test_000001(self):
+        """测试A股000001，覆盖 banklike / slow_bull 新分支"""
+        self._test_stock('000001', market='CN')
 
 
 class TestPitStageLookahead(unittest.TestCase):
@@ -580,6 +602,7 @@ STRATEGY_TEST_NAMES = [
     'test_02367',
     'test_300750',
     'test_300274',
+    'test_000001',
 ]
 
 PIT_STAGE_TEST_NAMES = [

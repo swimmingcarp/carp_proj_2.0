@@ -26,9 +26,15 @@ try:
         rsi_indicator,
         macd_indicator,
     )
+    from .factor_library import (
+        kama_indicator,
+        choppiness_index,
+        efficiency_ratio_indicator,
+    )
     from .strategy import StrategyBase
 except ImportError:  # pragma: no cover - fallback for standalone usage
     from indicators import atr_indicator, rsi_indicator, ma_indicator, ema_indicator, macd_indicator
+    from factor_library import kama_indicator, choppiness_index, efficiency_ratio_indicator
     from strategy import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -104,7 +110,7 @@ class RSITrendStrategy(StrategyBase):
             'trend_relaxed_entry': True,
             'trend_relaxed_min_gap': 1.9,  # 1.5→1.9: +1.47%, +0.013 tPF, 9伤12益, peak at 1.9
 
-            'trend_stop_loss_pct': 8.5,  # 条件化回收：普通趋势票恢复更紧止损，runner收益由其他结构承接
+            'trend_stop_loss_pct': 8.2,  # 8.5→8.2: +3.65% avg, +0.01 tPF, 改善DD
             'trend_exit_use_ma_filter': True,
             'trend_exit_fast_ema_period': 20,
             'trend_exit_slow_ma_period': 40,
@@ -237,6 +243,210 @@ class RSITrendStrategy(StrategyBase):
             'ma_family_hard_route_bb_percent_max': 1.02,
             'slow_pullback_min_vq_score': 0,
             'slow_pullback_ignore_hurst': False,
+            # 慢牛切换家族：对低波、慢趋势标的启用“策略切换 + 回踩接回”通路（默认关闭切换）
+            'slow_bull_rotation_enabled': True,
+            'slow_bull_rotation_switch_enabled': False,
+            'slow_bull_rotation_switch_use_trend_state': False,
+            'slow_bull_rotation_switch_block_dual_channel': True,
+            'slow_bull_rotation_switch_block_discount': False,
+            'slow_bull_rotation_disable_default_entries': False,
+            'slow_bull_rotation_block_full_profile': False,
+            'slow_bull_rotation_vol_lookback': 120,
+            'slow_bull_rotation_ann_vol_max': 32.0,
+            'slow_bull_rotation_atr_pct_max': 3.2,
+            'slow_bull_rotation_ma120_slope_min': -1.2,
+            'slow_bull_rotation_ma120_slope_max': 6.0,
+            'slow_bull_rotation_sideways_max': 0.35,
+            'slow_bull_rotation_short_gain_abs_min': 0.8,
+            'slow_bull_rotation_short_gain_abs_max': 9.0,
+            'slow_bull_rotation_dist_ma120_min': 1.5,
+            'slow_bull_rotation_dist_ma120_max': 16.0,
+            'slow_bull_rotation_rsi14_max': 62.0,
+            'slow_bull_rotation_ret120_min': -999.0,
+            'slow_bull_rotation_ret120_max': 999.0,
+            'slow_bull_rotation_range20_max': 999.0,
+            'slow_bull_rotation_bootstrap_enabled': False,
+            'slow_bull_rotation_seed_enabled': True,
+            'slow_bull_rotation_seed_ann_vol_max': 46.0,
+            'slow_bull_rotation_seed_short_gain_abs_max': 7.0,
+            'slow_bull_rotation_seed_ma120_slope_min': -2.0,
+            'slow_bull_rotation_seed_sideways_max': 0.25,
+            'slow_bull_rotation_seed_dist_ma120_min': 1.5,
+            'slow_bull_rotation_seed_dist_ma120_max': 6.0,
+            'slow_bull_rotation_seed_atr_pct_max': 6.2,
+            'slow_bull_rotation_seed_rsi14_max': 60.0,
+            'slow_bull_rotation_reclaim_enabled': False,
+            'slow_bull_rotation_reclaim_dist_ma20_min': -4.0,
+            'slow_bull_rotation_reclaim_dist_ma20_max': 2.5,
+            'slow_bull_rotation_reclaim_rsi14_min': 40.0,
+            'slow_bull_rotation_reclaim_rsi14_max': 66.0,
+            'slow_bull_rotation_reclaim_ma120_buffer_pct': 2.0,
+            'slow_bull_rotation_reclaim_volume_ratio_min': 0.7,
+            'slow_bull_rotation_reclaim_volume_ratio_max': 2.5,
+            'slow_bull_rotation_reclaim_require_up_close': True,
+            'slow_bull_rotation_reclaim_require_ma20_recover': True,
+            'slow_bull_rotation_fast_ma': 30,
+            'slow_bull_rotation_slow_ma': 120,
+            'slow_bull_rotation_min_hold_days': 3,
+            'slow_bull_rotation_soft_stop_enabled': False,
+            'slow_bull_rotation_soft_stop_hold_days': 20,
+            'slow_bull_rotation_soft_stop_loss_pct': 6.0,
+            'slow_bull_rotation_soft_stop_peak_profit_max': 20.0,
+            # 慢牛补位家族：专门承接被M顶过滤误伤的慢牛回踩再转强场景
+            'slow_bull_mtop_reclaim_enabled': True,
+            'slow_bull_mtop_reclaim_rsi_diff_min': 1.8,
+            'slow_bull_mtop_reclaim_fast_rsi_min': 48.0,
+            'slow_bull_mtop_reclaim_fast_rsi_max': 80.0,
+            'slow_bull_mtop_reclaim_atr_pct_max': 3.6,
+            'slow_bull_mtop_reclaim_range20_min': 5.0,
+            'slow_bull_mtop_reclaim_range20_max': 16.0,
+            'slow_bull_mtop_reclaim_dist_ma20_min': 0.6,
+            'slow_bull_mtop_reclaim_dist_ma20_max': 9.0,
+            'slow_bull_mtop_reclaim_dist_ma60_min': -999.0,
+            'slow_bull_mtop_reclaim_dist_ma60_max': 999.0,
+            'slow_bull_mtop_reclaim_weekly_macd_min': 0.0,
+            'slow_bull_mtop_reclaim_weekly_macd_max': 2.5,
+            'slow_bull_mtop_reclaim_weekly_macd_base_max': 2.5,
+            'slow_bull_mtop_reclaim_ma120_slope_min': 0.1,
+            'slow_bull_mtop_reclaim_ma120_buffer_pct': 2.0,
+            'slow_bull_mtop_reclaim_extended_enabled': True,
+            'slow_bull_mtop_reclaim_extended_weekly_macd_min': 2.5,
+            'slow_bull_mtop_reclaim_extended_weekly_macd_max': 6.0,
+            'slow_bull_mtop_reclaim_extended_range20_min': 6.2,
+            'slow_bull_mtop_reclaim_extended_dist_ma20_min': 2.4,
+            'slow_bull_mtop_reclaim_extended_dist_ma20_max': 6.8,
+            'slow_bull_mtop_reclaim_extended_price_position_min': 0.65,
+            'slow_bull_mtop_reclaim_extended_price_position_max': 0.85,
+            'slow_bull_mtop_reclaim_extended_rsi_diff_min': 2.2,
+            'slow_bull_mtop_reclaim_extended_rsi14_max': 75.0,
+            'slow_bull_mtop_reclaim_extended_bb_percent_max': 1.10,
+            'slow_bull_mtop_reclaim_extended_chop_min': 45.0,
+            'slow_bull_mtop_reclaim_extended_mfi14_max': 78.0,
+            'slow_bull_mtop_reclaim_extended_cross_ma5_freq_max': 0.35,
+            'slow_bull_mtop_reclaim_extended_rebound_lookback': 3,
+            'slow_bull_mtop_reclaim_extended_rebound_dist_ma20_min': 0.8,
+            'slow_bull_mtop_reclaim_extended_stop_loss_pct': 4.0,
+            'slow_bull_mtop_reclaim_extended_early_fail_hold_days': 6,
+            'slow_bull_mtop_reclaim_extended_early_fail_max_profit_pct': 2.0,
+            'slow_bull_mtop_reclaim_extended_early_fail_loss_pct': 2.4,
+            'slow_bull_mtop_reclaim_trend_stable_days': 1,
+            'slow_bull_mtop_reclaim_cooldown_days': 12,
+            'slow_bull_mtop_reclaim_stop_loss_pct': 5.0,
+            'slow_bull_mtop_reclaim_early_fail_enabled': True,
+            'slow_bull_mtop_reclaim_early_fail_hold_days': 8,
+            'slow_bull_mtop_reclaim_early_fail_max_profit_pct': 2.0,
+            'slow_bull_mtop_reclaim_early_fail_loss_pct': 2.8,
+            # 慢牛补位持仓模式：仅在低波慢趋势场景放宽持有，避免全局误伤
+            'slow_bull_mtop_carry_mode_enabled': True,
+            'slow_bull_mtop_carry_atr_pct_max': 2.1,
+            'slow_bull_mtop_carry_range20_max': 10.0,
+            'slow_bull_mtop_carry_weekly_macd_max': 2.2,
+            'slow_bull_mtop_carry_ma120_slope_max': 2.8,
+            'slow_bull_mtop_carry_signal_hold_days': 24,
+            'slow_bull_mtop_carry_stop_loss_pct': 7.5,
+            'slow_bull_mtop_carry_skip_early_fail': True,
+            'slow_bull_mtop_carry_chop_min': 43.0,
+            'slow_bull_mtop_carry_kama_buffer_pct': 1.2,
+            # 慢牛成熟段策略切换：高位低波慢趋势时屏蔽追涨家族
+            'slow_bull_mature_switch_enabled': True,
+            'slow_bull_mature_switch_atr_pct_max': 1.75,
+            'slow_bull_mature_switch_range20_max': 8.0,
+            'slow_bull_mature_switch_ma120_slope_min': 1.8,
+            'slow_bull_mature_switch_ma120_slope_max': 3.5,
+            'slow_bull_mature_switch_weekly_macd_min': 0.8,
+            'slow_bull_mature_switch_dist_ma20_min': 0.8,
+            'slow_bull_mature_switch_price_position_min': 0.30,
+            'slow_bull_mature_switch_chop_min': 45.0,
+            'slow_bull_mature_switch_bb_percent_min': 0.75,
+            # 慢牛均线回踩策略切换：低波慢趋势阶段优先“回踩均线再走强”而非追涨
+            'slow_bull_ma_retest_enabled': True,
+            'slow_bull_ma_retest_switch_enabled': True,
+            'slow_bull_ma_retest_switch_block_dual_channel': True,
+            'slow_bull_ma_retest_switch_block_discount': False,
+            'slow_bull_ma_retest_ma120_buffer_pct': 2.0,
+            'slow_bull_ma_retest_atr_pct_max': 2.1,
+            'slow_bull_ma_retest_range20_min': 4.0,
+            'slow_bull_ma_retest_range20_max': 9.0,
+            'slow_bull_ma_retest_weekly_macd_min': 0.0,
+            'slow_bull_ma_retest_weekly_macd_max': 3.2,
+            'slow_bull_ma_retest_dist_ma20_min': -0.8,
+            'slow_bull_ma_retest_dist_ma20_max': 3.5,
+            'slow_bull_ma_retest_ma120_slope_min': -1.2,
+            'slow_bull_ma_retest_chop_min': 43.0,
+            'slow_bull_ma_retest_cross_ma5_freq_max': 0.22,
+            'slow_bull_ma_retest_entry_er20_min': 0.28,
+            'slow_bull_ma_retest_entry_price_position_max': 0.78,
+            'slow_bull_ma_retest_entry_rsi_diff_min': 1.0,
+            'slow_bull_ma_retest_entry_rsi_diff_max': 9.0,
+            'slow_bull_ma_retest_entry_mfi14_max': 72.0,
+            'slow_bull_ma_retest_entry_cross_ma5_freq_max': 0.22,
+            'slow_bull_ma_retest_entry_dist_ma20_min': 0.2,
+            'slow_bull_ma_retest_entry_dist_ma20_max': 3.2,
+            'slow_bull_ma_retest_entry_rebound_lookback': 4,
+            'slow_bull_ma_retest_entry_rebound_dist_ma20_min': 0.2,
+            'slow_bull_ma_retest_stop_loss_pct': 4.8,
+            'slow_bull_ma_retest_signal_hold_days': 12,
+            'slow_bull_ma_retest_early_fail_enabled': True,
+            'slow_bull_ma_retest_early_fail_hold_days': 8,
+            'slow_bull_ma_retest_early_fail_max_profit_pct': 1.5,
+            'slow_bull_ma_retest_early_fail_loss_pct': 0.4,
+            'slow_bull_ma_retest_early_fail_global_block_days': 30,
+            # 慢牛画像切换：按“股票静态画像 + bar级状态”屏蔽追涨家族，优先回踩类买点
+            'banklike_slow_switch_enabled': True,
+            'banklike_slow_switch_seed_bars': 240,
+            'banklike_slow_switch_seed_ann_vol_max': 42.0,
+            'banklike_slow_switch_seed_ret_abs_max': 80.0,
+            'banklike_slow_switch_seed_mdd_max': 65.0,
+            'banklike_slow_switch_ma120_buffer_pct': 4.0,
+            'banklike_slow_switch_atr_pct_max': 3.8,
+            'banklike_slow_switch_range20_max': 14.0,
+            'banklike_slow_switch_weekly_macd_max': 2.5,
+            'banklike_slow_switch_dist_ma20_min': 2.5,
+            'banklike_slow_switch_price_position_min': 0.25,
+            'banklike_slow_switch_block_momentum': True,
+            'banklike_slow_switch_block_dual_channel': True,
+            'banklike_slow_switch_block_discount': False,
+            'banklike_slow_switch_highvol_enabled': True,
+            'banklike_slow_switch_highvol_seed_ann_vol_min': 38.0,
+            'banklike_slow_switch_highvol_seed_ret_abs_max': 20.0,
+            'banklike_slow_switch_highvol_seed_mdd_min': 25.0,
+            'banklike_slow_switch_highvol_seed_mdd_max': 40.0,
+            'banklike_slow_switch_highvol_strong_seed_ret_enabled': True,
+            'banklike_slow_switch_highvol_strong_seed_ret_min': 40.0,
+            'banklike_slow_switch_highvol_strong_seed_mdd_max': 25.0,
+            'banklike_slow_switch_highvol_ma120_buffer_pct': 30.0,
+            'banklike_slow_switch_highvol_atr_pct_max': 6.0,
+            'banklike_slow_switch_highvol_range20_max': 30.0,
+            'banklike_slow_switch_highvol_weekly_macd_max': 1.5,
+            'banklike_slow_switch_highvol_dist_ma20_min': 1.0,
+            'banklike_slow_switch_highvol_price_position_min': 0.15,
+            # 银行慢牛均线回踩：低波慢趋势场景切换到“回踩-再上穿”入场
+            'banklike_ma_pullback_enabled': True,
+            'banklike_ma_pullback_switch_enabled': False,
+            'banklike_ma_pullback_switch_block_dual_channel': True,
+            'banklike_ma_pullback_switch_block_discount': False,
+            'banklike_ma_pullback_ma120_buffer_pct': 4.5,
+            'banklike_ma_pullback_atr_pct_max': 3.8,
+            'banklike_ma_pullback_range20_min': 4.0,
+            'banklike_ma_pullback_range20_max': 16.0,
+            'banklike_ma_pullback_weekly_macd_min': 0.0,
+            'banklike_ma_pullback_weekly_macd_max': 1.2,
+            'banklike_ma_pullback_ma60_slope_lookback': 20,
+            'banklike_ma_pullback_ma60_slope_min': -1.3,
+            'banklike_ma_pullback_profile_dist_ma20_min': -2.0,
+            'banklike_ma_pullback_profile_dist_ma20_max': 3.2,
+            'banklike_ma_pullback_profile_price_position_max': 0.92,
+            'banklike_ma_pullback_recent_pullback_lookback': 10,
+            'banklike_ma_pullback_recent_pullback_dist_ma20_max': 0.8,
+            'banklike_ma_pullback_rebound_lookback': 4,
+            'banklike_ma_pullback_rebound_dist_ma20_min': 0.15,
+            'banklike_ma_pullback_entry_er20_min': 0.15,
+            'banklike_ma_pullback_entry_rsi_diff_min': 2.0,
+            'banklike_ma_pullback_entry_rsi_diff_max': 8.5,
+            'banklike_ma_pullback_entry_mfi14_max': 80.0,
+            'banklike_ma_pullback_entry_cross_ma5_freq_max': 0.45,
+            'banklike_ma_pullback_entry_dist_ma20_min': -1.4,
+            'banklike_ma_pullback_entry_dist_ma20_max': 2.0,
             # 主升浪持仓优化配置（优化后的参数）
             'trend_main_wave_enabled': True,  # 启用主升浪检测
             'trend_main_wave_min_gain': 15.0,  # 主升浪最小涨幅阈值(%) - 10→15: +0.18%, +0.002 tPF, 0伤1益
@@ -494,7 +704,7 @@ class RSITrendStrategy(StrategyBase):
 
             # 过热入场自适应止损: 股价近期涨幅大时使用更紧止损
             'hot_entry_enabled': True,                # 启用过热止损 (优化: +6.26%收益, +0.0288 tPF)
-            'hot_entry_thresh_pct': 3,                # 20天涨幅>X%视为过热 (5→3: +8.91%, 26伤52益, 除300274仍+5.30%)
+            'hot_entry_thresh_pct': 3.5,              # 3→3.5: tPF +0.01
             'hot_entry_stop_loss_pct': 4.0,           # 过热时硬止损缩至4%（vs 默认8.5%）
             # RSI多头延续在过热场景下可配置更宽止损底线（0=关闭，仍用hot_entry_stop_loss_pct）
             'continuation_hot_entry_stop_floor': 0.0,
@@ -569,9 +779,56 @@ class RSITrendStrategy(StrategyBase):
             'golden_cross_weak_mfi14_min': 50.0,
             'golden_cross_weak_bb_percent_min': 0.60,
             'golden_cross_weak_stop_loss_pct': 4.5,
+            # 慢牛阶段的假金叉过滤：低波高位且RSI差值不足时，不走右侧追涨
+            'golden_cross_slow_switch_enabled': True,
+            'golden_cross_slow_switch_atr_pct_max': 1.8,
+            'golden_cross_slow_switch_range20_max': 8.0,
+            'golden_cross_slow_switch_weekly_macd_min': 1.8,
+            'golden_cross_slow_switch_weekly_macd_max': 3.4,
+            'golden_cross_slow_switch_price_position_min': 0.62,
+            'golden_cross_slow_switch_rsi_diff_max': 2.6,
+            # RSI动量加速质量门控：在低效率/低波弱周动量场景避免“假加速”
+            'rsi_momentum_quality_filter_enabled': True,
+            'rsi_momentum_quality_block_standard_entry': False,
+            'rsi_momentum_quality_block_standard_weekly_macd_max': 1.2,
+            'rsi_momentum_quality_block_standard_range20_max': 12.0,
+            'rsi_momentum_quality_block_standard_atr_pct_max': 3.6,
+            'rsi_momentum_quality_er_mfi_max': 0.10,
+            'rsi_momentum_quality_mfi_min': 66.0,
+            'rsi_momentum_quality_mfi_weekly_macd_max': 1.2,
+            'rsi_momentum_quality_low_range20_max': 6.0,
+            'rsi_momentum_quality_low_range_er_max': 0.08,
+            'rsi_momentum_quality_atr_pct_max': 3.8,
+            'rsi_momentum_quality_high_vol_weekly_force_block_max': -1.5,
+            'rsi_momentum_quality_high_vol_bypass_rsi_diff_min': 5.0,
+            'rsi_momentum_quality_high_vol_bypass_rsi_diff_max': 12.0,
+            'rsi_momentum_quality_weak_weekly_macd_max': -3.0,
+            'rsi_momentum_quality_weak_weekly_er_max': 0.05,
+            'rsi_momentum_quality_exempt_ret120_min': 30.0,
+            'rsi_momentum_quality_exempt_ma120_slope_min': 1.0,
+            # RSI多头延续质量门控：慢牛低效弱波段避免“假延续”追入
+            'continuation_quality_filter_enabled': True,
+            'continuation_quality_low_range20_max': 6.0,
+            'continuation_quality_low_range_er20_max': 0.08,
+            'continuation_quality_atr_pct_max': 3.8,
+            'continuation_quality_high_vol_weekly_force_block_max': -1.5,
+            'continuation_quality_high_vol_bypass_rsi_diff_min': 3.0,
+            'continuation_quality_high_vol_bypass_rsi_diff_max': 5.2,
+            'continuation_quality_high_vol_bypass_cross_ma5_min': 0.25,
+            'continuation_quality_mfi_high_min': 68.0,
+            'continuation_quality_mfi_high_er20_max': 0.10,
+            'continuation_quality_weekly_macd_max': 1.2,
+            'continuation_quality_exempt_ret120_min': 30.0,
+            'continuation_quality_exempt_ma120_slope_min': 1.0,
+            # 双通道慢牛弱信号过滤：低波+弱效率+负rsi_diff 时，避免震荡假突破
+            'dual_channel_slow_fake_filter_enabled': True,
+            'dual_channel_slow_fake_range20_max': 8.0,
+            'dual_channel_slow_fake_rsi_diff_max': -0.5,
+            'dual_channel_slow_fake_er20_max': 0.20,
+            'dual_channel_slow_fake_weekly_macd_min': 2.5,
             # 上升趋势早期入场过滤（scan41: gap=2.5/d=2: +0.40%/+0.0085 tPF, 9伤10益）
             'entry_early_trend_gap': 2.5,             # 上升趋势前N天的relaxed_condition入场要求 rsi_diff >= X
-            'entry_early_trend_max_day': 2,           # 适用的最大趋势天数N
+            'entry_early_trend_max_day': 5,           # 2→5: tPF +0.01, PF +0.01, DD改善
 
 
             # W底缓冲期参数
@@ -1120,6 +1377,35 @@ class RSITrendStrategy(StrategyBase):
             return None, None
 
         data = self._prepare_dataframe(df)
+
+        def _batch_store_columns(
+            frame: pd.DataFrame,
+            columns: Dict[str, pd.Series],
+            *,
+            compact: bool = False,
+        ) -> pd.DataFrame:
+            """批量落列，尽量减少逐列插入导致的 DataFrame 碎片化。"""
+            if not columns:
+                return frame
+
+            append_map = {}
+            for name, value in columns.items():
+                if name in frame.columns:
+                    frame[name] = value
+                else:
+                    append_map[name] = value
+
+            if append_map:
+                frame = pd.concat(
+                    [frame, pd.DataFrame(append_map, index=frame.index)],
+                    axis=1,
+                )
+
+            if compact:
+                frame = frame.copy()
+
+            return frame
+
         # 明确不执行按股票分型路由，避免引入按股静态画像分流。
         self._apply_adaptive_profile_router(data)
 
@@ -1148,8 +1434,10 @@ class RSITrendStrategy(StrategyBase):
         if 'volume' in data.columns:
             data['volume_ma20'] = data['volume'].rolling(window=20, min_periods=1).mean()
             data['volume_weak'] = data['volume'] < data['volume_ma20'] * 0.75
+            data['volume_ratio'] = data['volume'] / data['volume_ma20'].replace(0, np.nan)
         else:
             data['volume_weak'] = pd.Series(False, index=data.index)
+            data['volume_ratio'] = pd.Series(np.nan, index=data.index)
 
         # 大周期M顶过滤：规避危险高位追高（ID021最优参数）
         # shift=60, window=120, lower=0.92, upper=1.05, threshold=-3
@@ -1220,81 +1508,62 @@ class RSITrendStrategy(StrategyBase):
         dev_multiplier = 2.0
 
         log_close = np.log(data['close'])
+        log_close_values = log_close.to_numpy(dtype=float, copy=False)
+        _channel_period_cache: Dict[int, Tuple[np.ndarray, float, float]] = {}
 
         def calc_channel_params(arr, period):
             if len(arr) < period or np.isnan(arr).any():
                 return np.nan, np.nan, np.nan, np.nan
             n = len(arr)
-            x = np.arange(n)
-            sum_x = np.sum(x)
-            sum_xx = np.sum(x * x)
-            sum_y = np.sum(arr)
-            sum_yx = np.sum(x * arr)
+            if period not in _channel_period_cache:
+                x = np.arange(period, dtype=float)
+                _channel_period_cache[period] = (x, float(np.sum(x)), float(np.sum(x * x)))
+            x, sum_x, sum_xx = _channel_period_cache[period]
+            arr = np.asarray(arr, dtype=float)
+            sum_y = float(np.sum(arr))
+            sum_yx = float(np.dot(x, arr))
             slope = (n * sum_yx - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
             average = sum_y / n
             intercept = average - slope * sum_x / n + slope
-            fitted_val = intercept
-            sum_dev = 0.0
-            for i in range(n):
-                residual = arr[i] - fitted_val
-                fitted_val += slope
-                sum_dev += residual * residual
-            std_dev = np.sqrt(sum_dev / (n - 1))
+            fitted = intercept + slope * x
+            residuals = arr - fitted
+            std_dev = np.sqrt(np.dot(residuals, residuals) / (n - 1))
             regres = intercept + slope * (n - 1) * 0.5
-            sum_dxx = 0.0
-            sum_dyy = 0.0
-            sum_dyx = 0.0
-            fitted_val = intercept
-            for i in range(n):
-                dxt = arr[i] - average
-                dyt = fitted_val - regres
-                fitted_val += slope
-                sum_dxx += dxt * dxt
-                sum_dyy += dyt * dyt
-                sum_dyx += dxt * dyt
+            dxt = arr - average
+            dyt = fitted - regres
+            sum_dxx = float(np.dot(dxt, dxt))
+            sum_dyy = float(np.dot(dyt, dyt))
+            sum_dyx = float(np.dot(dxt, dyt))
             pearson = sum_dyx / np.sqrt(sum_dxx * sum_dyy) if sum_dxx * sum_dyy > 0 else 0.0
             return slope, intercept, std_dev, abs(pearson)
 
-        ultra_long_slope = pd.Series(index=data.index, dtype=float)
-        ultra_long_pearson = pd.Series(index=data.index, dtype=float)
-        for i in range(ultra_long_period - 1, len(data)):
-            arr = log_close.iloc[i - ultra_long_period + 1:i + 1].values
-            slope, _, _, pearson = calc_channel_params(arr, ultra_long_period)
-            ultra_long_slope.iloc[i] = slope
-            ultra_long_pearson.iloc[i] = pearson
+        def _channel_series_bundle(period: int, with_lower: bool = False):
+            slope_arr = np.full(len(data), np.nan, dtype=float)
+            intercept_arr = np.full(len(data), np.nan, dtype=float)
+            std_arr = np.full(len(data), np.nan, dtype=float)
+            pearson_arr = np.full(len(data), np.nan, dtype=float)
+            lower_arr = np.full(len(data), np.nan, dtype=float) if with_lower else None
+            for i in range(period - 1, len(data)):
+                arr = log_close_values[i - period + 1:i + 1]
+                slope, intercept, std, pearson = calc_channel_params(arr, period)
+                slope_arr[i] = slope
+                intercept_arr[i] = intercept
+                std_arr[i] = std
+                pearson_arr[i] = pearson
+                if lower_arr is not None and not np.isnan(intercept) and not np.isnan(std):
+                    lower_arr[i] = np.exp(intercept) / np.exp(dev_multiplier * std)
+            return (
+                pd.Series(slope_arr, index=data.index),
+                pd.Series(intercept_arr, index=data.index),
+                pd.Series(std_arr, index=data.index),
+                pd.Series(pearson_arr, index=data.index),
+                pd.Series(lower_arr, index=data.index) if lower_arr is not None else None,
+            )
 
-        very_long_slope = pd.Series(index=data.index, dtype=float)
-        very_long_pearson = pd.Series(index=data.index, dtype=float)
-        for i in range(very_long_period - 1, len(data)):
-            arr = log_close.iloc[i - very_long_period + 1:i + 1].values
-            slope, _, _, pearson = calc_channel_params(arr, very_long_period)
-            very_long_slope.iloc[i] = slope
-            very_long_pearson.iloc[i] = pearson
-
-        long_slope = pd.Series(index=data.index, dtype=float)
-        long_intercept = pd.Series(index=data.index, dtype=float)
-        long_std = pd.Series(index=data.index, dtype=float)
-        long_pearson = pd.Series(index=data.index, dtype=float)
-        for i in range(long_period - 1, len(data)):
-            arr = log_close.iloc[i - long_period + 1:i + 1].values
-            slope, intercept, std, pearson = calc_channel_params(arr, long_period)
-            long_slope.iloc[i] = slope
-            long_intercept.iloc[i] = intercept
-            long_std.iloc[i] = std
-            long_pearson.iloc[i] = pearson
-
-        short_slope = pd.Series(index=data.index, dtype=float)
-        short_intercept = pd.Series(index=data.index, dtype=float)
-        short_std = pd.Series(index=data.index, dtype=float)
-        short_lower = pd.Series(index=data.index, dtype=float)
-        for i in range(short_period - 1, len(data)):
-            arr = log_close.iloc[i - short_period + 1:i + 1].values
-            slope, intercept, std, _ = calc_channel_params(arr, short_period)
-            short_slope.iloc[i] = slope
-            short_intercept.iloc[i] = intercept
-            short_std.iloc[i] = std
-            midline = np.exp(intercept)
-            short_lower.iloc[i] = midline / np.exp(dev_multiplier * std)
+        ultra_long_slope, _, _, ultra_long_pearson, _ = _channel_series_bundle(ultra_long_period)
+        very_long_slope, _, _, very_long_pearson, _ = _channel_series_bundle(very_long_period)
+        long_slope, long_intercept, long_std, long_pearson, _ = _channel_series_bundle(long_period)
+        short_slope, short_intercept, short_std, _, short_lower = _channel_series_bundle(short_period, with_lower=True)
 
         ultra_long_uptrend = (ultra_long_slope > 0) & (ultra_long_pearson > 0.65)
         very_long_uptrend = (very_long_slope > 0) & (very_long_pearson > 0.70)
@@ -1504,14 +1773,22 @@ class RSITrendStrategy(StrategyBase):
             if w_bottom_count > 0:
                 logger.debug(f"[W底买入] 检测到{w_bottom_count}个W底信号，准备生成买入条件")
 
+        # 在进入大规模特征落列前先整理一次，避免前面累积插列造成碎片化。
+        data = data.copy()
+
         # 布林带指标（用于EH做T等多处）
         from .indicators import bollinger_bands
         bb_upper, bb_middle, bb_lower, bb_width, bb_percent = bollinger_bands(data['close'], period=20, std_dev=2.0)
-        data['bb_upper'] = bb_upper
-        data['bb_middle'] = bb_middle
-        data['bb_lower'] = bb_lower
-        data['bb_width'] = bb_width
-        data['bb_percent'] = bb_percent
+        data = _batch_store_columns(
+            data,
+            {
+                'bb_upper': bb_upper,
+                'bb_middle': bb_middle,
+                'bb_lower': bb_lower,
+                'bb_width': bb_width,
+                'bb_percent': bb_percent,
+            },
+        )
 
         # BB宽度辅助震荡检测（捕获Aroon无法识别的长周期震荡）
         if bool(self.config.get('sideways_bb_width_enabled', False)):
@@ -1524,43 +1801,43 @@ class RSITrendStrategy(StrategyBase):
         _stoch_lowest = data['low'].rolling(14).min()
         _stoch_highest = data['high'].rolling(14).max()
         _stoch_denom = (_stoch_highest - _stoch_lowest).replace(0, np.nan)
-        data['stoch_k'] = 100 * (data['close'] - _stoch_lowest) / _stoch_denom
-        data['stoch_d'] = data['stoch_k'].rolling(3).mean()
+        _stoch_k = 100 * (data['close'] - _stoch_lowest) / _stoch_denom
+        _stoch_d = _stoch_k.rolling(3).mean()
 
         # Williams %R (14-period, same window as Stochastic)
-        data['williams_r'] = -100 * (_stoch_highest - data['close']) / _stoch_denom
+        _williams_r = -100 * (_stoch_highest - data['close']) / _stoch_denom
 
         # CCI (20-period)
         _cci_tp = (data['high'] + data['low'] + data['close']) / 3
         _cci_ma = _cci_tp.rolling(20).mean()
         _cci_md = _cci_tp.rolling(20).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
-        data['cci_20'] = (_cci_tp - _cci_ma) / (0.015 * _cci_md.replace(0, np.nan))
+        _cci_20 = (_cci_tp - _cci_ma) / (0.015 * _cci_md.replace(0, np.nan))
 
         # Distance from MA20 (%) - bb_middle is the 20-day SMA
-        data['ma_20'] = bb_middle
-        data['dist_ma20'] = (data['close'] - bb_middle) / bb_middle.replace(0, np.nan) * 100
+        _ma_20 = bb_middle
+        _dist_ma20 = (data['close'] - bb_middle) / bb_middle.replace(0, np.nan) * 100
 
         # MA60 and distance from it (%)
-        data['ma_5'] = data['close'].rolling(5).mean()
-        data['ma_10'] = data['close'].rolling(10).mean()
-        data['ma_45'] = data['close'].rolling(45).mean()
-        data['ma_50'] = data['close'].rolling(50).mean()
-        data['ma_55'] = data['close'].rolling(55).mean()
-        data['ma_60'] = data['close'].rolling(60).mean()
-        data['ma_65'] = data['close'].rolling(65).mean()
-        data['ma_70'] = data['close'].rolling(70).mean()
-        data['ma_250'] = data['close'].rolling(250).mean()
-        data['dist_ma60'] = (data['close'] - data['ma_60']) / data['ma_60'].replace(0, np.nan) * 100
-        data['pct_from_20d_high'] = (data['close'] / data['high'].rolling(20).max() - 1) * 100
-        _above_ma5 = data['close'] > data['ma_5']
+        _ma_5 = data['close'].rolling(5).mean()
+        _ma_10 = data['close'].rolling(10).mean()
+        _ma_45 = data['close'].rolling(45).mean()
+        _ma_50 = data['close'].rolling(50).mean()
+        _ma_55 = data['close'].rolling(55).mean()
+        _ma_60 = data['close'].rolling(60).mean()
+        _ma_65 = data['close'].rolling(65).mean()
+        _ma_70 = data['close'].rolling(70).mean()
+        _ma_250 = data['close'].rolling(250).mean()
+        _dist_ma60 = (data['close'] - _ma_60) / _ma_60.replace(0, np.nan) * 100
+        _pct_from_20d_high = (data['close'] / data['high'].rolling(20).max() - 1) * 100
+        _above_ma5 = data['close'] > _ma_5
         _cross_ma5 = (
             (_above_ma5 != _above_ma5.shift(1))
-            & data['ma_5'].notna()
-            & data['ma_5'].shift(1).notna()
+            & _ma_5.notna()
+            & _ma_5.shift(1).notna()
         )
-        data['cross_ma5_freq_10d'] = _cross_ma5.rolling(10, min_periods=10).sum() / 10.0
-        data['hh_ratio_20d'] = (data['high'] > data['high'].shift(1)).rolling(20, min_periods=20).sum() / 20.0
-        data['range_20d_pct'] = (
+        _cross_ma5_freq_10d = _cross_ma5.rolling(10, min_periods=10).sum() / 10.0
+        _hh_ratio_20d = (data['high'] > data['high'].shift(1)).rolling(20, min_periods=20).sum() / 20.0
+        _range_20d_pct = (
             (data['high'].rolling(20).max() - data['low'].rolling(20).min())
             / data['close'].replace(0, np.nan)
             * 100
@@ -1570,43 +1847,52 @@ class RSITrendStrategy(StrategyBase):
         _gk_d = np.log(data['low'] / _prev_close)
         _gk_cc = np.log(data['close'] / _prev_close)
         _gk_term = 0.5 * (_gk_u - _gk_d) ** 2 - (2 * np.log(2) - 1) * (_gk_cc ** 2)
-        data['garman_klass_vol'] = np.sqrt(_gk_term.rolling(20, min_periods=5).mean().clip(lower=0)) * 100
+        _garman_klass_vol = np.sqrt(_gk_term.rolling(20, min_periods=5).mean().clip(lower=0)) * 100
         _ma_spreads = pd.concat([
-            (data['ma_5'] - data['ma_10']) / data['close'].replace(0, np.nan) * 100,
-            (data['ma_10'] - data['ma_20']) / data['close'].replace(0, np.nan) * 100,
-            (data['ma_20'] - data['ma_60']) / data['close'].replace(0, np.nan) * 100,
-            (data['ma_60'] - data['ma_120']) / data['close'].replace(0, np.nan) * 100,
+            (_ma_5 - _ma_10) / data['close'].replace(0, np.nan) * 100,
+            (_ma_10 - _ma_20) / data['close'].replace(0, np.nan) * 100,
+            (_ma_20 - _ma_60) / data['close'].replace(0, np.nan) * 100,
+            (_ma_60 - data['ma_120']) / data['close'].replace(0, np.nan) * 100,
         ], axis=1)
-        data['ma_spread_std'] = _ma_spreads.std(axis=1, ddof=0)
-        data['lt_ma120_slope_20d'] = (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100
-        data['rsi_29'] = rsi_indicator(data['close'], period=29)
-        _ma20_safe = data['ma_20'].fillna(data['close'])
-        _ma60_safe = data['ma_60'].fillna(data['close'])
+        _ma_spread_std = _ma_spreads.std(axis=1, ddof=0)
+        _lt_ma120_slope_20d = (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100
+        _rsi_29 = rsi_indicator(data['close'], period=29)
+        _ma20_safe = _ma_20.fillna(data['close'])
+        _ma60_safe = _ma_60.fillna(data['close'])
         _ma120_safe = data['ma_120'].fillna(data['close'])
-        _ma250_safe = data['ma_250'].fillna(data['close'])
-        data['lt_ma_alignment_full'] = (
+        _ma250_safe = _ma_250.fillna(data['close'])
+        _lt_ma_alignment_full = (
             (_ma20_safe > _ma60_safe).astype(float)
             + (_ma60_safe > _ma120_safe).astype(float)
             + (_ma120_safe > _ma250_safe).astype(float)
         ) / 3.0
-        data['lt_rsi_x_ma_alignment'] = data['rsi_29'] * data['lt_ma_alignment_full']
+        _lt_rsi_x_ma_alignment = _rsi_29 * _lt_ma_alignment_full
         _gap_pct = (data['close'] / data['close'].shift(1) - 1) * 100
         _sig_gap = _gap_pct.where(_gap_pct.abs() > 1.0)
-        data['avg_gap_size'] = _sig_gap.abs().rolling(20).mean().fillna(0)
+        _avg_gap_size = _sig_gap.abs().rolling(20).mean().fillna(0)
 
         _ma_alignment_score = pd.Series(np.nan, index=data.index, dtype=float)
         _ma_alignment_periods = ['ma_5', 'ma_10', 'ma_20', 'ma_60', 'ma_120']
+        _ma_alignment_sources = {
+            'ma_5': _ma_5,
+            'ma_10': _ma_10,
+            'ma_20': _ma_20,
+            'ma_60': _ma_60,
+            'ma_120': data['ma_120'],
+        }
         valid_count = 0
         bullish_count = 0
         for left_col, right_col in zip(_ma_alignment_periods[:-1], _ma_alignment_periods[1:]):
-            _valid = data[left_col].notna() & data[right_col].notna()
+            _left_series = _ma_alignment_sources[left_col]
+            _right_series = _ma_alignment_sources[right_col]
+            _valid = _left_series.notna() & _right_series.notna()
             valid_count += _valid.astype(int)
-            bullish_count += (_valid & (data[left_col] > data[right_col])).astype(int)
+            bullish_count += (_valid & (_left_series > _right_series)).astype(int)
         _ma_alignment_score = bullish_count / valid_count.replace(0, np.nan)
-        data['ma_bullish_alignment'] = _ma_alignment_score.fillna(0.5)
+        _ma_bullish_alignment = _ma_alignment_score.fillna(0.5)
 
         # RSI 14-period (for scoring, separate from fast_rsi which may be 5-period)
-        data['rsi_14'] = rsi_indicator(data['close'], period=14)
+        _rsi_14 = rsi_indicator(data['close'], period=14)
 
         # Linear regression slope (10-day, normalized % per day)
         def _lr_slope_norm(x):
@@ -1615,16 +1901,16 @@ class RSITrendStrategy(StrategyBase):
             slope = np.polyfit(np.arange(len(x)), x, 1)[0]
             mean_val = np.mean(x)
             return slope / mean_val * 100 if mean_val != 0 else 0
-        data['lr_slope_10'] = data['close'].rolling(10).apply(_lr_slope_norm, raw=True)
-        data['lr_slope_20'] = data['close'].rolling(20).apply(_lr_slope_norm, raw=True)
-        data['perm_entropy_3'] = np.log(data['close'] / data['close'].shift(1)).rolling(30).apply(
+        _lr_slope_10 = data['close'].rolling(10).apply(_lr_slope_norm, raw=True)
+        _lr_slope_20 = data['close'].rolling(20).apply(_lr_slope_norm, raw=True)
+        _perm_entropy_3 = np.log(data['close'] / data['close'].shift(1)).rolling(30).apply(
             self._perm_entropy_order3_window, raw=True
         )
 
         # Supplementary MA60 pullback factors
         _ema65 = data['close'].ewm(span=65, adjust=False).mean()
         _ema130 = data['close'].ewm(span=130, adjust=False).mean()
-        data['lt_elder_weekly_macd'] = (_ema65 - _ema130) / data['close'].replace(0, np.nan) * 100
+        _lt_elder_weekly_macd = (_ema65 - _ema130) / data['close'].replace(0, np.nan) * 100
 
         # MFI (Money Flow Index, 14-period) - 量价RSI，做T超买超卖信号
         _mfi_tp = (data['high'] + data['low'] + data['close']) / 3
@@ -1633,16 +1919,68 @@ class RSITrendStrategy(StrategyBase):
         _mfi_pos_flow = (_mfi_raw_money_flow * (_mfi_tp_change > 0).astype(float)).rolling(14).sum()
         _mfi_neg_flow = (_mfi_raw_money_flow * (_mfi_tp_change < 0).astype(float)).rolling(14).sum()
         _mfi_neg_flow = _mfi_neg_flow.replace(0, np.nan)
-        data['mfi_14'] = 100 - (100 / (1 + _mfi_pos_flow / _mfi_neg_flow))
+        _mfi_14 = 100 - (100 / (1 + _mfi_pos_flow / _mfi_neg_flow))
 
         # ATR百分比（ATR / close * 100），用于做T自适应回撤阈值
-        data['atr_pct'] = data['atr'] / data['close'] * 100
+        _atr_pct = data['atr'] / data['close'] * 100
+        # yifang 慢趋势分型辅助因子：KAMA + CHOP + ER
+        _kama_20 = kama_indicator(data['close'], er_period=10, fast_period=2, slow_period=30)
+        _chop_14 = choppiness_index(data['high'], data['low'], data['close'], period=14)
+        _er_20 = efficiency_ratio_indicator(data['close'], period=20)
 
         # EH做T反转确认指标
-        data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
+        _ema_5 = data['close'].ewm(span=5, adjust=False).mean()
         # StochK死叉：K线下穿D线（从高位区域）
-        data['stk_prev'] = data['stoch_k'].shift(1)
-        data['std_prev'] = data['stoch_d'].shift(1)
+        _stk_prev = _stoch_k.shift(1)
+        _std_prev = _stoch_d.shift(1)
+
+        data = _batch_store_columns(
+            data,
+            {
+                'stoch_k': _stoch_k,
+                'stoch_d': _stoch_d,
+                'williams_r': _williams_r,
+                'cci_20': _cci_20,
+                'ma_20': _ma_20,
+                'dist_ma20': _dist_ma20,
+                'ma_5': _ma_5,
+                'ma_10': _ma_10,
+                'ma_45': _ma_45,
+                'ma_50': _ma_50,
+                'ma_55': _ma_55,
+                'ma_60': _ma_60,
+                'ma_65': _ma_65,
+                'ma_70': _ma_70,
+                'ma_250': _ma_250,
+                'dist_ma60': _dist_ma60,
+                'pct_from_20d_high': _pct_from_20d_high,
+                'cross_ma5_freq_10d': _cross_ma5_freq_10d,
+                'hh_ratio_20d': _hh_ratio_20d,
+                'range_20d_pct': _range_20d_pct,
+                'garman_klass_vol': _garman_klass_vol,
+                'ma_spread_std': _ma_spread_std,
+                'lt_ma120_slope_20d': _lt_ma120_slope_20d,
+                'rsi_29': _rsi_29,
+                'lt_ma_alignment_full': _lt_ma_alignment_full,
+                'lt_rsi_x_ma_alignment': _lt_rsi_x_ma_alignment,
+                'avg_gap_size': _avg_gap_size,
+                'ma_bullish_alignment': _ma_bullish_alignment,
+                'rsi_14': _rsi_14,
+                'lr_slope_10': _lr_slope_10,
+                'lr_slope_20': _lr_slope_20,
+                'perm_entropy_3': _perm_entropy_3,
+                'lt_elder_weekly_macd': _lt_elder_weekly_macd,
+                'mfi_14': _mfi_14,
+                'atr_pct': _atr_pct,
+                'kama_20': _kama_20,
+                'chop_14': _chop_14,
+                'er_20': _er_20,
+                'ema_5': _ema_5,
+                'stk_prev': _stk_prev,
+                'std_prev': _std_prev,
+            },
+            compact=True,
+        )
 
         _sw_entry_bb = float(self.config.get('sideways_entry_bb_pct', 0.15))
         _sw_entry_rsi = float(self.config.get('sideways_entry_rsi', 28))
@@ -1658,6 +1996,297 @@ class RSITrendStrategy(StrategyBase):
         if sideways_count > 0:
             logger.debug(f"[Aroon震荡] 震荡天数: {sideways_count}/{len(data)} ({sideways_count/len(data)*100:.1f}%), 入场信号: {sideways_entry_count}")
 
+        # yifang 慢牛切换家族：在低波慢趋势画像下，用慢趋势回踩/补位而不是默认追涨
+        slow_bull_rotation_profile = pd.Series(False, index=data.index)
+        slow_bull_rotation_trend_state = pd.Series(False, index=data.index)
+        slow_bull_rotation_entry = pd.Series(False, index=data.index)
+        slow_bull_rotation_reclaim_entry = pd.Series(False, index=data.index)
+        slow_bull_rotation_exit_signal = pd.Series(False, index=data.index)
+        slow_bull_mtop_reclaim_entry = pd.Series(False, index=data.index)
+        slow_bull_mtop_reclaim_extended_entry = pd.Series(False, index=data.index)
+        slow_bull_ma_retest_profile = pd.Series(False, index=data.index)
+        slow_bull_ma_retest_entry = pd.Series(False, index=data.index)
+
+        if bool(self.config.get('slow_bull_rotation_enabled', False)):
+            _sb_vol_lb = max(60, int(self.config.get('slow_bull_rotation_vol_lookback', 120)))
+            _sb_ann_vol = data['close'].pct_change().rolling(
+                _sb_vol_lb, min_periods=max(40, _sb_vol_lb // 3)
+            ).std(ddof=0) * np.sqrt(252) * 100
+            _sb_atr_pct = data['atr_pct']
+            _sb_ma120_slope = data['lt_ma120_slope_20d'] if 'lt_ma120_slope_20d' in data.columns else (
+                (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100
+            )
+            _sb_sideways_ratio = data['is_sideways'].rolling(60, min_periods=20).mean()
+            _sb_short_gain_abs = data['short_gain_10d'].abs()
+            _sb_dist_ma120 = (data['close'] / data['ma_120'].replace(0, np.nan) - 1) * 100
+            _sb_ret120 = (data['close'] / data['close'].shift(120) - 1) * 100
+            _sb_range20 = data['range_20d_pct']
+            _sb_rsi14 = data['rsi_14']
+            _sb_dist_ma20 = data['dist_ma20']
+            _sb_ma20 = data['ma_20'] if 'ma_20' in data.columns else data['bb_middle']
+            _sb_volume_ratio = data['volume_ratio'] if 'volume_ratio' in data.columns else pd.Series(1.0, index=data.index)
+
+            _sb_profile_raw = (
+                (_sb_ann_vol <= float(self.config.get('slow_bull_rotation_ann_vol_max', 32.0)))
+                & (_sb_atr_pct <= float(self.config.get('slow_bull_rotation_atr_pct_max', 3.2)))
+                & (_sb_ma120_slope >= float(self.config.get('slow_bull_rotation_ma120_slope_min', -1.2)))
+                & (_sb_ma120_slope <= float(self.config.get('slow_bull_rotation_ma120_slope_max', 6.0)))
+                & (_sb_sideways_ratio <= float(self.config.get('slow_bull_rotation_sideways_max', 0.35)))
+                & (_sb_short_gain_abs >= float(self.config.get('slow_bull_rotation_short_gain_abs_min', 0.8)))
+                & (_sb_short_gain_abs <= float(self.config.get('slow_bull_rotation_short_gain_abs_max', 9.0)))
+                & (_sb_dist_ma120 >= float(self.config.get('slow_bull_rotation_dist_ma120_min', 1.5)))
+                & (_sb_dist_ma120 <= float(self.config.get('slow_bull_rotation_dist_ma120_max', 16.0)))
+                & (_sb_ret120 >= float(self.config.get('slow_bull_rotation_ret120_min', -999.0)))
+                & (_sb_ret120 <= float(self.config.get('slow_bull_rotation_ret120_max', 999.0)))
+                & (_sb_range20 <= float(self.config.get('slow_bull_rotation_range20_max', 999.0)))
+                & (_sb_rsi14 <= float(self.config.get('slow_bull_rotation_rsi14_max', 62.0)))
+            )
+            if bool(self.config.get('slow_bull_rotation_bootstrap_enabled', False)):
+                _sb_bootstrap_mask = (
+                    _sb_ann_vol.isna()
+                    | _sb_atr_pct.isna()
+                    | _sb_ma120_slope.isna()
+                    | _sb_sideways_ratio.isna()
+                    | _sb_short_gain_abs.isna()
+                    | _sb_dist_ma120.isna()
+                    | _sb_ret120.isna()
+                    | _sb_range20.isna()
+                )
+                slow_bull_rotation_profile = (_sb_profile_raw | _sb_bootstrap_mask).fillna(False)
+            else:
+                slow_bull_rotation_profile = _sb_profile_raw.fillna(False)
+
+            _sb_fast_ma = data['close'].rolling(int(self.config.get('slow_bull_rotation_fast_ma', 30))).mean()
+            _sb_slow_ma = data['close'].rolling(int(self.config.get('slow_bull_rotation_slow_ma', 120))).mean()
+            _sb_cross_up = self._crossover(_sb_fast_ma, _sb_slow_ma)
+            _sb_cross_dn = self._crossunder(_sb_fast_ma, _sb_slow_ma)
+
+            _sb_seed_entry = pd.Series(False, index=data.index)
+            if bool(self.config.get('slow_bull_rotation_seed_enabled', True)):
+                _sb_seed_entry = (
+                    _sb_cross_up
+                    & (_sb_ann_vol <= float(self.config.get('slow_bull_rotation_seed_ann_vol_max', 46.0)))
+                    & (_sb_short_gain_abs <= float(self.config.get('slow_bull_rotation_seed_short_gain_abs_max', 7.0)))
+                    & (
+                        (_sb_ma120_slope >= float(self.config.get('slow_bull_rotation_seed_ma120_slope_min', -2.0)))
+                        | _sb_ma120_slope.isna()
+                    )
+                    & (_sb_sideways_ratio <= float(self.config.get('slow_bull_rotation_seed_sideways_max', 0.25)))
+                    & (_sb_dist_ma120 >= float(self.config.get('slow_bull_rotation_seed_dist_ma120_min', 1.5)))
+                    & (_sb_dist_ma120 <= float(self.config.get('slow_bull_rotation_seed_dist_ma120_max', 6.0)))
+                    & (_sb_atr_pct <= float(self.config.get('slow_bull_rotation_seed_atr_pct_max', 6.2)))
+                    & (_sb_rsi14 <= float(self.config.get('slow_bull_rotation_seed_rsi14_max', 60.0)))
+                ).fillna(False)
+
+            if bool(self.config.get('slow_bull_rotation_reclaim_enabled', True)):
+                _sb_reclaim_entry_raw = (
+                    slow_bull_rotation_profile
+                    & (_sb_dist_ma20 >= float(self.config.get('slow_bull_rotation_reclaim_dist_ma20_min', -4.0)))
+                    & (_sb_dist_ma20 <= float(self.config.get('slow_bull_rotation_reclaim_dist_ma20_max', 2.5)))
+                    & (_sb_rsi14 >= float(self.config.get('slow_bull_rotation_reclaim_rsi14_min', 40.0)))
+                    & (_sb_rsi14 <= float(self.config.get('slow_bull_rotation_reclaim_rsi14_max', 66.0)))
+                    & (data['close'] >= data['ma_120'] * (1 - float(self.config.get('slow_bull_rotation_reclaim_ma120_buffer_pct', 2.0)) / 100.0))
+                    & (_sb_volume_ratio >= float(self.config.get('slow_bull_rotation_reclaim_volume_ratio_min', 0.7)))
+                    & (_sb_volume_ratio <= float(self.config.get('slow_bull_rotation_reclaim_volume_ratio_max', 2.5)))
+                    & (~data['volume_weak'])
+                )
+                if bool(self.config.get('slow_bull_rotation_reclaim_require_up_close', True)):
+                    _sb_reclaim_entry_raw = _sb_reclaim_entry_raw & (data['close'] > data['close'].shift(1))
+                if bool(self.config.get('slow_bull_rotation_reclaim_require_ma20_recover', True)):
+                    _sb_reclaim_entry_raw = _sb_reclaim_entry_raw & (
+                        (data['close'] >= _sb_ma20)
+                        | self._crossover(data['close'], _sb_ma20)
+                    )
+                slow_bull_rotation_reclaim_entry = _sb_reclaim_entry_raw.fillna(False)
+
+            slow_bull_rotation_trend_state = ((_sb_fast_ma > _sb_slow_ma) & slow_bull_rotation_profile).fillna(False)
+            slow_bull_rotation_entry = (
+                ((_sb_cross_up & slow_bull_rotation_profile) | _sb_seed_entry | slow_bull_rotation_reclaim_entry)
+                & (direction == 1)
+            ).fillna(False)
+            slow_bull_rotation_exit_signal = _sb_cross_dn.fillna(False)
+
+        if bool(self.config.get('slow_bull_mtop_reclaim_enabled', True)):
+            _sbm_atr_pct = data['atr_pct']
+            _sbm_range20 = data['range_20d_pct']
+            _sbm_dist_ma20 = data['dist_ma20']
+            _sbm_dist_ma60 = data['dist_ma60']
+            _sbm_weekly_macd = data['lt_elder_weekly_macd']
+            _sbm_ma120_slope = (data['ma_120'] / data['ma_120'].shift(20) - 1.0) * 100.0
+            _sbm_ma120_buffer = float(self.config.get('slow_bull_mtop_reclaim_ma120_buffer_pct', 2.0))
+            _sbm_weekly_macd_min = float(self.config.get('slow_bull_mtop_reclaim_weekly_macd_min', 0.0))
+            _sbm_weekly_macd_base_max = float(
+                self.config.get(
+                    'slow_bull_mtop_reclaim_weekly_macd_base_max',
+                    self.config.get('slow_bull_mtop_reclaim_weekly_macd_max', 2.5),
+                )
+            )
+            _sbm_trend_stable_days = max(1, int(self.config.get('slow_bull_mtop_reclaim_trend_stable_days', 1)))
+            _sbm_trend_stable = (
+                pd.Series(direction, index=data.index)
+                .rolling(_sbm_trend_stable_days, min_periods=_sbm_trend_stable_days)
+                .min() == 1
+            )
+            _sbm_core = (
+                data['is_m_top']
+                & (direction == 1)
+                & _sbm_trend_stable.fillna(False)
+                & data['is_heikin_bullish']
+                & (data['rsi_diff'] >= float(self.config.get('slow_bull_mtop_reclaim_rsi_diff_min', 1.8)))
+                & (data['fast_rsi'] >= float(self.config.get('slow_bull_mtop_reclaim_fast_rsi_min', 48.0)))
+                & (data['fast_rsi'] <= float(self.config.get('slow_bull_mtop_reclaim_fast_rsi_max', 80.0)))
+                & (_sbm_atr_pct <= float(self.config.get('slow_bull_mtop_reclaim_atr_pct_max', 3.6)))
+                & (_sbm_range20 >= float(self.config.get('slow_bull_mtop_reclaim_range20_min', 5.0)))
+                & (_sbm_range20 <= float(self.config.get('slow_bull_mtop_reclaim_range20_max', 16.0)))
+                & (_sbm_dist_ma20 >= float(self.config.get('slow_bull_mtop_reclaim_dist_ma20_min', 0.6)))
+                & (_sbm_dist_ma20 <= float(self.config.get('slow_bull_mtop_reclaim_dist_ma20_max', 9.0)))
+                & (_sbm_dist_ma60 >= float(self.config.get('slow_bull_mtop_reclaim_dist_ma60_min', -999.0)))
+                & (_sbm_dist_ma60 <= float(self.config.get('slow_bull_mtop_reclaim_dist_ma60_max', 999.0)))
+                & (_sbm_ma120_slope >= float(self.config.get('slow_bull_mtop_reclaim_ma120_slope_min', 0.1)))
+                & (data['close'] >= data['ma_120'] * (1 - _sbm_ma120_buffer / 100.0))
+                & (~data['volume_weak'])
+                & (~data['atr_expanding'])
+            ).fillna(False)
+            _sbm_entry_base = (
+                _sbm_core
+                & (_sbm_weekly_macd >= _sbm_weekly_macd_min)
+                & (_sbm_weekly_macd <= _sbm_weekly_macd_base_max)
+            ).fillna(False)
+
+            _sbm_entry_extended = pd.Series(False, index=data.index)
+            if bool(self.config.get('slow_bull_mtop_reclaim_extended_enabled', True)):
+                _sbm_ext_weekly_min = max(
+                    _sbm_weekly_macd_base_max,
+                    float(self.config.get('slow_bull_mtop_reclaim_extended_weekly_macd_min', _sbm_weekly_macd_base_max)),
+                )
+                _sbm_ext_weekly_max = float(self.config.get('slow_bull_mtop_reclaim_extended_weekly_macd_max', 6.0))
+                _sbm_ext_range20_min = float(self.config.get('slow_bull_mtop_reclaim_extended_range20_min', 6.2))
+                _sbm_ext_dist_ma20_min = float(self.config.get('slow_bull_mtop_reclaim_extended_dist_ma20_min', 2.4))
+                _sbm_ext_dist_ma20_max = float(
+                    self.config.get(
+                        'slow_bull_mtop_reclaim_extended_dist_ma20_max',
+                        self.config.get('slow_bull_mtop_reclaim_dist_ma20_max', 9.0),
+                    )
+                )
+                _sbm_ext_price_pos_min = float(self.config.get('slow_bull_mtop_reclaim_extended_price_position_min', 0.65))
+                _sbm_ext_price_pos_max = float(self.config.get('slow_bull_mtop_reclaim_extended_price_position_max', 0.85))
+                _sbm_ext_rsi_diff_min = float(self.config.get('slow_bull_mtop_reclaim_extended_rsi_diff_min', 2.2))
+                _sbm_ext_rsi14_max = float(self.config.get('slow_bull_mtop_reclaim_extended_rsi14_max', 75.0))
+                _sbm_ext_bb_max = float(self.config.get('slow_bull_mtop_reclaim_extended_bb_percent_max', 1.10))
+                _sbm_ext_chop_min = float(self.config.get('slow_bull_mtop_reclaim_extended_chop_min', 45.0))
+                _sbm_ext_mfi14_max = float(self.config.get('slow_bull_mtop_reclaim_extended_mfi14_max', 78.0))
+                _sbm_ext_cross_ma5_max = float(self.config.get('slow_bull_mtop_reclaim_extended_cross_ma5_freq_max', 0.35))
+                _sbm_ext_rebound_lb = max(2, int(self.config.get('slow_bull_mtop_reclaim_extended_rebound_lookback', 3)))
+                _sbm_ext_rebound_min = float(self.config.get('slow_bull_mtop_reclaim_extended_rebound_dist_ma20_min', 0.8))
+                _sbm_rsi14 = data['rsi_14'] if 'rsi_14' in data.columns else pd.Series(np.nan, index=data.index)
+                _sbm_bb = data['bb_percent'] if 'bb_percent' in data.columns else pd.Series(np.nan, index=data.index)
+                _sbm_chop = data['chop_14'] if 'chop_14' in data.columns else pd.Series(np.nan, index=data.index)
+                _sbm_mfi14 = data['mfi_14'] if 'mfi_14' in data.columns else pd.Series(np.nan, index=data.index)
+                _sbm_cross_ma5 = data['cross_ma5_freq_10d'] if 'cross_ma5_freq_10d' in data.columns else pd.Series(np.nan, index=data.index)
+                _sbm_dist_rebound = _sbm_dist_ma20 - _sbm_dist_ma20.rolling(_sbm_ext_rebound_lb, min_periods=1).min()
+                _sbm_entry_extended = (
+                    _sbm_core
+                    & (_sbm_weekly_macd > _sbm_ext_weekly_min)
+                    & (_sbm_weekly_macd <= _sbm_ext_weekly_max)
+                    & (data['rsi_diff'] >= _sbm_ext_rsi_diff_min)
+                    & (_sbm_range20 >= _sbm_ext_range20_min)
+                    & (_sbm_dist_ma20 >= _sbm_ext_dist_ma20_min)
+                    & (_sbm_dist_ma20 <= _sbm_ext_dist_ma20_max)
+                    & (data['price_position'] >= _sbm_ext_price_pos_min)
+                    & ((_sbm_ext_price_pos_max <= 0) | (data['price_position'] <= _sbm_ext_price_pos_max))
+                    & (_sbm_rsi14 <= _sbm_ext_rsi14_max)
+                    & (_sbm_bb <= _sbm_ext_bb_max)
+                    & (_sbm_chop >= _sbm_ext_chop_min)
+                    & (_sbm_mfi14 <= _sbm_ext_mfi14_max)
+                    & (_sbm_cross_ma5 <= _sbm_ext_cross_ma5_max)
+                    & ((_sbm_ext_rebound_min <= 0) | (_sbm_dist_rebound >= _sbm_ext_rebound_min))
+                ).fillna(False)
+
+            _sbm_entry_raw = (_sbm_entry_base | _sbm_entry_extended).fillna(False)
+            _sbm_cooldown = max(0, int(self.config.get('slow_bull_mtop_reclaim_cooldown_days', 12)))
+            if _sbm_cooldown > 0:
+                _sbm_arr = _sbm_entry_raw.to_numpy(copy=True)
+                _sbm_last_idx = -9999
+                for _sbm_i in range(len(_sbm_arr)):
+                    if not _sbm_arr[_sbm_i]:
+                        continue
+                    if _sbm_i - _sbm_last_idx <= _sbm_cooldown:
+                        _sbm_arr[_sbm_i] = False
+                        continue
+                    _sbm_last_idx = _sbm_i
+                slow_bull_mtop_reclaim_entry = pd.Series(_sbm_arr, index=data.index)
+                slow_bull_mtop_reclaim_extended_entry = (_sbm_entry_extended & slow_bull_mtop_reclaim_entry).fillna(False)
+            else:
+                slow_bull_mtop_reclaim_entry = _sbm_entry_raw
+                slow_bull_mtop_reclaim_extended_entry = _sbm_entry_extended
+
+        if bool(self.config.get('slow_bull_ma_retest_enabled', True)):
+            _smr_atr_pct = data['atr_pct']
+            _smr_range20 = data['range_20d_pct']
+            _smr_dist_ma20 = data['dist_ma20']
+            _smr_weekly_macd = data['lt_elder_weekly_macd']
+            _smr_ma120_slope = data['lt_ma120_slope_20d'] if 'lt_ma120_slope_20d' in data.columns else (
+                (data['ma_120'] / data['ma_120'].shift(20) - 1.0) * 100.0
+            )
+            _smr_chop = data['chop_14'] if 'chop_14' in data.columns else pd.Series(np.nan, index=data.index)
+            _smr_cross_ma5 = data['cross_ma5_freq_10d'] if 'cross_ma5_freq_10d' in data.columns else pd.Series(np.nan, index=data.index)
+            _smr_ma20 = data['ma_20'] if 'ma_20' in data.columns else data['bb_middle']
+            _smr_er20 = data['er_20'] if 'er_20' in data.columns else pd.Series(np.nan, index=data.index)
+            _smr_mfi14 = data['mfi_14'] if 'mfi_14' in data.columns else pd.Series(np.nan, index=data.index)
+            _smr_ma120_buffer = float(self.config.get('slow_bull_ma_retest_ma120_buffer_pct', 2.0))
+            _smr_dist_rebound_lb = max(2, int(self.config.get('slow_bull_ma_retest_entry_rebound_lookback', 4)))
+            _smr_dist_rebound = _smr_dist_ma20 - _smr_dist_ma20.rolling(_smr_dist_rebound_lb, min_periods=1).min()
+            slow_bull_ma_retest_profile = (
+                (direction == 1)
+                & data['is_heikin_bullish']
+                & (data['close'] >= data['ma_120'] * (1 - _smr_ma120_buffer / 100.0))
+                & (_smr_atr_pct <= float(self.config.get('slow_bull_ma_retest_atr_pct_max', 2.1)))
+                & (_smr_range20 >= float(self.config.get('slow_bull_ma_retest_range20_min', 4.0)))
+                & (_smr_range20 <= float(self.config.get('slow_bull_ma_retest_range20_max', 9.0)))
+                & (_smr_weekly_macd >= float(self.config.get('slow_bull_ma_retest_weekly_macd_min', 0.0)))
+                & (_smr_weekly_macd <= float(self.config.get('slow_bull_ma_retest_weekly_macd_max', 3.2)))
+                & (_smr_dist_ma20 >= float(self.config.get('slow_bull_ma_retest_dist_ma20_min', -0.8)))
+                & (_smr_dist_ma20 <= float(self.config.get('slow_bull_ma_retest_dist_ma20_max', 3.5)))
+                & (_smr_ma120_slope >= float(self.config.get('slow_bull_ma_retest_ma120_slope_min', -1.2)))
+                & (_smr_chop >= float(self.config.get('slow_bull_ma_retest_chop_min', 43.0)))
+                & (_smr_cross_ma5 <= float(self.config.get('slow_bull_ma_retest_cross_ma5_freq_max', 0.30)))
+                & (~data['volume_weak'])
+                & (~data['atr_expanding'])
+            ).fillna(False)
+
+            slow_bull_ma_retest_entry = (
+                slow_bull_ma_retest_profile
+                & (_smr_er20 >= float(self.config.get('slow_bull_ma_retest_entry_er20_min', 0.15)))
+                & (data['price_position'] <= float(self.config.get('slow_bull_ma_retest_entry_price_position_max', 0.60)))
+                & (data['rsi_diff'] >= float(self.config.get('slow_bull_ma_retest_entry_rsi_diff_min', 1.0)))
+                & (data['rsi_diff'] <= float(self.config.get('slow_bull_ma_retest_entry_rsi_diff_max', 5.0)))
+                & (_smr_mfi14 <= float(self.config.get('slow_bull_ma_retest_entry_mfi14_max', 60.0)))
+                & (_smr_cross_ma5 <= float(self.config.get('slow_bull_ma_retest_entry_cross_ma5_freq_max', 0.20)))
+                & (_smr_dist_ma20 >= float(self.config.get('slow_bull_ma_retest_entry_dist_ma20_min', 0.0)))
+                & (_smr_dist_ma20 <= float(self.config.get('slow_bull_ma_retest_entry_dist_ma20_max', 2.8)))
+                & ((data['close'] >= _smr_ma20) | self._crossover(data['close'], _smr_ma20))
+                & (
+                    float(self.config.get('slow_bull_ma_retest_entry_rebound_dist_ma20_min', 0.5)) <= 0
+                    or _smr_dist_rebound >= float(self.config.get('slow_bull_ma_retest_entry_rebound_dist_ma20_min', 0.5))
+                )
+            ).fillna(False)
+
+        data = _batch_store_columns(
+            data,
+            {
+                'slow_bull_rotation_profile': slow_bull_rotation_profile,
+                'slow_bull_rotation_trend_state': slow_bull_rotation_trend_state,
+                'slow_bull_rotation_entry': slow_bull_rotation_entry,
+                'slow_bull_rotation_reclaim_entry': slow_bull_rotation_reclaim_entry,
+                'slow_bull_rotation_exit_signal': slow_bull_rotation_exit_signal,
+                'slow_bull_mtop_reclaim_entry': slow_bull_mtop_reclaim_entry,
+                'slow_bull_mtop_reclaim_extended_entry': slow_bull_mtop_reclaim_extended_entry,
+                'slow_bull_ma_retest_profile': slow_bull_ma_retest_profile,
+                'slow_bull_ma_retest_entry': slow_bull_ma_retest_entry,
+            },
+            compact=True,
+        )
+
         # RSI动量加速入场：RSI从低位快速上升（3日变化>10）
         rsi_momentum_entry = (
             (direction == 1) &
@@ -1670,6 +2299,124 @@ class RSITrendStrategy(StrategyBase):
             (~data['is_m_top']) &
             (~data['atr_expanding'])
         )
+        rsi_momentum_quality_block = pd.Series(False, index=data.index)
+        if bool(self.config.get('rsi_momentum_quality_filter_enabled', True)):
+            _rm_er20 = data['er_20'] if 'er_20' in data.columns else pd.Series(np.nan, index=data.index)
+            _rm_mfi14 = data['mfi_14'] if 'mfi_14' in data.columns else pd.Series(np.nan, index=data.index)
+            _rm_range20 = data['range_20d_pct'] if 'range_20d_pct' in data.columns else pd.Series(np.nan, index=data.index)
+            _rm_atr_pct = data['atr_pct'] if 'atr_pct' in data.columns else pd.Series(np.nan, index=data.index)
+            _rm_weekly_macd = data['lt_elder_weekly_macd'] if 'lt_elder_weekly_macd' in data.columns else pd.Series(np.nan, index=data.index)
+            _rm_rsi_diff = data['rsi_diff'] if 'rsi_diff' in data.columns else pd.Series(np.nan, index=data.index)
+            _rm_atr_pct_max = float(self.config.get('rsi_momentum_quality_atr_pct_max', 3.8))
+            _rm_force_weekly_max = float(self.config.get('rsi_momentum_quality_high_vol_weekly_force_block_max', -1.5))
+            _rm_high_vol_bypass_min = float(self.config.get('rsi_momentum_quality_high_vol_bypass_rsi_diff_min', 5.0))
+            _rm_high_vol_bypass_max = float(self.config.get('rsi_momentum_quality_high_vol_bypass_rsi_diff_max', 12.0))
+            if _rm_atr_pct_max > 0:
+                _rm_high_vol = _rm_atr_pct.notna() & (_rm_atr_pct > _rm_atr_pct_max)
+                _rm_high_vol_relax = _rm_high_vol & (_rm_weekly_macd > _rm_force_weekly_max)
+                if _rm_high_vol_bypass_min > 0:
+                    _rm_high_vol_relax = _rm_high_vol_relax & (_rm_rsi_diff >= _rm_high_vol_bypass_min)
+                if _rm_high_vol_bypass_max > 0:
+                    _rm_high_vol_relax = _rm_high_vol_relax & (_rm_rsi_diff <= _rm_high_vol_bypass_max)
+                _rm_quality_gate = (~_rm_high_vol_relax).fillna(True)
+            else:
+                _rm_quality_gate = pd.Series(True, index=data.index)
+            _rm_ret120 = (data['close'] / data['close'].shift(120) - 1.0) * 100.0
+            _rm_ma120_slope = data['lt_ma120_slope_20d'] if 'lt_ma120_slope_20d' in data.columns else (
+                (data['ma_120'] / data['ma_120'].shift(20) - 1.0) * 100.0
+            )
+            _rm_trend_exempt = (
+                (_rm_ret120 >= float(self.config.get('rsi_momentum_quality_exempt_ret120_min', 30.0)))
+                & (_rm_ma120_slope >= float(self.config.get('rsi_momentum_quality_exempt_ma120_slope_min', 1.0)))
+            )
+            _rm_er_mfi_block = (
+                _rm_quality_gate
+                & (_rm_er20 <= float(self.config.get('rsi_momentum_quality_er_mfi_max', 0.10)))
+                & (_rm_mfi14 >= float(self.config.get('rsi_momentum_quality_mfi_min', 66.0)))
+                & (_rm_weekly_macd <= float(self.config.get('rsi_momentum_quality_mfi_weekly_macd_max', 1.2)))
+            )
+            _rm_low_range_block = (
+                _rm_quality_gate
+                & (_rm_range20 <= float(self.config.get('rsi_momentum_quality_low_range20_max', 6.0)))
+                & (_rm_er20 <= float(self.config.get('rsi_momentum_quality_low_range_er_max', 0.08)))
+            )
+            _rm_weak_weekly_block = (
+                (_rm_weekly_macd <= float(self.config.get('rsi_momentum_quality_weak_weekly_macd_max', -3.0)))
+                & (_rm_er20 <= float(self.config.get('rsi_momentum_quality_weak_weekly_er_max', 0.05)))
+            )
+            rsi_momentum_quality_block = (
+                (_rm_er_mfi_block | _rm_low_range_block | _rm_weak_weekly_block)
+                & (~_rm_trend_exempt)
+            ).fillna(False)
+            rsi_momentum_entry = rsi_momentum_entry & (~rsi_momentum_quality_block)
+            if bool(self.config.get('rsi_momentum_quality_block_standard_entry', True)):
+                _rm_std_block = (
+                    rsi_momentum_quality_block
+                    & (_rm_weekly_macd <= float(self.config.get('rsi_momentum_quality_block_standard_weekly_macd_max', 1.2)))
+                    & (_rm_range20 <= float(self.config.get('rsi_momentum_quality_block_standard_range20_max', 12.0)))
+                    & (_rm_atr_pct <= float(self.config.get('rsi_momentum_quality_block_standard_atr_pct_max', 3.6)))
+                ).fillna(False)
+                standard_entry = standard_entry & (~_rm_std_block)
+                data['rsi_momentum_quality_standard_block'] = _rm_std_block
+            else:
+                data['rsi_momentum_quality_standard_block'] = False
+        else:
+            data['rsi_momentum_quality_standard_block'] = False
+        data['rsi_momentum_quality_block'] = rsi_momentum_quality_block
+
+        continuation_quality_block = pd.Series(False, index=data.index)
+        if bool(self.config.get('continuation_quality_filter_enabled', True)):
+            _cq_er20 = data['er_20'] if 'er_20' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_range20 = data['range_20d_pct'] if 'range_20d_pct' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_mfi14 = data['mfi_14'] if 'mfi_14' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_atr_pct = data['atr_pct'] if 'atr_pct' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_weekly = data['lt_elder_weekly_macd'] if 'lt_elder_weekly_macd' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_rsi_diff = data['rsi_diff'] if 'rsi_diff' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_cross_ma5 = data['cross_ma5_freq_10d'] if 'cross_ma5_freq_10d' in data.columns else pd.Series(np.nan, index=data.index)
+            _cq_atr_pct_max = float(self.config.get('continuation_quality_atr_pct_max', 3.8))
+            _cq_force_weekly_max = float(self.config.get('continuation_quality_high_vol_weekly_force_block_max', -1.5))
+            _cq_high_vol_bypass_min = float(self.config.get('continuation_quality_high_vol_bypass_rsi_diff_min', 3.0))
+            _cq_high_vol_bypass_max = float(self.config.get('continuation_quality_high_vol_bypass_rsi_diff_max', 5.2))
+            _cq_high_vol_bypass_cross_ma5_min = float(self.config.get('continuation_quality_high_vol_bypass_cross_ma5_min', 0.25))
+            if _cq_atr_pct_max > 0:
+                _cq_high_vol = _cq_atr_pct.notna() & (_cq_atr_pct > _cq_atr_pct_max)
+                _cq_high_vol_relax = _cq_high_vol & (_cq_weekly > _cq_force_weekly_max)
+                if _cq_high_vol_bypass_min > 0:
+                    _cq_high_vol_relax = _cq_high_vol_relax & (_cq_rsi_diff >= _cq_high_vol_bypass_min)
+                if _cq_high_vol_bypass_max > 0:
+                    _cq_high_vol_relax = _cq_high_vol_relax & (_cq_rsi_diff <= _cq_high_vol_bypass_max)
+                if _cq_high_vol_bypass_cross_ma5_min > 0:
+                    _cq_high_vol_relax = _cq_high_vol_relax & (_cq_cross_ma5 >= _cq_high_vol_bypass_cross_ma5_min)
+                _cq_quality_gate = (~_cq_high_vol_relax).fillna(True)
+            else:
+                _cq_quality_gate = pd.Series(True, index=data.index)
+            _cq_ret120 = (data['close'] / data['close'].shift(120) - 1.0) * 100.0
+            _cq_ma120_slope = data['lt_ma120_slope_20d'] if 'lt_ma120_slope_20d' in data.columns else (
+                (data['ma_120'] / data['ma_120'].shift(20) - 1.0) * 100.0
+            )
+            _cq_low_range_block = (
+                (_cq_range20 <= float(self.config.get('continuation_quality_low_range20_max', 6.0)))
+                & (_cq_er20 <= float(self.config.get('continuation_quality_low_range_er20_max', 0.08)))
+            )
+            _cq_mfi_block = (
+                (_cq_mfi14 >= float(self.config.get('continuation_quality_mfi_high_min', 68.0)))
+                & (_cq_er20 <= float(self.config.get('continuation_quality_mfi_high_er20_max', 0.10)))
+                & (_cq_weekly <= float(self.config.get('continuation_quality_weekly_macd_max', 1.2)))
+            )
+            _cq_trend_exempt = (
+                (_cq_ret120 >= float(self.config.get('continuation_quality_exempt_ret120_min', 30.0)))
+                & (_cq_ma120_slope >= float(self.config.get('continuation_quality_exempt_ma120_slope_min', 1.0)))
+            )
+            continuation_quality_block = (
+                standard_entry
+                & rsi_relaxed_condition
+                & (~data['golden_cross'])
+                & _cq_quality_gate
+                & (_cq_low_range_block | _cq_mfi_block)
+                & (~_cq_trend_exempt)
+            ).fillna(False)
+            standard_entry = standard_entry & (~continuation_quality_block)
+        data['continuation_quality_block'] = continuation_quality_block
 
         ma60_factor_pullback_entry = pd.Series(False, index=data.index)
         if bool(self.config.get('ma60_factor_pullback_enabled', False)):
@@ -1848,6 +2595,300 @@ class RSITrendStrategy(StrategyBase):
             sideways_entry = sideways_entry & ~_ma_route_block
             w_bottom_entry = w_bottom_entry & ~_ma_route_block
 
+        golden_cross_slow_switch_block = pd.Series(False, index=data.index)
+        if bool(self.config.get('golden_cross_slow_switch_enabled', True)):
+            golden_cross_slow_switch_block = (
+                standard_entry
+                & data['golden_cross']
+                & (direction == 1)
+                & (data['atr_pct'] <= float(self.config.get('golden_cross_slow_switch_atr_pct_max', 1.8)))
+                & (data['range_20d_pct'] <= float(self.config.get('golden_cross_slow_switch_range20_max', 8.0)))
+                & (data['lt_elder_weekly_macd'] >= float(self.config.get('golden_cross_slow_switch_weekly_macd_min', 1.8)))
+                & (data['lt_elder_weekly_macd'] <= float(self.config.get('golden_cross_slow_switch_weekly_macd_max', 3.4)))
+                & (data['price_position'] >= float(self.config.get('golden_cross_slow_switch_price_position_min', 0.62)))
+                & (data['rsi_diff'] <= float(self.config.get('golden_cross_slow_switch_rsi_diff_max', 2.2)))
+                & ~(ma60_factor_pullback_entry | slow_pullback_entry)
+            ).fillna(False)
+            standard_entry = standard_entry & (~golden_cross_slow_switch_block)
+        data['golden_cross_slow_switch_block'] = golden_cross_slow_switch_block
+
+        if bool(self.config.get('slow_bull_rotation_switch_enabled', False)):
+            if bool(self.config.get('slow_bull_rotation_switch_use_trend_state', False)):
+                _sb_switch_mask = slow_bull_rotation_trend_state.fillna(False)
+            else:
+                _sb_switch_mask = slow_bull_rotation_profile.fillna(False)
+            standard_entry = standard_entry & (~_sb_switch_mask)
+            rsi_momentum_entry = rsi_momentum_entry & (~_sb_switch_mask)
+            if bool(self.config.get('slow_bull_rotation_switch_block_dual_channel', True)):
+                dual_channel_entry = dual_channel_entry & (~_sb_switch_mask)
+            if bool(self.config.get('slow_bull_rotation_switch_block_discount', False)):
+                discount_zone_entry = discount_zone_entry & (~_sb_switch_mask)
+
+        banklike_slow_static = False
+        banklike_slow_switch_mask = pd.Series(False, index=data.index)
+        if bool(self.config.get('banklike_slow_switch_enabled', False)):
+            _bsl_seed_bars = max(120, int(self.config.get('banklike_slow_switch_seed_bars', 240)))
+            _bsl_seed_n = min(len(data), _bsl_seed_bars)
+            _bsl_seed_ann_vol = np.nan
+            _bsl_seed_ret = np.nan
+            _bsl_seed_mdd = np.nan
+            if _bsl_seed_n >= 120:
+                _bsl_seed_close = data['close'].iloc[:_bsl_seed_n].astype(float)
+                _bsl_seed_log_ret = np.log(_bsl_seed_close / _bsl_seed_close.shift(1)).dropna()
+                _bsl_seed_ann_vol = float(_bsl_seed_log_ret.std() * np.sqrt(252.0) * 100.0) if len(_bsl_seed_log_ret) > 1 else np.nan
+                _bsl_seed_ret = (
+                    float((_bsl_seed_close.iloc[-1] / _bsl_seed_close.iloc[0] - 1.0) * 100.0)
+                    if _bsl_seed_close.iloc[0] > 0 else np.nan
+                )
+                _bsl_seed_cummax = _bsl_seed_close.cummax().replace(0, np.nan)
+                _bsl_seed_mdd = float((((_bsl_seed_cummax - _bsl_seed_close) / _bsl_seed_cummax) * 100.0).max())
+                banklike_slow_static = (
+                    (not np.isnan(_bsl_seed_ann_vol))
+                    and (_bsl_seed_ann_vol <= float(self.config.get('banklike_slow_switch_seed_ann_vol_max', 42.0)))
+                    and (not np.isnan(_bsl_seed_ret))
+                    and (abs(_bsl_seed_ret) <= float(self.config.get('banklike_slow_switch_seed_ret_abs_max', 80.0)))
+                    and (not np.isnan(_bsl_seed_mdd))
+                    and (_bsl_seed_mdd <= float(self.config.get('banklike_slow_switch_seed_mdd_max', 65.0)))
+                )
+            if banklike_slow_static:
+                _bsl_ma120_buffer = float(self.config.get('banklike_slow_switch_ma120_buffer_pct', 4.0))
+                banklike_slow_switch_mask = (
+                    (direction == 1)
+                    & (data['close'] >= data['ma_120'] * (1 - _bsl_ma120_buffer / 100.0))
+                    & (data['atr_pct'] <= float(self.config.get('banklike_slow_switch_atr_pct_max', 3.8)))
+                    & (data['range_20d_pct'] <= float(self.config.get('banklike_slow_switch_range20_max', 14.0)))
+                    & (data['lt_elder_weekly_macd'] <= float(self.config.get('banklike_slow_switch_weekly_macd_max', 2.5)))
+                    & (data['dist_ma20'] >= float(self.config.get('banklike_slow_switch_dist_ma20_min', 2.5)))
+                    & (data['price_position'] >= float(self.config.get('banklike_slow_switch_price_position_min', 0.25)))
+                ).fillna(False)
+
+                if bool(self.config.get('banklike_slow_switch_highvol_enabled', False)):
+                    _bsl_hv_ann_vol_min = float(
+                        self.config.get('banklike_slow_switch_highvol_seed_ann_vol_min', 38.0)
+                    )
+                    _bsl_hv_ret_abs_max = float(
+                        self.config.get('banklike_slow_switch_highvol_seed_ret_abs_max', 999.0)
+                    )
+                    _bsl_hv_mdd_min = float(
+                        self.config.get('banklike_slow_switch_highvol_seed_mdd_min', 0.0)
+                    )
+                    _bsl_hv_mdd_max = float(
+                        self.config.get('banklike_slow_switch_highvol_seed_mdd_max', 999.0)
+                    )
+                    _bsl_hv_base_active = (
+                        (not np.isnan(_bsl_seed_ann_vol))
+                        and (_bsl_seed_ann_vol >= _bsl_hv_ann_vol_min)
+                        and (not np.isnan(_bsl_seed_ret))
+                        and (abs(_bsl_seed_ret) <= _bsl_hv_ret_abs_max)
+                        and (not np.isnan(_bsl_seed_mdd))
+                        and (_bsl_seed_mdd >= _bsl_hv_mdd_min)
+                        and (_bsl_seed_mdd <= _bsl_hv_mdd_max)
+                    )
+                    _bsl_hv_strong_active = False
+                    if bool(self.config.get('banklike_slow_switch_highvol_strong_seed_ret_enabled', False)):
+                        _bsl_hv_strong_ret_min = float(
+                            self.config.get('banklike_slow_switch_highvol_strong_seed_ret_min', 40.0)
+                        )
+                        _bsl_hv_strong_mdd_max = float(
+                            self.config.get('banklike_slow_switch_highvol_strong_seed_mdd_max', 25.0)
+                        )
+                        _bsl_hv_strong_active = (
+                            (not np.isnan(_bsl_seed_ann_vol))
+                            and (_bsl_seed_ann_vol >= _bsl_hv_ann_vol_min)
+                            and (not np.isnan(_bsl_seed_ret))
+                            and (_bsl_seed_ret >= _bsl_hv_strong_ret_min)
+                            and (not np.isnan(_bsl_seed_mdd))
+                            and (_bsl_seed_mdd <= _bsl_hv_strong_mdd_max)
+                        )
+                    if _bsl_hv_base_active or _bsl_hv_strong_active:
+                        _bsl_hv_ma120_buffer = float(
+                            self.config.get('banklike_slow_switch_highvol_ma120_buffer_pct', 30.0)
+                        )
+                        _bsl_hv_mask = (
+                            (direction == 1)
+                            & (data['close'] >= data['ma_120'] * (1 - _bsl_hv_ma120_buffer / 100.0))
+                            & (data['atr_pct'] <= float(self.config.get('banklike_slow_switch_highvol_atr_pct_max', 6.0)))
+                            & (data['range_20d_pct'] <= float(self.config.get('banklike_slow_switch_highvol_range20_max', 30.0)))
+                            & (data['lt_elder_weekly_macd'] <= float(self.config.get('banklike_slow_switch_highvol_weekly_macd_max', 1.5)))
+                            & (data['dist_ma20'] >= float(self.config.get('banklike_slow_switch_highvol_dist_ma20_min', 1.0)))
+                            & (data['price_position'] >= float(self.config.get('banklike_slow_switch_highvol_price_position_min', 0.15)))
+                        ).fillna(False)
+                        banklike_slow_switch_mask = (banklike_slow_switch_mask | _bsl_hv_mask).fillna(False)
+
+                standard_entry = standard_entry & (~banklike_slow_switch_mask)
+                if bool(self.config.get('banklike_slow_switch_block_momentum', True)):
+                    rsi_momentum_entry = rsi_momentum_entry & (~banklike_slow_switch_mask)
+                if bool(self.config.get('banklike_slow_switch_block_dual_channel', True)):
+                    dual_channel_entry = dual_channel_entry & (~banklike_slow_switch_mask)
+                if bool(self.config.get('banklike_slow_switch_block_discount', False)):
+                    discount_zone_entry = discount_zone_entry & (~banklike_slow_switch_mask)
+        data = _batch_store_columns(
+            data,
+            {
+                'banklike_slow_static': pd.Series(banklike_slow_static, index=data.index),
+                'banklike_slow_switch_mask': banklike_slow_switch_mask,
+            },
+        )
+
+        banklike_ma_pullback_profile = pd.Series(False, index=data.index)
+        banklike_ma_pullback_entry = pd.Series(False, index=data.index)
+        if bool(self.config.get('banklike_ma_pullback_enabled', False)) and banklike_slow_static:
+            _bmp_atr = data['atr_pct']
+            _bmp_range20 = data['range_20d_pct']
+            _bmp_weekly_macd = data['lt_elder_weekly_macd']
+            _bmp_dist_ma20 = data['dist_ma20']
+            _bmp_er20 = data['er_20'] if 'er_20' in data.columns else pd.Series(np.nan, index=data.index)
+            _bmp_mfi14 = data['mfi_14'] if 'mfi_14' in data.columns else pd.Series(np.nan, index=data.index)
+            _bmp_cross_ma5 = data['cross_ma5_freq_10d'] if 'cross_ma5_freq_10d' in data.columns else pd.Series(np.nan, index=data.index)
+            _bmp_ma20 = data['ma_20'] if 'ma_20' in data.columns else data['bb_middle']
+            _bmp_ma60 = data['ma_60'] if 'ma_60' in data.columns else data['ma_55']
+            _bmp_ma5 = data['ma_5'] if 'ma_5' in data.columns else data['bb_middle']
+            _bmp_ma60_lb = max(5, int(self.config.get('banklike_ma_pullback_ma60_slope_lookback', 20)))
+            _bmp_ma60_slope = (_bmp_ma60 / _bmp_ma60.shift(_bmp_ma60_lb) - 1.0) * 100.0
+            _bmp_pullback_lb = max(3, int(self.config.get('banklike_ma_pullback_recent_pullback_lookback', 10)))
+            _bmp_rebound_lb = max(2, int(self.config.get('banklike_ma_pullback_rebound_lookback', 4)))
+            _bmp_recent_pullback = (
+                _bmp_dist_ma20.rolling(_bmp_pullback_lb, min_periods=1).min()
+                <= float(self.config.get('banklike_ma_pullback_recent_pullback_dist_ma20_max', 0.8))
+            )
+            _bmp_dist_rebound = _bmp_dist_ma20 - _bmp_dist_ma20.rolling(_bmp_rebound_lb, min_periods=1).min()
+            _bmp_ma120_buffer = float(self.config.get('banklike_ma_pullback_ma120_buffer_pct', 4.0))
+            banklike_ma_pullback_profile = (
+                (direction == 1)
+                & data['is_heikin_bullish']
+                & (data['close'] >= data['ma_120'] * (1 - _bmp_ma120_buffer / 100.0))
+                & (_bmp_atr <= float(self.config.get('banklike_ma_pullback_atr_pct_max', 3.8)))
+                & (_bmp_range20 >= float(self.config.get('banklike_ma_pullback_range20_min', 4.0)))
+                & (_bmp_range20 <= float(self.config.get('banklike_ma_pullback_range20_max', 16.0)))
+                & (_bmp_weekly_macd >= float(self.config.get('banklike_ma_pullback_weekly_macd_min', 0.0)))
+                & (_bmp_weekly_macd <= float(self.config.get('banklike_ma_pullback_weekly_macd_max', 1.2)))
+                & (_bmp_ma60_slope >= float(self.config.get('banklike_ma_pullback_ma60_slope_min', -1.3)))
+                & (_bmp_dist_ma20 >= float(self.config.get('banklike_ma_pullback_profile_dist_ma20_min', -2.0)))
+                & (_bmp_dist_ma20 <= float(self.config.get('banklike_ma_pullback_profile_dist_ma20_max', 3.2)))
+                & (data['price_position'] <= float(self.config.get('banklike_ma_pullback_profile_price_position_max', 0.92)))
+                & (~data['volume_weak'])
+                & (~data['atr_expanding'])
+            ).fillna(False)
+
+            banklike_ma_pullback_entry = (
+                banklike_ma_pullback_profile
+                & _bmp_recent_pullback
+                & (_bmp_dist_rebound >= float(self.config.get('banklike_ma_pullback_rebound_dist_ma20_min', 0.15)))
+                & (_bmp_er20 >= float(self.config.get('banklike_ma_pullback_entry_er20_min', 0.15)))
+                & (data['rsi_diff'] >= float(self.config.get('banklike_ma_pullback_entry_rsi_diff_min', 2.0)))
+                & (data['rsi_diff'] <= float(self.config.get('banklike_ma_pullback_entry_rsi_diff_max', 8.5)))
+                & (_bmp_mfi14 <= float(self.config.get('banklike_ma_pullback_entry_mfi14_max', 80.0)))
+                & (_bmp_cross_ma5 <= float(self.config.get('banklike_ma_pullback_entry_cross_ma5_freq_max', 0.45)))
+                & (_bmp_dist_ma20 >= float(self.config.get('banklike_ma_pullback_entry_dist_ma20_min', -1.4)))
+                & (_bmp_dist_ma20 <= float(self.config.get('banklike_ma_pullback_entry_dist_ma20_max', 2.0)))
+                & ((data['close'] >= _bmp_ma20) | self._crossover(data['close'], _bmp_ma20))
+                & ((data['close'] >= _bmp_ma5) | self._crossover(data['close'], _bmp_ma5))
+            ).fillna(False)
+
+            if bool(self.config.get('banklike_ma_pullback_switch_enabled', True)):
+                standard_entry = standard_entry & (~banklike_ma_pullback_profile)
+                rsi_momentum_entry = rsi_momentum_entry & (~banklike_ma_pullback_profile)
+                if bool(self.config.get('banklike_ma_pullback_switch_block_dual_channel', True)):
+                    dual_channel_entry = dual_channel_entry & (~banklike_ma_pullback_profile)
+                if bool(self.config.get('banklike_ma_pullback_switch_block_discount', False)):
+                    discount_zone_entry = discount_zone_entry & (~banklike_ma_pullback_profile)
+        data = _batch_store_columns(
+            data,
+            {
+                'banklike_ma_pullback_profile': banklike_ma_pullback_profile,
+                'banklike_ma_pullback_entry': banklike_ma_pullback_entry,
+            },
+        )
+
+        slow_bull_mature_switch_mask = pd.Series(False, index=data.index)
+        if bool(self.config.get('slow_bull_mature_switch_enabled', False)):
+            _sbm_atr_max = float(self.config.get('slow_bull_mature_switch_atr_pct_max', 1.75))
+            _sbm_range20_max = float(self.config.get('slow_bull_mature_switch_range20_max', 8.0))
+            _sbm_ma120_slope_min = float(self.config.get('slow_bull_mature_switch_ma120_slope_min', 1.8))
+            _sbm_ma120_slope_max = float(self.config.get('slow_bull_mature_switch_ma120_slope_max', 3.5))
+            _sbm_weekly_macd_min = float(self.config.get('slow_bull_mature_switch_weekly_macd_min', 0.8))
+            _sbm_dist_ma20_min = float(self.config.get('slow_bull_mature_switch_dist_ma20_min', 0.8))
+            _sbm_price_pos_min = float(self.config.get('slow_bull_mature_switch_price_position_min', 0.30))
+            _sbm_chop_min = float(self.config.get('slow_bull_mature_switch_chop_min', 45.0))
+            _sbm_bb_percent_min = float(self.config.get('slow_bull_mature_switch_bb_percent_min', 0.75))
+            _sbm_chop = data['chop_14'] if 'chop_14' in data.columns else pd.Series(np.nan, index=data.index)
+            _sbm_bb = data['bb_percent'] if 'bb_percent' in data.columns else pd.Series(np.nan, index=data.index)
+            _sbm_chop_or_overstretch = (_sbm_chop >= _sbm_chop_min) | (_sbm_bb >= _sbm_bb_percent_min)
+
+            slow_bull_mature_switch_mask = (
+                (direction == 1)
+                & (data['atr_pct'] <= _sbm_atr_max)
+                & (data['range_20d_pct'] <= _sbm_range20_max)
+                & (data['lt_ma120_slope_20d'] >= _sbm_ma120_slope_min)
+                & (data['lt_ma120_slope_20d'] <= _sbm_ma120_slope_max)
+                & (data['lt_elder_weekly_macd'] >= _sbm_weekly_macd_min)
+                & (data['dist_ma20'] >= _sbm_dist_ma20_min)
+                & (data['price_position'] >= _sbm_price_pos_min)
+                & _sbm_chop_or_overstretch
+            ).fillna(False)
+            standard_entry = standard_entry & (~slow_bull_mature_switch_mask)
+            rsi_momentum_entry = rsi_momentum_entry & (~slow_bull_mature_switch_mask)
+        data = _batch_store_columns(
+            data,
+            {'slow_bull_mature_switch_mask': slow_bull_mature_switch_mask},
+        )
+
+        slow_bull_ma_retest_switch_mask = pd.Series(False, index=data.index)
+        if bool(self.config.get('slow_bull_ma_retest_switch_enabled', True)):
+            slow_bull_ma_retest_switch_mask = slow_bull_ma_retest_profile.fillna(False)
+            standard_entry = standard_entry & (~slow_bull_ma_retest_switch_mask)
+            rsi_momentum_entry = rsi_momentum_entry & (~slow_bull_ma_retest_switch_mask)
+            if bool(self.config.get('slow_bull_ma_retest_switch_block_dual_channel', True)):
+                dual_channel_entry = dual_channel_entry & (~slow_bull_ma_retest_switch_mask)
+            if bool(self.config.get('slow_bull_ma_retest_switch_block_discount', False)):
+                discount_zone_entry = discount_zone_entry & (~slow_bull_ma_retest_switch_mask)
+        data = _batch_store_columns(
+            data,
+            {'slow_bull_ma_retest_switch_mask': slow_bull_ma_retest_switch_mask},
+            compact=True,
+        )
+
+        if bool(self.config.get('slow_bull_rotation_disable_default_entries', False)):
+            if bool(self.config.get('slow_bull_rotation_block_full_profile', False)):
+                _sb_block_mask = slow_bull_rotation_profile.fillna(False)
+            else:
+                _sb_block_mask = slow_bull_rotation_trend_state.fillna(False)
+            standard_entry = standard_entry & (~_sb_block_mask)
+            dual_channel_entry = dual_channel_entry & (~_sb_block_mask)
+            discount_zone_entry = discount_zone_entry & (~_sb_block_mask)
+            rsi_momentum_entry = rsi_momentum_entry & (~_sb_block_mask)
+            ma60_factor_pullback_entry = ma60_factor_pullback_entry & (~_sb_block_mask)
+            slow_pullback_entry = slow_pullback_entry & (~_sb_block_mask)
+
+        slow_pullback_entry = (
+            slow_pullback_entry
+            | slow_bull_rotation_entry
+            | slow_bull_mtop_reclaim_entry
+            | slow_bull_ma_retest_entry
+            | banklike_ma_pullback_entry
+        )
+        data['slow_pullback_slow_family'] = (
+            data['slow_pullback_slow_family']
+            | slow_bull_rotation_entry
+            | slow_bull_mtop_reclaim_entry
+            | slow_bull_ma_retest_entry
+            | banklike_ma_pullback_entry
+        )
+        data['slow_pullback_entry'] = slow_pullback_entry
+
+        dual_channel_slow_fake_block = pd.Series(False, index=data.index)
+        if bool(self.config.get('dual_channel_slow_fake_filter_enabled', True)):
+            _dc_er20 = data['er_20'] if 'er_20' in data.columns else pd.Series(np.nan, index=data.index)
+            dual_channel_slow_fake_block = (
+                dual_channel_entry
+                & (data['range_20d_pct'] <= float(self.config.get('dual_channel_slow_fake_range20_max', 8.0)))
+                & (data['rsi_diff'] <= float(self.config.get('dual_channel_slow_fake_rsi_diff_max', -0.5)))
+                & (_dc_er20 <= float(self.config.get('dual_channel_slow_fake_er20_max', 0.20)))
+                & (data['lt_elder_weekly_macd'] >= float(self.config.get('dual_channel_slow_fake_weekly_macd_min', 2.5)))
+            ).fillna(False)
+            dual_channel_entry = dual_channel_entry & (~dual_channel_slow_fake_block)
+        data['dual_channel_slow_fake_block'] = dual_channel_slow_fake_block
+
         # bar级分型路由：仅使用截至当下的历史窗口特征，不依赖未来数据
         profile_mode_bar = pd.Series('base', index=data.index, dtype=object)
         profile_bar_def_block = pd.Series(False, index=data.index)
@@ -1938,12 +2979,12 @@ class RSITrendStrategy(StrategyBase):
 
             # 连涨天数过滤
             if ef_up_streak_max > 0:
-                up_streak = pd.Series(0, index=data.index)
-                for i in range(1, len(data)):
-                    if data['close'].iloc[i] > data['close'].iloc[i - 1]:
-                        up_streak.iloc[i] = up_streak.iloc[i - 1] + 1
-                    else:
-                        up_streak.iloc[i] = 0
+                close_values = data['close'].to_numpy(dtype=float, copy=False)
+                up_streak_arr = np.zeros(len(close_values), dtype=int)
+                for i in range(1, len(close_values)):
+                    if close_values[i] > close_values[i - 1]:
+                        up_streak_arr[i] = up_streak_arr[i - 1] + 1
+                up_streak = pd.Series(up_streak_arr, index=data.index)
                 streak_block = up_streak > ef_up_streak_max
                 standard_entry = standard_entry & ~streak_block
                 rsi_momentum_entry = rsi_momentum_entry & ~streak_block
@@ -2390,27 +3431,39 @@ class RSITrendStrategy(StrategyBase):
                         runner_breakout_raw = runner_breakout_raw & (data['dist_ma20'].fillna(999.0) <= 12.5)
                 runner_breakout_entry = runner_breakout_raw
             else:
-                data['dynamic_ma120_slope'] = (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100
-                data['dynamic_gate_mask'] = False
-                data['dynamic_regime_label'] = 'DISABLED'
-                data['dynamic_strategy_bucket'] = 'disabled'
-                data['dynamic_switch_block_reason'] = ''
-                data['dynamic_router_blocked'] = False
-                data['dynamic_trend_conf'] = 0.5
-                data['dynamic_sideways_conf'] = 0.5
-                data['dynamic_risk_score'] = 0.5
-                data['dynamic_reversal_conf'] = 0.5
-                data['dynamic_runner_score'] = 0.0
-                data['dynamic_ret120_pct'] = 0.0
-                data['dynamic_runner_profile'] = False
-                data['dynamic_fee_pressure_score'] = 0.0
-                data['dynamic_noise_score'] = 0.0
-                data['dynamic_drawdown_120'] = 0.0
-                data['dynamic_fee_sensitive_profile'] = False
+                data = _batch_store_columns(
+                    data,
+                    {
+                        'dynamic_ma120_slope': (data['ma_120'] / data['ma_120'].shift(20) - 1) * 100,
+                        'dynamic_gate_mask': pd.Series(False, index=data.index),
+                        'dynamic_regime_label': pd.Series('DISABLED', index=data.index),
+                        'dynamic_strategy_bucket': pd.Series('disabled', index=data.index),
+                        'dynamic_switch_block_reason': pd.Series('', index=data.index),
+                        'dynamic_router_blocked': pd.Series(False, index=data.index),
+                        'dynamic_trend_conf': pd.Series(0.5, index=data.index),
+                        'dynamic_sideways_conf': pd.Series(0.5, index=data.index),
+                        'dynamic_risk_score': pd.Series(0.5, index=data.index),
+                        'dynamic_reversal_conf': pd.Series(0.5, index=data.index),
+                        'dynamic_runner_score': pd.Series(0.0, index=data.index),
+                        'dynamic_ret120_pct': pd.Series(0.0, index=data.index),
+                        'dynamic_runner_profile': pd.Series(False, index=data.index),
+                        'dynamic_fee_pressure_score': pd.Series(0.0, index=data.index),
+                        'dynamic_noise_score': pd.Series(0.0, index=data.index),
+                        'dynamic_drawdown_120': pd.Series(0.0, index=data.index),
+                        'dynamic_fee_sensitive_profile': pd.Series(False, index=data.index),
+                    },
+                    compact=True,
+                )
 
-        data['gap_fade_signal'] = gap_fade_entry
-        data['trend_reclaim_entry'] = trend_reclaim_entry
-        data['runner_breakout_entry'] = runner_breakout_entry
+        data = _batch_store_columns(
+            data,
+            {
+                'gap_fade_signal': gap_fade_entry,
+                'trend_reclaim_entry': trend_reclaim_entry,
+                'runner_breakout_entry': runner_breakout_entry,
+            },
+            compact=True,
+        )
 
         entry_condition = (
             standard_entry
@@ -2468,18 +3521,16 @@ class RSITrendStrategy(StrategyBase):
             min_score = int(self.config['vq_min_score'])
             ma60_min_vq_score = float(self.config.get('ma60_factor_min_vq_score', 0))
             slow_min_vq_score = float(self.config.get('slow_pullback_min_vq_score', 0))
-            vq_scores = pd.Series(0.0, index=data.index)
-            for i in range(len(data)):
-                vq_scores.iloc[i] = self._calculate_volume_quality_score(data, i)
-            for i in range(len(data)):
-                if entry_condition.iloc[i] and vq_scores.iloc[i] < min_score:
-                    if divergence_entry.iloc[i] or w_bottom_entry.iloc[i]:
-                        continue
-                    if ma60_factor_pullback_entry.iloc[i] and vq_scores.iloc[i] >= ma60_min_vq_score:
-                        continue
-                    if slow_pullback_entry.iloc[i] and vq_scores.iloc[i] >= slow_min_vq_score:
-                        continue
-                    entry_condition.iloc[i] = False
+            vq_scores = self._calculate_volume_quality_scores(data)
+            vq_block_mask = (
+                entry_condition
+                & (vq_scores < min_score)
+                & (~divergence_entry)
+                & (~w_bottom_entry)
+                & (~(ma60_factor_pullback_entry & (vq_scores >= ma60_min_vq_score)))
+                & (~(slow_pullback_entry & (vq_scores >= slow_min_vq_score)))
+            )
+            entry_condition = entry_condition & (~vq_block_mask)
             data['volume_quality_score'] = vq_scores
             logger.debug(f"[VQ Filter] 评分过滤后入场数: {entry_condition.sum()}")
 
@@ -2991,75 +4042,46 @@ class RSITrendStrategy(StrategyBase):
         min_days = self.config['trend_main_wave_min_days']  # 降低到3天
         rsi_threshold = self.config['trend_main_wave_rsi_threshold']  # 提高到80
         volume_factor = self.config['trend_main_wave_volume_factor']  # 降低到1.2倍
-        
-        # 初始化结果Series
-        main_wave_signals = pd.Series(False, index=data.index)
-        
-        # 对每个时间点进行主升浪检测
-        for i in range(len(data)):
-            if i < min_days:
-                continue
-                
-            # 条件1: 价格涨幅超过最小收益要求
-            start_index = max(0, i - min_days)
-            price_start = data['close'].iloc[start_index]
-            price_current = data['close'].iloc[i]
-            gain = (price_current - price_start) / price_start
-            gain_condition = gain >= min_gain
-            
-            # 条件2: RSI仍有上涨空间（未过度超买）
-            rsi_condition = data['fast_rsi'].iloc[i] <= rsi_threshold
-            
-            # 条件3: 成交量放大（相对于过去20天平均）
-            if i >= 20:
-                avg_volume = data['volume'].iloc[i-20:i].mean()
-                current_volume = data['volume'].iloc[i]
-                volume_condition = current_volume >= avg_volume * volume_factor
-            else:
-                volume_condition = True  # 历史数据不足时不限制
-                
-            # 条件4: 趋势方向向上（ATR趋势确认）
-            trend_condition = data['trend_direction'].iloc[i] == 1
-            
-            # 条件5: MA多头排列（新增关键条件）
-            ma_bullish_condition = False
-            if 'exit_ema_fast' in data.columns and 'exit_ma_slow' in data.columns:
-                ema16 = data['exit_ema_fast'].iloc[i]
-                ma45 = data['exit_ma_slow'].iloc[i]
-                ma_bullish_condition = ema16 > ma45
-            
-            # 条件6: 价格在关键均线之上（新增）
-            price_above_ma_condition = True
-            if 'exit_ma_slow' in data.columns:
-                ma45 = data['exit_ma_slow'].iloc[i]
-                price_above_ma_condition = data['close'].iloc[i] > ma45 * 0.95  # 允许5%的偏差
-            
-            # 条件7: 价格连续性上涨（放宽条件）
-            if i >= 2:  # 降低到2天
-                # 检查最近2天是否有1天以上上涨（放宽条件）
-                recent_changes = data['close'].iloc[i-1:i+1].pct_change().dropna()
-                up_days = (recent_changes > 0).sum()
-                continuity_condition = up_days >= 1  # 放宽到至少1天上涨
-            else:
-                continuity_condition = True
-                
-            # 主升浪判断：核心条件必须满足，其他条件可以放宽
-            # 核心条件：MA多头排列 + ATR趋势向上
-            core_conditions = ma_bullish_condition and trend_condition
-            
-            # 辅助条件：至少满足3个
-            auxiliary_conditions = [
-                gain_condition,
-                rsi_condition, 
-                volume_condition,
-                price_above_ma_condition,
-                continuity_condition
-            ]
-            auxiliary_score = sum(auxiliary_conditions)
-            
-            # 主升浪信号：核心条件满足 + 至少3个辅助条件满足
-            main_wave_signals.iloc[i] = core_conditions and auxiliary_score >= 3
-        
+
+        close = data['close']
+        volume = data['volume'] if 'volume' in data.columns else pd.Series(np.nan, index=data.index)
+        trend_direction = data['trend_direction']
+
+        gain_condition = ((close / close.shift(min_days)) - 1.0 >= min_gain).fillna(False)
+        rsi_condition = (data['fast_rsi'] <= rsi_threshold).fillna(False)
+
+        avg_volume_prev20 = volume.shift(1).rolling(20, min_periods=20).mean()
+        volume_condition = ((volume >= avg_volume_prev20 * volume_factor) | avg_volume_prev20.isna()).fillna(True)
+
+        trend_condition = (trend_direction == 1).fillna(False)
+
+        if 'exit_ema_fast' in data.columns and 'exit_ma_slow' in data.columns:
+            ma_bullish_condition = (data['exit_ema_fast'] > data['exit_ma_slow']).fillna(False)
+        else:
+            ma_bullish_condition = pd.Series(False, index=data.index)
+
+        if 'exit_ma_slow' in data.columns:
+            price_above_ma_condition = (close > data['exit_ma_slow'] * 0.95).fillna(False)
+        else:
+            price_above_ma_condition = pd.Series(True, index=data.index)
+
+        continuity_condition = (close.pct_change() > 0).fillna(False)
+        if len(continuity_condition) > 0:
+            continuity_condition.iloc[:2] = True
+
+        core_conditions = ma_bullish_condition & trend_condition
+        auxiliary_score = (
+            gain_condition.astype(int)
+            + rsi_condition.astype(int)
+            + volume_condition.astype(int)
+            + price_above_ma_condition.astype(int)
+            + continuity_condition.astype(int)
+        )
+
+        main_wave_signals = (core_conditions & (auxiliary_score >= 3)).fillna(False)
+        if min_days > 0:
+            main_wave_signals.iloc[:min_days] = False
+
         return main_wave_signals
         
     def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -3189,31 +4211,29 @@ class RSITrendStrategy(StrategyBase):
         """
         if len(prices) < window:
             return 0.5
-        prices_arr = prices.iloc[-window:].values
+        prices_arr = prices.iloc[-window:].to_numpy(dtype=float, copy=False)
         returns = np.diff(np.log(prices_arr))
         if len(returns) < 10:
             return 0.5
         lags = range(2, min(20, len(returns)//2))
         rs_vals = []
+        valid_lags = []
         for lag in lags:
-            rs = []
-            for i in range(0, len(returns), lag):
-                if i + lag > len(returns):
-                    break
-                subset = returns[i:i+lag]
-                if len(subset) < 2:
-                    continue
-                mean_ret = np.mean(subset)
-                cumdev = np.cumsum(subset - mean_ret)
-                r = np.max(cumdev) - np.min(cumdev)
-                s = np.std(subset)
-                if s > 0:
-                    rs.append(r / s)
-            if rs:
-                rs_vals.append(np.mean(rs))
+            usable = (len(returns) // lag) * lag
+            if usable < lag * 2:
+                continue
+            subsets = returns[:usable].reshape(-1, lag)
+            mean_ret = subsets.mean(axis=1, keepdims=True)
+            cumdev = np.cumsum(subsets - mean_ret, axis=1)
+            r = cumdev.max(axis=1) - cumdev.min(axis=1)
+            s = subsets.std(axis=1)
+            valid = s > 0
+            if np.any(valid):
+                rs_vals.append(float(np.mean(r[valid] / s[valid])))
+                valid_lags.append(lag)
         if len(rs_vals) < 2:
             return 0.5
-        log_lags = np.log(list(lags)[:len(rs_vals)])
+        log_lags = np.log(valid_lags)
         log_rs = np.log(rs_vals)
         coeffs = np.polyfit(log_lags, log_rs, 1)
         return max(0.0, min(1.0, coeffs[0]))
@@ -3256,6 +4276,31 @@ class RSITrendStrategy(StrategyBase):
         else:
             strength_score = 0
         return min(100, max(0, consistency_score + strength_score))
+
+    def _calculate_volume_quality_scores(self, data: pd.DataFrame) -> pd.Series:
+        """向量化计算成交量质量评分（0-100）。"""
+        close = data['close']
+        volume = data.get('volume', pd.Series([0] * len(data), index=data.index))
+
+        price_up = close.diff() > 0
+        vol_up = volume.diff() > 0
+        consistency = (price_up == vol_up).astype(float)
+        consistency_score = consistency.rolling(9, min_periods=9).sum() / 9.0 * 40.0
+
+        vol_ma = volume.rolling(10, min_periods=1).mean()
+        vol_ratio = volume / vol_ma.replace(0, np.nan)
+
+        strength_score = pd.Series(0.0, index=data.index, dtype=float)
+        strength_score = strength_score.mask(vol_ratio < 1.0, vol_ratio * 40.0)
+        strength_score = strength_score.mask((vol_ratio >= 1.0) & (vol_ratio < 1.5), 40.0 + (vol_ratio - 1.0) * 20.0)
+        strength_score = strength_score.mask((vol_ratio >= 1.5) & (vol_ratio < 2.0), 50.0 + (vol_ratio - 1.5) * 20.0)
+        strength_score = strength_score.mask(vol_ratio >= 2.0, 60.0)
+        strength_score = strength_score.fillna(0.0)
+
+        scores = (consistency_score.fillna(0.0) + strength_score).clip(lower=0.0, upper=100.0)
+        if len(scores) > 0:
+            scores.iloc[:10] = 50.0
+        return scores
 
     def _compute_trend_levels(self, data: pd.DataFrame, atr_values: pd.Series,
                               period: int, use_close: bool) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -3364,6 +4409,8 @@ class RSITrendStrategy(StrategyBase):
         current_entry_reason = ''
         current_entry_class = ''
         current_slow_suspect = False
+        current_slow_bull_rotation_trade = False
+        current_slow_mtop_carry_trade = False
         current_slow_stop_reentry_candidate = False
         current_continuation_weak = False
         current_continuation_slow_fake = False
@@ -3500,7 +4547,86 @@ class RSITrendStrategy(StrategyBase):
         rsi_fast = None
         if use_rsi_trend and data is not None and 'fast_rsi' in data.columns:
             rsi_fast = data['fast_rsi']
-        
+
+        entry_condition_arr = entry_condition.to_numpy(copy=False)
+        exit_condition_arr = exit_condition.to_numpy(copy=False)
+        divergence_entry_arr = divergence_entry.to_numpy(copy=False)
+        w_bottom_entry_arr = w_bottom_entry.to_numpy(copy=False)
+        sideways_entry_arr = sideways_entry.to_numpy(copy=False)
+        price_arr = price_series.to_numpy(copy=False)
+
+        def _col_arr(name: str):
+            if data is None or name not in data.columns:
+                return None
+            return data[name].to_numpy(copy=False)
+
+        def _mutable_bool_col(name: str):
+            arr = _col_arr(name)
+            if arr is None:
+                return None
+            return np.array(arr, copy=True)
+
+        def _bool_at(arr, idx: int) -> bool:
+            if arr is None:
+                return False
+            value = arr[idx]
+            return False if pd.isna(value) else bool(value)
+
+        def _num_at(arr, idx: int, default=np.nan):
+            if arr is None:
+                return default
+            value = arr[idx]
+            return default if pd.isna(value) else value
+
+        close_arr = _col_arr('close')
+        fast_rsi_arr = _col_arr('fast_rsi')
+        bb_percent_arr = _col_arr('bb_percent')
+        dist_ma20_arr = _col_arr('dist_ma20')
+        dist_ma60_arr = _col_arr('dist_ma60')
+        ma120_arr = _col_arr('ma_120')
+        ma60_arr = _col_arr('ma_60')
+        atr_pct_arr = _col_arr('atr_pct')
+        volume_arr = _col_arr('volume')
+        volume_ma20_arr = _col_arr('volume_ma20')
+        range20_arr = _col_arr('range_20d_pct')
+        weekly_macd_arr = _col_arr('lt_elder_weekly_macd')
+        trend_direction_arr = _col_arr('trend_direction')
+        rsi_diff_arr = _col_arr('rsi_diff')
+        macd_hist_arr = _col_arr('macd_hist')
+        stoch_k_arr = _col_arr('stoch_k')
+        price_position_arr = _col_arr('price_position')
+        short_gain_10d_arr = _col_arr('short_gain_10d')
+        lt_ma120_slope_20d_arr = _col_arr('lt_ma120_slope_20d')
+        chop_14_arr = _col_arr('chop_14')
+        kama_20_arr = _col_arr('kama_20')
+        dynamic_ret120_pct_arr = _col_arr('dynamic_ret120_pct')
+        dynamic_trend_conf_arr = _col_arr('dynamic_trend_conf')
+        dynamic_risk_score_arr = _col_arr('dynamic_risk_score')
+        dynamic_reversal_conf_arr = _col_arr('dynamic_reversal_conf')
+        dynamic_runner_profile_arr = _col_arr('dynamic_runner_profile')
+        dynamic_fee_sensitive_profile_arr = _col_arr('dynamic_fee_sensitive_profile')
+        dynamic_ma120_slope_arr = _col_arr('dynamic_ma120_slope')
+        golden_cross_arr = _col_arr('golden_cross')
+        rsi_relaxed_condition_arr = _col_arr('rsi_relaxed_condition')
+        rsi_momentum_entry_arr = _col_arr('rsi_momentum_entry')
+        discount_zone_entry_arr = _col_arr('discount_zone_entry')
+        dual_channel_signal_arr = _col_arr('dual_channel_signal')
+        gap_fade_signal_arr = _col_arr('gap_fade_signal')
+        ma60_factor_pullback_entry_arr = _col_arr('ma60_factor_pullback_entry')
+        slow_pullback_entry_arr = _col_arr('slow_pullback_entry')
+        trend_reclaim_entry_arr = _col_arr('trend_reclaim_entry')
+        runner_breakout_entry_arr = _col_arr('runner_breakout_entry')
+        slow_bull_rotation_entry_arr = _col_arr('slow_bull_rotation_entry')
+        slow_bull_mtop_reclaim_entry_arr = _col_arr('slow_bull_mtop_reclaim_entry')
+        slow_bull_mtop_reclaim_extended_entry_arr = _col_arr('slow_bull_mtop_reclaim_extended_entry')
+        slow_bull_ma_retest_entry_arr = _col_arr('slow_bull_ma_retest_entry')
+        chase_pullback_entry_mark_arr = _mutable_bool_col('chase_pullback_entry')
+        profile_bar_c14_block_arr = _mutable_bool_col('profile_bar_c14_block')
+        dynamic_cooldown_block_arr = _mutable_bool_col('dynamic_cooldown_block')
+        continuation_cooldown_block_arr = _mutable_bool_col('continuation_cooldown_block')
+        adaptive_fee_block_arr = _mutable_bool_col('adaptive_fee_block')
+        structural_trend_hold_block_arr = _mutable_bool_col('structural_trend_hold_block')
+
         n = len(entry_condition)
         position = np.zeros(n, dtype=int)
         entry_flags = np.zeros(n, dtype=int)
@@ -3515,6 +4641,11 @@ class RSITrendStrategy(StrategyBase):
         current_entry_reason = ''
         current_entry_class = ''
         current_slow_suspect = False
+        current_slow_bull_rotation_trade = False
+        current_slow_mtop_reclaim_trade = False
+        current_slow_mtop_reclaim_extended_trade = False
+        current_slow_ma_retest_trade = False
+        current_slow_mtop_carry_trade = False
         current_slow_stop_reentry_candidate = False
         current_continuation_weak = False
         current_continuation_slow_fake = False
@@ -3575,6 +4706,90 @@ class RSITrendStrategy(StrategyBase):
         ma60_factor_graduate_hold_enabled = bool(self.config.get('ma60_factor_graduate_hold_enabled', True))
         ma60_factor_graduate_profit_min = float(self.config.get('ma60_factor_graduate_profit_min', 3.0))
         ma60_factor_graduate_dist_ma20_min = float(self.config.get('ma60_factor_graduate_dist_ma20_min', 0.0))
+        slow_bull_rotation_min_hold_days = int(self.config.get('slow_bull_rotation_min_hold_days', 3))
+        slow_bull_rotation_soft_stop_enabled = bool(self.config.get('slow_bull_rotation_soft_stop_enabled', False))
+        slow_bull_rotation_soft_stop_hold_days = int(self.config.get('slow_bull_rotation_soft_stop_hold_days', 20))
+        slow_bull_rotation_soft_stop_loss_pct = float(self.config.get('slow_bull_rotation_soft_stop_loss_pct', 6.0))
+        slow_bull_rotation_soft_stop_peak_profit_max = float(
+            self.config.get('slow_bull_rotation_soft_stop_peak_profit_max', 20.0)
+        )
+        slow_bull_mtop_reclaim_stop_loss_pct = float(self.config.get('slow_bull_mtop_reclaim_stop_loss_pct', 5.0))
+        slow_bull_mtop_reclaim_early_fail_enabled = bool(
+            self.config.get('slow_bull_mtop_reclaim_early_fail_enabled', True)
+        )
+        slow_bull_mtop_reclaim_early_fail_hold_days = int(
+            self.config.get('slow_bull_mtop_reclaim_early_fail_hold_days', 8)
+        )
+        slow_bull_mtop_reclaim_early_fail_max_profit_pct = float(
+            self.config.get('slow_bull_mtop_reclaim_early_fail_max_profit_pct', 2.0)
+        )
+        slow_bull_mtop_reclaim_early_fail_loss_pct = float(
+            self.config.get('slow_bull_mtop_reclaim_early_fail_loss_pct', 2.8)
+        )
+        slow_bull_mtop_reclaim_extended_stop_loss_pct = float(
+            self.config.get('slow_bull_mtop_reclaim_extended_stop_loss_pct', 4.0)
+        )
+        slow_bull_mtop_reclaim_extended_early_fail_hold_days = int(
+            self.config.get('slow_bull_mtop_reclaim_extended_early_fail_hold_days', 6)
+        )
+        slow_bull_mtop_reclaim_extended_early_fail_max_profit_pct = float(
+            self.config.get('slow_bull_mtop_reclaim_extended_early_fail_max_profit_pct', 2.0)
+        )
+        slow_bull_mtop_reclaim_extended_early_fail_loss_pct = float(
+            self.config.get('slow_bull_mtop_reclaim_extended_early_fail_loss_pct', 2.4)
+        )
+        slow_bull_mtop_carry_mode_enabled = bool(
+            self.config.get('slow_bull_mtop_carry_mode_enabled', True)
+        )
+        slow_bull_mtop_carry_atr_pct_max = float(
+            self.config.get('slow_bull_mtop_carry_atr_pct_max', 2.1)
+        )
+        slow_bull_mtop_carry_range20_max = float(
+            self.config.get('slow_bull_mtop_carry_range20_max', 10.0)
+        )
+        slow_bull_mtop_carry_weekly_macd_max = float(
+            self.config.get('slow_bull_mtop_carry_weekly_macd_max', 2.2)
+        )
+        slow_bull_mtop_carry_ma120_slope_max = float(
+            self.config.get('slow_bull_mtop_carry_ma120_slope_max', 2.8)
+        )
+        slow_bull_mtop_carry_signal_hold_days = int(
+            self.config.get('slow_bull_mtop_carry_signal_hold_days', 24)
+        )
+        slow_bull_mtop_carry_stop_loss_pct = float(
+            self.config.get('slow_bull_mtop_carry_stop_loss_pct', 7.5)
+        )
+        slow_bull_mtop_carry_skip_early_fail = bool(
+            self.config.get('slow_bull_mtop_carry_skip_early_fail', True)
+        )
+        slow_bull_mtop_carry_chop_min = float(
+            self.config.get('slow_bull_mtop_carry_chop_min', 43.0)
+        )
+        slow_bull_mtop_carry_kama_buffer_pct = float(
+            self.config.get('slow_bull_mtop_carry_kama_buffer_pct', 1.2)
+        )
+        slow_bull_ma_retest_stop_loss_pct = float(
+            self.config.get('slow_bull_ma_retest_stop_loss_pct', 4.8)
+        )
+        slow_bull_ma_retest_signal_hold_days = int(
+            self.config.get('slow_bull_ma_retest_signal_hold_days', 12)
+        )
+        slow_bull_ma_retest_early_fail_enabled = bool(
+            self.config.get('slow_bull_ma_retest_early_fail_enabled', True)
+        )
+        slow_bull_ma_retest_early_fail_hold_days = int(
+            self.config.get('slow_bull_ma_retest_early_fail_hold_days', 8)
+        )
+        slow_bull_ma_retest_early_fail_max_profit_pct = float(
+            self.config.get('slow_bull_ma_retest_early_fail_max_profit_pct', 1.5)
+        )
+        slow_bull_ma_retest_early_fail_loss_pct = float(
+            self.config.get('slow_bull_ma_retest_early_fail_loss_pct', 0.4)
+        )
+        slow_bull_ma_retest_early_fail_global_block_days = max(
+            0,
+            int(self.config.get('slow_bull_ma_retest_early_fail_global_block_days', 30))
+        )
         hold_days = 0  # 持仓天数
         entry_rsi = None  # 记录买入时的RSI值
         _cont_staged_cap_entry_active = False  # RSI多头延续的分段硬止损是否在本笔交易生效
@@ -3947,6 +5162,7 @@ class RSITrendStrategy(StrategyBase):
         continuation_cooldown_until = -1
         if data is not None and 'continuation_cooldown_block' not in data.columns:
             data['continuation_cooldown_block'] = False
+        slow_bull_ma_retest_early_fail_global_block_until = -1
         # 行为画像自适应模式：在噪声/手续费敏感分段动态收紧，趋势跑者分段放行
         adaptive_fee_aware_mode = bool(self.config.get('adaptive_fee_aware_mode', True))
         adaptive_entry_min_trend_conf = float(self.config.get('adaptive_entry_min_trend_conf', 0.50))
@@ -4311,12 +5527,21 @@ class RSITrendStrategy(StrategyBase):
 
 
         for i in range(n):
-            entry_active = bool(entry_condition.iloc[i]) if not pd.isna(entry_condition.iloc[i]) else False
-            exit_active = bool(exit_condition.iloc[i]) if not pd.isna(exit_condition.iloc[i]) else False
-            is_div_entry = bool(divergence_entry.iloc[i]) if not pd.isna(divergence_entry.iloc[i]) else False
-            is_w_entry = bool(w_bottom_entry.iloc[i]) if not pd.isna(w_bottom_entry.iloc[i]) else False
-            is_sw_entry = bool(sideways_entry.iloc[i]) if not pd.isna(sideways_entry.iloc[i]) else False
-            curr_price = price_series.iloc[i] if i < len(price_series) else np.nan
+            entry_active = _bool_at(entry_condition_arr, i)
+            exit_active = _bool_at(exit_condition_arr, i)
+            is_div_entry = _bool_at(divergence_entry_arr, i)
+            is_w_entry = _bool_at(w_bottom_entry_arr, i)
+            is_sw_entry = _bool_at(sideways_entry_arr, i)
+            curr_price = price_arr[i] if i < len(price_arr) else np.nan
+            _global_entry_block_now = (
+                (not in_position)
+                and slow_bull_ma_retest_early_fail_global_block_days > 0
+                and i <= slow_bull_ma_retest_early_fail_global_block_until
+            )
+            _is_slow_bull_rotation_entry = _bool_at(slow_bull_rotation_entry_arr, i)
+            _is_slow_bull_mtop_reclaim_entry = _bool_at(slow_bull_mtop_reclaim_entry_arr, i)
+            _is_slow_bull_mtop_reclaim_extended_entry = _bool_at(slow_bull_mtop_reclaim_extended_entry_arr, i)
+            _is_slow_bull_ma_retest_entry = _bool_at(slow_bull_ma_retest_entry_arr, i)
             _structural_hold_now = False
             # 基于“上一根K线真实退出结果”更新冷却窗口，避免在同一状态机中遗漏continue分支
             # 仅使用已发生的信息（i-1），不引入未来数据。
@@ -4356,10 +5581,7 @@ class RSITrendStrategy(StrategyBase):
                         continuation_cooldown_until,
                         (i - 1) + continuation_cooldown_days
                     )
-            _runner_breakout_now = (
-                bool(data['runner_breakout_entry'].iloc[i])
-                if data is not None and 'runner_breakout_entry' in data.columns else False
-            )
+            _runner_breakout_now = _bool_at(runner_breakout_entry_arr, i)
             _runner_force_entry_now = (
                 _runner_breakout_now
                 and bool(self.config.get('runner_breakout_force_entry', False))
@@ -4378,7 +5600,7 @@ class RSITrendStrategy(StrategyBase):
                 # 处理待反弹卖出状态
                 if not shadow_should_exit and shadow_pending_exit:
                     shadow_pending_exit_days += 1
-                    prev_close = data['close'].iloc[i - 1] if data is not None and i > 0 else curr_price
+                    prev_close = close_arr[i - 1] if close_arr is not None and i > 0 else curr_price
                     day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
                     bounce_from_signal = (curr_price / shadow_pending_exit_price - 1) * 100 if shadow_pending_exit_price > 0 else 0
 
@@ -4393,7 +5615,7 @@ class RSITrendStrategy(StrategyBase):
                 # 检查正常退出条件
                 elif not shadow_should_exit and exit_active:
                     if bounce_exit_enabled and data is not None and i > 0:
-                        prev_close = data['close'].iloc[i - 1]
+                        prev_close = close_arr[i - 1] if close_arr is not None else curr_price
                         day_change = (curr_price / prev_close - 1) * 100 if prev_close > 0 else 0
 
                         if day_change < bounce_exit_drop_threshold:
@@ -4429,31 +5651,30 @@ class RSITrendStrategy(StrategyBase):
             avoid_extreme_chase = False
             chase_pullback_buy = False
             if chase_mode != 'none' and data is not None and i < len(data):
-                row = data.iloc[i]
-                ma_120 = row.get('ma_120', np.nan)
-                short_gain_10d = row.get('short_gain_10d', np.nan)
-                rsi_diff_now = row.get('rsi_diff', np.nan)
-                trend_direction_now = row.get('trend_direction', np.nan)
-                dist_ma20_now = row.get('dist_ma20', np.nan)
-                price_position_now = row.get('price_position', np.nan)
-                golden_cross_now = bool(row.get('golden_cross', False))
-                vol = row.get('volume', np.nan)
-                vol_ma20 = row.get('volume_ma20', np.nan)
+                ma_120 = _num_at(ma120_arr, i)
+                short_gain_10d = _num_at(short_gain_10d_arr, i)
+                rsi_diff_now = _num_at(rsi_diff_arr, i)
+                trend_direction_now = _num_at(trend_direction_arr, i)
+                dist_ma20_now = _num_at(dist_ma20_arr, i)
+                price_position_now = _num_at(price_position_arr, i)
+                golden_cross_now = _bool_at(golden_cross_arr, i)
+                vol = _num_at(volume_arr, i)
+                vol_ma20 = _num_at(volume_ma20_arr, i)
                 row_vol_ratio = (
                     (vol / vol_ma20)
                     if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0
                     else 1.0
                 )
                 ma120_slope_now = np.nan
-                if ('ma_120' in data.columns and i >= chase_trend_bypass_ma120_lookback):
-                    _ma_now = data['ma_120'].iloc[i]
-                    _ma_prev = data['ma_120'].iloc[i - chase_trend_bypass_ma120_lookback]
+                if ma120_arr is not None and i >= chase_trend_bypass_ma120_lookback:
+                    _ma_now = ma120_arr[i]
+                    _ma_prev = ma120_arr[i - chase_trend_bypass_ma120_lookback]
                     if (not np.isnan(_ma_now) and _ma_now > 0
                             and not np.isnan(_ma_prev) and _ma_prev > 0):
                         ma120_slope_now = (_ma_now / _ma_prev - 1.0) * 100.0
                 ret120_now = np.nan
-                if i >= 120:
-                    _close_120 = data['close'].iloc[i - 120]
+                if close_arr is not None and i >= 120:
+                    _close_120 = close_arr[i - 120]
                     if not np.isnan(_close_120) and _close_120 > 0 and not np.isnan(curr_price):
                         ret120_now = (curr_price / _close_120 - 1.0) * 100.0
 
@@ -4494,18 +5715,10 @@ class RSITrendStrategy(StrategyBase):
                         or golden_cross_now
                     )
                 )
-                ma60_pullback_now = row.get('ma60_factor_pullback_entry', False)
-                slow_pullback_now = row.get('slow_pullback_entry', False)
-                trend_reclaim_now = row.get('trend_reclaim_entry', False)
-                runner_breakout_now = row.get('runner_breakout_entry', False)
-                if pd.isna(ma60_pullback_now):
-                    ma60_pullback_now = False
-                if pd.isna(slow_pullback_now):
-                    slow_pullback_now = False
-                if pd.isna(trend_reclaim_now):
-                    trend_reclaim_now = False
-                if pd.isna(runner_breakout_now):
-                    runner_breakout_now = False
+                ma60_pullback_now = _bool_at(ma60_factor_pullback_entry_arr, i)
+                slow_pullback_now = _bool_at(slow_pullback_entry_arr, i)
+                trend_reclaim_now = _bool_at(trend_reclaim_entry_arr, i)
+                runner_breakout_now = _bool_at(runner_breakout_entry_arr, i)
                 pullback_family_now = bool(
                     ma60_pullback_now
                     or slow_pullback_now
@@ -4597,8 +5810,8 @@ class RSITrendStrategy(StrategyBase):
                                 drop_from_peak = (1 - curr_price / chase_peak_price) * 100
                                 chase_cleared = not is_chase_condition
                                 # 计算回调时成交量比
-                                vol = row.get('volume', np.nan)
-                                vol_ma20 = row.get('volume_ma20', np.nan)
+                                vol = _num_at(volume_arr, i)
+                                vol_ma20 = _num_at(volume_ma20_arr, i)
                                 curr_vol_ratio = (vol / vol_ma20) if not np.isnan(vol) and not np.isnan(vol_ma20) and vol_ma20 > 0 else 1.0
                                 drop_speed = (drop_from_peak / days_in_cooldown) if days_in_cooldown > 0 else 0
 
@@ -4646,10 +5859,10 @@ class RSITrendStrategy(StrategyBase):
                 _ehs_rebuy = False
                 _ehs_giveup = False
                 _ehs_wait_days = i - _eh_swing_sell_idx
-                _ehs_bb = data['bb_percent'].iloc[i] if 'bb_percent' in data.columns and not pd.isna(data['bb_percent'].iloc[i]) else np.nan
-                _ehs_rsi = data['fast_rsi'].iloc[i] if 'fast_rsi' in data.columns and not pd.isna(data['fast_rsi'].iloc[i]) else np.nan
-                _ehs_stoch_k = data['stoch_k'].iloc[i] if 'stoch_k' in data.columns and not pd.isna(data['stoch_k'].iloc[i]) else np.nan
-                _ehs_ma120 = data['ma_120'].iloc[i] if 'ma_120' in data.columns else np.nan
+                _ehs_bb = _num_at(bb_percent_arr, i)
+                _ehs_rsi = _num_at(fast_rsi_arr, i)
+                _ehs_stoch_k = _num_at(stoch_k_arr, i)
+                _ehs_ma120 = _num_at(ma120_arr, i)
 
                 # 追踪T卖后的最高价（用于回调低吸判断）
                 if not np.isnan(curr_price) and curr_price > _eh_swing_peak_after_sell:
@@ -4907,8 +6120,8 @@ class RSITrendStrategy(StrategyBase):
                     swing_sell_idx = 0
                     swing_original_entry_price = 0.0
                     swing_lowest_price = 0.0
-                    if data is not None and 'chase_pullback_entry' in data.columns:
-                        data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
+                    if chase_pullback_entry_mark_arr is not None:
+                        chase_pullback_entry_mark_arr[i] = True
                     position[i] = 1
                     continue
                 else:
@@ -5065,6 +6278,9 @@ class RSITrendStrategy(StrategyBase):
                             avoid_extreme_chase = False
                             post_wave_reentry_countdown = 0  # 回补后停止（后续由新的退出重新激活）
 
+            if _is_slow_bull_rotation_entry:
+                avoid_extreme_chase = False
+
             # 入场前过滤检查（亏损冷却、成交量确认、MA对齐）
             _entry_filters_ok = True
             if not in_position and ((entry_active and not avoid_extreme_chase) or chase_pullback_buy):
@@ -5207,16 +6423,16 @@ class RSITrendStrategy(StrategyBase):
                         _rdi = data['rsi_diff'].iloc[i] if 'rsi_diff' in data.columns else np.nan
                         if np.isnan(_rdi) or _rdi < profile_bar_c14_relaxed_min_gap:
                             _entry_filters_ok = False
-                            if 'profile_bar_c14_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('profile_bar_c14_block')] = True
+                            if profile_bar_c14_block_arr is not None:
+                                profile_bar_c14_block_arr[i] = True
 
                 # 同步限制短期重复开仓（反转信号可选绕过）
                 if _entry_filters_ok and entry_cooldown_days > 0:
                     if (i - _last_entry_idx) <= entry_cooldown_days:
                         if not (cooldown_reversal_bypass and (is_div_entry or is_w_entry)):
                             _entry_filters_ok = False
-                            if data is not None and 'dynamic_cooldown_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('dynamic_cooldown_block')] = True
+                            if dynamic_cooldown_block_arr is not None:
+                                dynamic_cooldown_block_arr[i] = True
 
                 # 连续追随买点冷却：止损型退出后短窗内抑制重复追随交易
                 if _entry_filters_ok and continuation_cooldown_enabled and i <= continuation_cooldown_until:
@@ -5359,12 +6575,12 @@ class RSITrendStrategy(StrategyBase):
                                 and _cd_neg_weekly_hot_ok
                             )
                         if _cd_reclaim_ok or _cd_quality_retry_ok:
-                            if data is not None and 'continuation_cooldown_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('continuation_cooldown_block')] = False
+                            if continuation_cooldown_block_arr is not None:
+                                continuation_cooldown_block_arr[i] = False
                         else:
                             _entry_filters_ok = False
-                            if data is not None and 'continuation_cooldown_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('continuation_cooldown_block')] = True
+                            if continuation_cooldown_block_arr is not None:
+                                continuation_cooldown_block_arr[i] = True
 
                 # 画像驱动入场过滤：只在“噪声+手续费敏感”分段收紧；趋势跑者分段保持通路
                 if _entry_filters_ok and adaptive_fee_aware_mode and data is not None and not is_div_entry:
@@ -5387,8 +6603,8 @@ class RSITrendStrategy(StrategyBase):
                             and ((not np.isnan(_ad_trend_conf) and _ad_trend_conf < adaptive_entry_min_trend_conf)
                                  or (not np.isnan(_ad_risk_score) and _ad_risk_score > adaptive_entry_max_risk_score))):
                         _entry_filters_ok = False
-                        if 'adaptive_fee_block' in data.columns:
-                            data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                        if adaptive_fee_block_arr is not None:
+                            adaptive_fee_block_arr[i] = True
                     if _entry_filters_ok and _apply_noise_guard and not _ad_relax_for_oversold:
                         if adaptive_entry_require_ma120_trend:
                             _ad_ma120_ok = False
@@ -5405,14 +6621,14 @@ class RSITrendStrategy(StrategyBase):
                                 _ad_ma120_ok = True
                             if not _ad_ma120_ok:
                                 _entry_filters_ok = False
-                                if 'adaptive_fee_block' in data.columns:
-                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                                if adaptive_fee_block_arr is not None:
+                                    adaptive_fee_block_arr[i] = True
                         if _entry_filters_ok and adaptive_entry_max_dist_ma20 > 0:
                             _ad_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
                             if not np.isnan(_ad_dist_ma20) and _ad_dist_ma20 > adaptive_entry_max_dist_ma20:
                                 _entry_filters_ok = False
-                                if 'adaptive_fee_block' in data.columns:
-                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                                if adaptive_fee_block_arr is not None:
+                                    adaptive_fee_block_arr[i] = True
                         # 弱斜率高位不追：价格处于区间高位但MA120上行不足时，避免中继失败
                         if _entry_filters_ok and 'price_position' in data.columns and 'dynamic_ma120_slope' in data.columns:
                             _ad_pp = data['price_position'].iloc[i]
@@ -5420,8 +6636,8 @@ class RSITrendStrategy(StrategyBase):
                             if (not np.isnan(_ad_pp) and not np.isnan(_ad_m120s)
                                     and _ad_pp >= 0.72 and _ad_m120s < 1.0):
                                 _entry_filters_ok = False
-                                if 'adaptive_fee_block' in data.columns:
-                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                                if adaptive_fee_block_arr is not None:
+                                    adaptive_fee_block_arr[i] = True
                         # 过热高位追涨过滤：120日涨幅过大且位于区间高位时，避免在主升末端追入
                         if _entry_filters_ok and 'price_position' in data.columns:
                             _ad_pp = data['price_position'].iloc[i]
@@ -5436,8 +6652,8 @@ class RSITrendStrategy(StrategyBase):
                                     and _ad_ret120 >= adaptive_late_chase_ret120_min
                                     and (np.isnan(_ad_risk_score) or _ad_risk_score >= adaptive_late_chase_risk_min)):
                                 _entry_filters_ok = False
-                                if 'adaptive_fee_block' in data.columns:
-                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                                if adaptive_fee_block_arr is not None:
+                                    adaptive_fee_block_arr[i] = True
                     # 双通道质量门槛：在高位高涨幅阶段要求MACD/RSI同向，避免逆势“假突破”入场
                     if (_entry_filters_ok and dual_channel_quality_enabled and 'dual_channel_signal' in data.columns
                             and bool(data['dual_channel_signal'].iloc[i])):
@@ -5454,8 +6670,8 @@ class RSITrendStrategy(StrategyBase):
                             _dc_rsid_ok = (not np.isnan(_dc_rsid) and _dc_rsid >= dual_channel_quality_rsi_diff_min)
                             if not (_dc_macd_ok and _dc_rsid_ok):
                                 _entry_filters_ok = False
-                                if 'adaptive_fee_block' in data.columns:
-                                    data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                                if adaptive_fee_block_arr is not None:
+                                    adaptive_fee_block_arr[i] = True
 
                     # 双通道在噪声敏感段需更高确认，趋势跑者不触发该收缩
                     if (_entry_filters_ok and _apply_noise_guard and 'dual_channel_signal' in data.columns
@@ -5465,25 +6681,32 @@ class RSITrendStrategy(StrategyBase):
                         if ((not np.isnan(_ad_trend_conf) and _ad_trend_conf < adaptive_dual_channel_min_trend_conf)
                                 or (not np.isnan(_ad_risk_score) and _ad_risk_score > adaptive_dual_channel_max_risk_score)):
                             _entry_filters_ok = False
-                            if 'adaptive_fee_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                            if adaptive_fee_block_arr is not None:
+                                adaptive_fee_block_arr[i] = True
                         if _entry_filters_ok and (not _ad_macd_ok or not _ad_rsid_ok):
                             _entry_filters_ok = False
-                            if 'adaptive_fee_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                            if adaptive_fee_block_arr is not None:
+                                adaptive_fee_block_arr[i] = True
                     # W底在噪声敏感段也需反转质量确认
                     if _entry_filters_ok and _apply_noise_guard and is_w_entry:
                         if ((not np.isnan(_ad_reversal_conf) and _ad_reversal_conf < adaptive_w_bottom_min_reversal_conf)
                                 or (not np.isnan(_ad_risk_score) and _ad_risk_score > adaptive_w_bottom_max_risk_score)):
                             _entry_filters_ok = False
-                            if 'adaptive_fee_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('adaptive_fee_block')] = True
+                            if adaptive_fee_block_arr is not None:
+                                adaptive_fee_block_arr[i] = True
 
                 # 趋势跑者突破点允许按配置直通执行层（默认关闭）
                 if _runner_force_entry:
                     _entry_filters_ok = True
+                if _is_slow_bull_rotation_entry or _is_slow_bull_mtop_reclaim_entry:
+                    _entry_filters_ok = True
 
-            if _entry_filters_ok and not in_position and ((entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position)):
+            if (
+                _entry_filters_ok
+                and not in_position
+                and not _global_entry_block_now
+                and ((entry_active and not avoid_extreme_chase) or (chase_pullback_buy and not in_position))
+            ):
                 in_position = True
                 entry_flags[i] = 1
                 entry_price = curr_price if not np.isnan(curr_price) else None
@@ -5503,37 +6726,73 @@ class RSITrendStrategy(StrategyBase):
                     entry_reasons[i] = '底背离信号'
                 elif is_w_entry:
                     entry_reasons[i] = 'W底形态'
-                elif data is not None and 'trend_reclaim_entry' in data.columns and bool(data['trend_reclaim_entry'].iloc[i]):
+                elif _is_slow_bull_rotation_entry:
+                    entry_reasons[i] = '慢牛切换入场'
+                elif _bool_at(trend_reclaim_entry_arr, i):
                     entry_reasons[i] = '趋势再突破'
-                elif data is not None and 'runner_breakout_entry' in data.columns and bool(data['runner_breakout_entry'].iloc[i]):
+                elif _bool_at(runner_breakout_entry_arr, i):
                     entry_reasons[i] = '趋势跑者突破'
-                elif data is not None and 'rsi_momentum_entry' in data.columns and bool(data['rsi_momentum_entry'].iloc[i]):
+                elif _bool_at(rsi_momentum_entry_arr, i):
                     entry_reasons[i] = 'RSI动量加速'
-                elif data is not None and 'discount_zone_entry' in data.columns and bool(data['discount_zone_entry'].iloc[i]):
+                elif _bool_at(discount_zone_entry_arr, i):
                     entry_reasons[i] = '折价区补仓'
-                elif data is not None and 'dual_channel_signal' in data.columns and bool(data['dual_channel_signal'].iloc[i]):
+                elif _bool_at(dual_channel_signal_arr, i):
                     entry_reasons[i] = '双通道信号'
-                elif data is not None and 'gap_fade_signal' in data.columns and bool(data.get('gap_fade_signal', pd.Series(False)).iloc[i]):
+                elif _bool_at(gap_fade_signal_arr, i):
                     entry_reasons[i] = '跳空回补'
                     _gap_fade_position = True
                     _gap_fade_entry_idx = i
-                    _gap_fade_prev_close = data['close'].iloc[i - 1] if data is not None and i > 0 else np.nan
+                    _gap_fade_prev_close = close_arr[i - 1] if close_arr is not None and i > 0 else np.nan
                     _gap_fade_reclaimed = False
                     _gap_fade_reclaim_idx = -1
-                elif data is not None and 'ma60_factor_pullback_entry' in data.columns and bool(data['ma60_factor_pullback_entry'].iloc[i]):
+                elif _bool_at(ma60_factor_pullback_entry_arr, i):
                     entry_reasons[i] = 'MA回踩因子'
-                elif data is not None and 'slow_pullback_entry' in data.columns and bool(data['slow_pullback_entry'].iloc[i]):
+                elif _bool_at(slow_pullback_entry_arr, i):
                     entry_reasons[i] = '慢牛回踩因子'
                 else:
                     # 标准RSI入场 - 区分金叉和多头延续
-                    if data is not None and 'golden_cross' in data.columns and bool(data['golden_cross'].iloc[i]):
+                    if _bool_at(golden_cross_arr, i):
                         entry_reasons[i] = 'RSI金叉'
-                    elif data is not None and 'rsi_relaxed_condition' in data.columns and bool(data['rsi_relaxed_condition'].iloc[i]):
+                    elif _bool_at(rsi_relaxed_condition_arr, i):
                         entry_reasons[i] = 'RSI多头延续'
                     else:
                         entry_reasons[i] = 'RSI趋势买入'
                 current_entry_reason = entry_reasons[i]
                 current_entry_class = entry_reasons[i]
+                _is_slow_mtop_carry_trade = False
+                if (
+                    _is_slow_bull_mtop_reclaim_entry
+                    and slow_bull_mtop_carry_mode_enabled
+                    and data is not None
+                ):
+                    _carry_atr = _num_at(atr_pct_arr, i)
+                    _carry_range20 = _num_at(range20_arr, i)
+                    _carry_weekly_macd = _num_at(weekly_macd_arr, i)
+                    _carry_ma120_slope = _num_at(lt_ma120_slope_20d_arr, i)
+                    _carry_chop = _num_at(chop_14_arr, i)
+                    _carry_kama = _num_at(kama_20_arr, i)
+                    _carry_kama_ok = (
+                        np.isnan(_carry_kama)
+                        or curr_price >= _carry_kama * (1 - slow_bull_mtop_carry_kama_buffer_pct / 100.0)
+                    )
+                    _is_slow_mtop_carry_trade = (
+                        not np.isnan(_carry_atr)
+                        and _carry_atr <= slow_bull_mtop_carry_atr_pct_max
+                        and not np.isnan(_carry_range20)
+                        and _carry_range20 <= slow_bull_mtop_carry_range20_max
+                        and not np.isnan(_carry_weekly_macd)
+                        and _carry_weekly_macd <= slow_bull_mtop_carry_weekly_macd_max
+                        and not np.isnan(_carry_ma120_slope)
+                        and _carry_ma120_slope <= slow_bull_mtop_carry_ma120_slope_max
+                        and not np.isnan(_carry_chop)
+                        and _carry_chop >= slow_bull_mtop_carry_chop_min
+                        and _carry_kama_ok
+                    )
+                current_slow_bull_rotation_trade = _is_slow_bull_rotation_entry
+                current_slow_mtop_reclaim_trade = _is_slow_bull_mtop_reclaim_entry
+                current_slow_mtop_reclaim_extended_trade = _is_slow_bull_mtop_reclaim_extended_entry
+                current_slow_ma_retest_trade = _is_slow_bull_ma_retest_entry
+                current_slow_mtop_carry_trade = _is_slow_mtop_carry_trade
                 _cont_staged_cap_entry_active = False
                 if (continuation_staged_hard_cap_enabled
                         and current_entry_class == 'RSI多头延续'
@@ -5564,38 +6823,40 @@ class RSITrendStrategy(StrategyBase):
                 current_continuation_weak = False
                 current_continuation_slow_fake = False
                 current_golden_cross_weak = False
-                if (current_entry_class == '慢牛回踩因子'
+                _is_slow_rotation_class = current_entry_class == '慢牛切换入场'
+                if (current_entry_class in ('慢牛回踩因子', '慢牛切换入场')
                         and data is not None
                         and 'slow_pullback_slow_family' in data.columns
                         and bool(data['slow_pullback_slow_family'].iloc[i])):
                     current_entry_class = '慢牛回踩因子-慢牛'
-                    _sp_suspect_aroon = data['aroon_osc'].iloc[i] if 'aroon_osc' in data.columns else np.nan
-                    _sp_suspect_short_gain = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
-                    current_slow_suspect = (
-                        not np.isnan(_sp_suspect_aroon)
-                        and not np.isnan(_sp_suspect_short_gain)
-                        and _sp_suspect_aroon > float(self.config.get('slow_pullback_suspect_aroon_min', -20.0))
-                        and _sp_suspect_short_gain > float(self.config.get('slow_pullback_suspect_short_gain_min', 6.0))
-                    )
-                    _sp_sr_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
-                    _sp_sr_lr20 = data['lr_slope_20'].iloc[i] if 'lr_slope_20' in data.columns else np.nan
-                    _sp_sr_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
-                    _sp_sr_short_gain = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
-                    _sp_sr_mfi14 = data['mfi_14'].iloc[i] if 'mfi_14' in data.columns else np.nan
-                    current_slow_stop_reentry_candidate = (
-                        bool(self.config.get('slow_pullback_stop_reentry_enabled', True))
-                        and not current_slow_suspect
-                        and not np.isnan(_sp_sr_weekly_macd)
-                        and float(self.config.get('slow_pullback_stop_reentry_weekly_macd_min', 5.2)) <= _sp_sr_weekly_macd <= float(self.config.get('slow_pullback_stop_reentry_weekly_macd_max', 5.7))
-                        and not np.isnan(_sp_sr_lr20)
-                        and float(self.config.get('slow_pullback_stop_reentry_lr20_min', 0.0)) <= _sp_sr_lr20 <= float(self.config.get('slow_pullback_stop_reentry_lr20_max', 0.35))
-                        and not np.isnan(_sp_sr_dist_ma20)
-                        and float(self.config.get('slow_pullback_stop_reentry_dist_ma20_min', 3.0)) <= _sp_sr_dist_ma20 <= float(self.config.get('slow_pullback_stop_reentry_dist_ma20_max', 6.5))
-                        and not np.isnan(_sp_sr_mfi14)
-                        and _sp_sr_mfi14 >= float(self.config.get('slow_pullback_stop_reentry_mfi14_min', 50.0))
-                        and not np.isnan(_sp_sr_short_gain)
-                        and _sp_sr_short_gain <= float(self.config.get('slow_pullback_stop_reentry_short_gain_10d_max', 5.0))
-                    )
+                    if not _is_slow_rotation_class:
+                        _sp_suspect_aroon = data['aroon_osc'].iloc[i] if 'aroon_osc' in data.columns else np.nan
+                        _sp_suspect_short_gain = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
+                        current_slow_suspect = (
+                            not np.isnan(_sp_suspect_aroon)
+                            and not np.isnan(_sp_suspect_short_gain)
+                            and _sp_suspect_aroon > float(self.config.get('slow_pullback_suspect_aroon_min', -20.0))
+                            and _sp_suspect_short_gain > float(self.config.get('slow_pullback_suspect_short_gain_min', 6.0))
+                        )
+                        _sp_sr_weekly_macd = data['lt_elder_weekly_macd'].iloc[i] if 'lt_elder_weekly_macd' in data.columns else np.nan
+                        _sp_sr_lr20 = data['lr_slope_20'].iloc[i] if 'lr_slope_20' in data.columns else np.nan
+                        _sp_sr_dist_ma20 = data['dist_ma20'].iloc[i] if 'dist_ma20' in data.columns else np.nan
+                        _sp_sr_short_gain = data['short_gain_10d'].iloc[i] if 'short_gain_10d' in data.columns else np.nan
+                        _sp_sr_mfi14 = data['mfi_14'].iloc[i] if 'mfi_14' in data.columns else np.nan
+                        current_slow_stop_reentry_candidate = (
+                            bool(self.config.get('slow_pullback_stop_reentry_enabled', True))
+                            and not current_slow_suspect
+                            and not np.isnan(_sp_sr_weekly_macd)
+                            and float(self.config.get('slow_pullback_stop_reentry_weekly_macd_min', 5.2)) <= _sp_sr_weekly_macd <= float(self.config.get('slow_pullback_stop_reentry_weekly_macd_max', 5.7))
+                            and not np.isnan(_sp_sr_lr20)
+                            and float(self.config.get('slow_pullback_stop_reentry_lr20_min', 0.0)) <= _sp_sr_lr20 <= float(self.config.get('slow_pullback_stop_reentry_lr20_max', 0.35))
+                            and not np.isnan(_sp_sr_dist_ma20)
+                            and float(self.config.get('slow_pullback_stop_reentry_dist_ma20_min', 3.0)) <= _sp_sr_dist_ma20 <= float(self.config.get('slow_pullback_stop_reentry_dist_ma20_max', 6.5))
+                            and not np.isnan(_sp_sr_mfi14)
+                            and _sp_sr_mfi14 >= float(self.config.get('slow_pullback_stop_reentry_mfi14_min', 50.0))
+                            and not np.isnan(_sp_sr_short_gain)
+                            and _sp_sr_short_gain <= float(self.config.get('slow_pullback_stop_reentry_short_gain_10d_max', 5.0))
+                        )
                 elif current_entry_class == 'RSI多头延续' and data is not None:
                     _cw_atr_pct = data['atr_pct'].iloc[i] if 'atr_pct' in data.columns else np.nan
                     _cw_range20 = data['range_20d_pct'].iloc[i] if 'range_20d_pct' in data.columns else np.nan
@@ -5735,6 +6996,30 @@ class RSITrendStrategy(StrategyBase):
                     _trade_stop_loss = min(_trade_stop_loss, _dc_sl)
                 elif current_entry_class == '慢牛回踩因子-慢牛' and current_slow_suspect:
                     _trade_stop_loss = min(_trade_stop_loss, float(self.config.get('slow_pullback_suspect_stop_loss', 3.0)))
+                elif (
+                    current_entry_class == '慢牛回踩因子-慢牛'
+                    and current_slow_ma_retest_trade
+                    and slow_bull_ma_retest_stop_loss_pct > 0
+                ):
+                    _trade_stop_loss = min(_trade_stop_loss, slow_bull_ma_retest_stop_loss_pct)
+                elif (
+                    current_entry_class == '慢牛回踩因子-慢牛'
+                    and current_slow_mtop_reclaim_extended_trade
+                    and slow_bull_mtop_reclaim_extended_stop_loss_pct > 0
+                ):
+                    _trade_stop_loss = min(_trade_stop_loss, slow_bull_mtop_reclaim_extended_stop_loss_pct)
+                elif (
+                    current_entry_class == '慢牛回踩因子-慢牛'
+                    and current_slow_mtop_reclaim_trade
+                    and slow_bull_mtop_reclaim_stop_loss_pct > 0
+                ):
+                    _trade_stop_loss = min(_trade_stop_loss, slow_bull_mtop_reclaim_stop_loss_pct)
+                if (
+                    current_entry_class == '慢牛回踩因子-慢牛'
+                    and current_slow_mtop_carry_trade
+                    and slow_bull_mtop_carry_stop_loss_pct > 0
+                ):
+                    _trade_stop_loss = max(_trade_stop_loss, slow_bull_mtop_carry_stop_loss_pct)
                 elif current_entry_class == 'RSI多头延续' and current_continuation_weak:
                     _trade_stop_loss = min(_trade_stop_loss, float(self.config.get('continuation_weak_stop_loss_pct', 3.375)))
                 elif current_entry_class == 'RSI多头延续' and current_continuation_slow_fake:
@@ -5768,8 +7053,8 @@ class RSITrendStrategy(StrategyBase):
                 if profile_bar_stop_override_enabled and _profile_mode_now == 's5':
                     _current_ts_level = min(_current_ts_level, profile_bar_s5_trailing_level)
                 # 标记回调买入
-                if chase_pullback_buy and data is not None and 'chase_pullback_entry' in data.columns:
-                    data.iloc[i, data.columns.get_loc('chase_pullback_entry')] = True
+                if chase_pullback_buy and chase_pullback_entry_mark_arr is not None:
+                    chase_pullback_entry_mark_arr[i] = True
                 hold_days = 0  # 重置持仓天数
                 pending_exit = False  # 重置反弹卖出状态
                 pending_exit_days = 0
@@ -6013,8 +7298,8 @@ class RSITrendStrategy(StrategyBase):
                         _structural_hold_now = _structural_hold_mode
                         if _structural_hold_now and exit_active:
                             exit_active = False
-                            if 'structural_trend_hold_block' in data.columns:
-                                data.iloc[i, data.columns.get_loc('structural_trend_hold_block')] = True
+                            if structural_trend_hold_block_arr is not None:
+                                structural_trend_hold_block_arr[i] = True
                     else:
                         _structural_hold_mode = False
                         _structural_hold_break_count = 0
@@ -6724,6 +8009,15 @@ class RSITrendStrategy(StrategyBase):
                         _sp_profit_take = float(self.config.get('slow_pullback_exit_profit_take_pct', 16.0))
                         _sp_peak_trigger = float(self.config.get('slow_pullback_exit_peak_trigger_pct', 12.0))
                         _sp_peak_drawdown = float(self.config.get('slow_pullback_exit_peak_drawdown_pct', 5.0))
+                        if current_slow_mtop_reclaim_trade:
+                            _sp_signal_hold = max(
+                                _sp_signal_hold,
+                                int(self.config.get('slow_bull_mtop_reclaim_early_fail_hold_days', _sp_signal_hold))
+                            )
+                        if current_slow_ma_retest_trade:
+                            _sp_signal_hold = max(_sp_signal_hold, slow_bull_ma_retest_signal_hold_days)
+                        if current_slow_mtop_carry_trade:
+                            _sp_signal_hold = max(_sp_signal_hold, slow_bull_mtop_carry_signal_hold_days)
                         if current_slow_suspect:
                             _sp_signal_hold = min(_sp_signal_hold, int(self.config.get('slow_pullback_suspect_signal_hold_days', _sp_signal_hold)))
                             _sp_peak_trigger = min(_sp_peak_trigger, float(self.config.get('slow_pullback_suspect_peak_trigger_pct', _sp_peak_trigger)))
@@ -6737,6 +8031,116 @@ class RSITrendStrategy(StrategyBase):
                         _sp_family_lr20_max = float(self.config.get('slow_pullback_exit_family_lr20_max', 0.40))
                         _sp_family_range20_max = float(self.config.get('slow_pullback_exit_family_range20_max', 24.0))
                         _sp_family_dist_ma20_max = float(self.config.get('slow_pullback_exit_family_dist_ma20_max', 9.5))
+
+                        if current_slow_bull_rotation_trade:
+                            _sb_rot_exit_sig = (
+                                bool(data['slow_bull_rotation_exit_signal'].iloc[i])
+                                if data is not None and 'slow_bull_rotation_exit_signal' in data.columns and not pd.isna(data['slow_bull_rotation_exit_signal'].iloc[i])
+                                else False
+                            )
+                            _sb_rot_soft_stop = (
+                                slow_bull_rotation_soft_stop_enabled
+                                and hold_days >= slow_bull_rotation_soft_stop_hold_days
+                                and _sp_profit <= -slow_bull_rotation_soft_stop_loss_pct
+                                and max_profit_in_trade <= slow_bull_rotation_soft_stop_peak_profit_max
+                            )
+                            if _sb_rot_soft_stop or (hold_days >= slow_bull_rotation_min_hold_days and _sb_rot_exit_sig):
+                                in_position = False
+                                exit_flags[i] = 1
+                                if _sp_profit < 0:
+                                    stop_flags[i] = 1
+                                    _last_loss_exit_idx = i
+                                else:
+                                    profit_target_flags[i] = 1
+                                exit_reasons[i] = (
+                                    f'慢牛切换-软止损({_sp_profit:.1f}%)'
+                                    if _sb_rot_soft_stop else '慢牛切换-趋势死叉退出'
+                                )
+                                entry_price = None
+                                hold_days = 0
+                                trailing_stop_active = False
+                                dynamic_profit_active = False
+                                max_profit_in_trade = 0
+                                pending_exit = False
+                                pending_exit_days = 0
+                                current_slow_bull_rotation_trade = False
+                                current_slow_mtop_reclaim_trade = False
+                                current_slow_mtop_reclaim_extended_trade = False
+                                current_slow_ma_retest_trade = False
+                                current_slow_mtop_carry_trade = False
+                                position[i] = 0
+                                continue
+
+                        if (
+                            current_slow_mtop_reclaim_trade
+                            and not (current_slow_mtop_carry_trade and slow_bull_mtop_carry_skip_early_fail)
+                            and slow_bull_mtop_reclaim_early_fail_enabled
+                            and hold_days >= (
+                                slow_bull_mtop_reclaim_extended_early_fail_hold_days
+                                if current_slow_mtop_reclaim_extended_trade
+                                else slow_bull_mtop_reclaim_early_fail_hold_days
+                            )
+                            and max_profit_in_trade <= (
+                                slow_bull_mtop_reclaim_extended_early_fail_max_profit_pct
+                                if current_slow_mtop_reclaim_extended_trade
+                                else slow_bull_mtop_reclaim_early_fail_max_profit_pct
+                            )
+                            and _sp_profit <= -(
+                                slow_bull_mtop_reclaim_extended_early_fail_loss_pct
+                                if current_slow_mtop_reclaim_extended_trade
+                                else slow_bull_mtop_reclaim_early_fail_loss_pct
+                            )
+                        ):
+                            in_position = False
+                            exit_flags[i] = 1
+                            stop_flags[i] = 1
+                            _last_loss_exit_idx = i
+                            exit_reasons[i] = f'慢牛补位-早衰退出({_sp_profit:.1f}%)'
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            current_slow_bull_rotation_trade = False
+                            current_slow_mtop_reclaim_trade = False
+                            current_slow_mtop_reclaim_extended_trade = False
+                            current_slow_ma_retest_trade = False
+                            current_slow_mtop_carry_trade = False
+                            position[i] = 0
+                            continue
+
+                        if (
+                            current_slow_ma_retest_trade
+                            and slow_bull_ma_retest_early_fail_enabled
+                            and hold_days >= slow_bull_ma_retest_early_fail_hold_days
+                            and max_profit_in_trade <= slow_bull_ma_retest_early_fail_max_profit_pct
+                            and _sp_profit <= -slow_bull_ma_retest_early_fail_loss_pct
+                        ):
+                            in_position = False
+                            exit_flags[i] = 1
+                            stop_flags[i] = 1
+                            _last_loss_exit_idx = i
+                            exit_reasons[i] = f'慢牛回踩-早衰止损退出({_sp_profit:.1f}%)'
+                            entry_price = None
+                            hold_days = 0
+                            trailing_stop_active = False
+                            dynamic_profit_active = False
+                            max_profit_in_trade = 0
+                            pending_exit = False
+                            pending_exit_days = 0
+                            if slow_bull_ma_retest_early_fail_global_block_days > 0:
+                                slow_bull_ma_retest_early_fail_global_block_until = (
+                                    i + slow_bull_ma_retest_early_fail_global_block_days
+                                )
+                            current_slow_bull_rotation_trade = False
+                            current_slow_mtop_reclaim_trade = False
+                            current_slow_mtop_reclaim_extended_trade = False
+                            current_slow_ma_retest_trade = False
+                            current_slow_mtop_carry_trade = False
+                            position[i] = 0
+                            continue
 
                         if _trade_stop_loss > 0:
                             _sp_threshold = entry_price * (1 - _trade_stop_loss / 100.0)
@@ -6759,6 +8163,11 @@ class RSITrendStrategy(StrategyBase):
                                     _reentry_skip_uptrend = False
                                     _reentry_prev_profit = curr_profit_pct
                                     _reentry_mode = 'slow_stop'
+                                current_slow_bull_rotation_trade = False
+                                current_slow_mtop_reclaim_trade = False
+                                current_slow_mtop_reclaim_extended_trade = False
+                                current_slow_ma_retest_trade = False
+                                current_slow_mtop_carry_trade = False
                                 position[i] = 0
                                 continue
 
@@ -6798,6 +8207,11 @@ class RSITrendStrategy(StrategyBase):
                             _last_slow_suspect_exit_idx = i
                             if current_slow_suspect:
                                 _last_slow_suspect_strict_exit_idx = i
+                            current_slow_bull_rotation_trade = False
+                            current_slow_mtop_reclaim_trade = False
+                            current_slow_mtop_reclaim_extended_trade = False
+                            current_slow_ma_retest_trade = False
+                            current_slow_mtop_carry_trade = False
                             position[i] = 0
                             continue
 
@@ -6819,6 +8233,11 @@ class RSITrendStrategy(StrategyBase):
                             _last_slow_suspect_exit_idx = i
                             if current_slow_suspect:
                                 _last_slow_suspect_strict_exit_idx = i
+                            current_slow_bull_rotation_trade = False
+                            current_slow_mtop_reclaim_trade = False
+                            current_slow_mtop_reclaim_extended_trade = False
+                            current_slow_ma_retest_trade = False
+                            current_slow_mtop_carry_trade = False
                             position[i] = 0
                             continue
 
@@ -6837,6 +8256,11 @@ class RSITrendStrategy(StrategyBase):
                             _last_slow_trend_exit_idx = i
                             if current_slow_suspect:
                                 _last_slow_suspect_strict_exit_idx = i
+                            current_slow_bull_rotation_trade = False
+                            current_slow_mtop_reclaim_trade = False
+                            current_slow_mtop_reclaim_extended_trade = False
+                            current_slow_ma_retest_trade = False
+                            current_slow_mtop_carry_trade = False
                             position[i] = 0
                             continue
 
@@ -7797,6 +9221,20 @@ class RSITrendStrategy(StrategyBase):
                                 hold_days = 0
 
             position[i] = 1 if in_position else 0
+
+        if data is not None:
+            if chase_pullback_entry_mark_arr is not None:
+                data['chase_pullback_entry'] = chase_pullback_entry_mark_arr
+            if profile_bar_c14_block_arr is not None:
+                data['profile_bar_c14_block'] = profile_bar_c14_block_arr
+            if dynamic_cooldown_block_arr is not None:
+                data['dynamic_cooldown_block'] = dynamic_cooldown_block_arr
+            if continuation_cooldown_block_arr is not None:
+                data['continuation_cooldown_block'] = continuation_cooldown_block_arr
+            if adaptive_fee_block_arr is not None:
+                data['adaptive_fee_block'] = adaptive_fee_block_arr
+            if structural_trend_hold_block_arr is not None:
+                data['structural_trend_hold_block'] = structural_trend_hold_block_arr
 
         return position, entry_flags, exit_flags, stop_flags, profit_target_flags, sideways_exit_type, swing_exit_flags, swing_rebuy_reasons, entry_reasons, exit_reasons
 

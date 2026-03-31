@@ -212,6 +212,38 @@ description: 当在本项目中进行策略研发、代码修改、因子研究�
 - 除非任务明确要求，不要动 `data/cache`。
 - 当 README、命令示例、项目结构说明与当前事实不一致时，应同步更新。
 
+## Cache 不可变红线
+
+如果当前任务要求 `data/cache` 绝对不能变化，后续 session 必须把下面这条当成硬规则：
+
+- 默认禁用一切 `DataFetcher.get_k_data(...)` 路径
+
+原因不是抽象上的“有风险”，而是代码行为本身如此：
+
+- `get_k_data(...)` 在非纯回测路径会检查缓存新鲜度
+- 一旦判定缓存“不是最近交易日”，就会抓网络数据
+- 然后调用 `_save_to_cache(...)` 写回原缓存文件
+
+因此在“cache 不可变”任务里，只允许两种验证方式：
+
+1. 走正式缓存报告路径：
+   - `python3 stock_trading_advisor/main.py --report --new-strategy`
+   - 或 `python3 stock_trading_advisor/main.py --report --new-strategy -b 000001 600000`
+2. 手工读取缓存 csv，再通过 `analyze_stock(..., df_override=df_raw)` 分析
+
+在这种场景下，以下方式默认视为危险：
+
+- 普通研究脚本里直接 `DataFetcher().get_k_data(...)`
+- 未传 `df_override` 的 `analyze_stock(...)`
+- 普通 `python3 stock_trading_advisor/main.py -b ...`
+
+如果已经发生 cache 漂移：
+
+- 立即停止继续实验
+- 先恢复 cache
+- 再重新确认 baseline
+- 不允许拿漂移后的结果和旧 baseline 直接比较
+
 ## 文档同步规则
 
 - 先阅读 `docs/skills/carp-project/SKILL.md`，理解项目当前原理和结构。
@@ -242,6 +274,12 @@ pip install -r stock_trading_advisor/requirements.txt
 python3 stock_trading_advisor/main.py -s 000001 --new-strategy
 ```
 
+如果这轮任务要求 `cache` 不可变，不要用上面这条作为默认口径；改用：
+
+```bash
+python3 stock_trading_advisor/main.py --report --new-strategy -b 000001
+```
+
 ### 批量回测
 
 ```bash
@@ -267,6 +305,10 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new
 - 不要基于全量历史数据给股票做静态分类，因为这在回测中等价于把未来信息带入当前决策。
 - 不要通过白名单或黑名单直接指定某只股票该用什么策略，这通常属于过拟合。
 - 不要按市场类型一刀切，例如简单地按 A 股 / 港股决定策略家族；同一市场内部也可能混有完全不同的股票类型和走势结构。
+- 未来函数测试必须覆盖“本轮新增信号”：
+  - 新增买点、卖点或路由分支后，必须把对应信号加入 `stock_trading_advisor/tests/test_lookahead_bias_smart.py` 的 `signal_cols` 与 `comparison_cols`
+  - 必须验证测试样本里这些新增信号有真实触发（触发次数 `> 0`）
+  - 若新增信号触发次数为 `0`，该轮未来函数检测视为“覆盖无效”，不能作为安全结论
 
 ## checkpoint / commit 前的必做校验
 
@@ -277,6 +319,9 @@ source venv/bin/activate && python3 stock_trading_advisor/tests/test_lookahead_b
 ```
 
 - 如果本轮新增了买点、路由入口或其他可能影响未来函数判断的分支，应同步检查是否需要把新增买点纳入 `stock_trading_advisor/tests/test_lookahead_bias_smart.py`。
+- 除了“纳入测试”，还必须确认“被测试样本触发”：
+  - 输出新增信号的触发统计（按股票、按信号）
+  - 至少保证每个新增关键信号在测试集里有触发；否则补充股票后重跑
 - 如果未来函数检测未通过，不允许把该版本作为 checkpoint 或 commit 保留。
 
 ## Commit 纪律

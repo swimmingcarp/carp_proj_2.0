@@ -205,6 +205,37 @@ description: 当需要了解本项目的专属上下文时使用，包括架构�
 - 临时研究产物不要当成正式项目资产。
 - README 应描述当前主线，不应继续沿用早期 `Mixed Strategy / KDJ / 16日均线` 的旧说法。
 
+## Cache 漂移坑点
+
+这个项目里，`data/cache` 被“意外改写”最常见的原因，不是手工编辑 csv，而是误走了会自动刷新缓存的取数路径。
+
+后续 session 必须明确区分：
+
+- 安全路径：
+  - `generate_cache_backtest_report(...)`
+  - `python3 stock_trading_advisor/main.py --report ...`
+  - 手工 `pd.read_csv(cache_file)` 后，通过 `analyze_stock(..., df_override=df_raw)` 做分析
+
+这些路径的共同点是：
+- 直接读取现有 `cache/*.csv`
+- 不调用 `DataFetcher.get_k_data(...)`
+- 因而不会触发缓存新鲜度检查和写回
+
+- 危险路径：
+  - 任何直接或间接调用 `DataFetcher.get_k_data(...)` 的研究脚本
+  - `analyze_stock(..., df_override=None)` 这条默认取数链
+  - `python3 stock_trading_advisor/main.py -b ...` 这种普通批量分析路径
+
+根因在代码里非常明确：
+- `DataFetcher.get_k_data(...)` 在非纯回测路径下，会调用 `_load_from_cache(..., check_freshness=True)`
+- 如果缓存最后日期小于“最近交易日”，就把缓存判定为过期
+- 然后走网络抓数，并调用 `_save_to_cache(...)` 覆盖原缓存
+
+所以如果任务要求“cache 绝对不能动”，不要只理解成“不要手工改文件”；更要理解成：
+- 不要走任何 `DataFetcher.get_k_data(...)` 路径
+- 不要默认相信普通单股/批量分析命令是只读的
+- 要显式走 `--report` 或 `df_override` 的纯缓存分析口径
+
 ## 项目中的“状态文件”
 
 后续 session 容易误判哪些文件是正式资产，哪些只是运行状态。这里明确一下：
@@ -224,11 +255,16 @@ description: 当需要了解本项目的专属上下文时使用，包括架构�
 - 这个项目里带有 `weekly` / `monthly` 命名的变量，不一定就是真实高周期数据；必须回到代码里确认它到底是：
   - 真实高周期序列
   - 还是日线近似值
+- 当任务要求 cache 不可变时，`--report` 和 `df_override` 才是默认安全口径；不要在研究脚本里顺手调用 `DataFetcher().get_k_data(...)`
 - 不要只迁移一个完整子系统的一小段逻辑，而把它原本依赖的：
   - 路由
   - 放行
   - 持有保护
   丢在外面
+- 未来函数检测里，“测试通过”不等于“覆盖有效”：
+  - 如果本轮新增了买点、卖点或路由分支，但测试股票没有触发这些分支，结论是无效的
+  - 必须把新增分支对应信号加入 `test_lookahead_bias_smart.py` 的对比列
+  - 必须确认样本内至少有股票真实触发这些新增分支，否则要补样本再测
 
 ## 命名坑点
 

@@ -71,13 +71,17 @@ def load_config(config_path: str = 'config/config.yaml') -> dict:
     - 调用方会使用 config.py 中的默认参数作为系统默认配置
     """
     try:
-        # 如果是相对路径，转换为相对于main.py的绝对路径
-        from pathlib import Path
         config_file = Path(config_path)
         if not config_file.is_absolute():
-            script_dir = Path(__file__).parent
-            config_file = script_dir / config_path
-        
+            # 优先按当前工作目录解析，兼容从仓库根目录运行时传入
+            # `stock_trading_advisor/config/...` 的常见写法。
+            cwd_candidate = (Path.cwd() / config_file).resolve()
+            if cwd_candidate.exists():
+                config_file = cwd_candidate
+            else:
+                script_dir = Path(__file__).parent
+                config_file = (script_dir / config_file).resolve()
+
         with open(config_file, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     except Exception:

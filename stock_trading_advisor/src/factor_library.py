@@ -12,7 +12,110 @@
 """
 
 import numpy as np
+import pandas as pd
 from typing import Dict, Optional
+
+
+def kama_indicator(
+    close: pd.Series,
+    er_period: int = 10,
+    fast_period: int = 2,
+    slow_period: int = 30,
+) -> pd.Series:
+    """
+    Kaufman's Adaptive Moving Average (KAMA).
+
+    仅使用当期及历史数据递推计算，不引入未来信息。
+    """
+    if close is None or len(close) == 0:
+        return pd.Series(dtype=float)
+    c = pd.Series(close, copy=False).astype(float)
+    values = c.to_numpy(dtype=float, copy=False)
+    n = len(c)
+    out = np.full(n, np.nan, dtype=float)
+    if n == 0:
+        return pd.Series(out, index=c.index, dtype=float)
+
+    fast_sc = 2.0 / (fast_period + 1.0)
+    slow_sc = 2.0 / (slow_period + 1.0)
+
+    first_idx = max(1, int(er_period))
+    if first_idx >= n:
+        out[-1] = values[-1]
+        return pd.Series(out, index=c.index, dtype=float).ffill()
+
+    out[first_idx] = values[first_idx]
+    abs_diff = np.zeros(n, dtype=float)
+    abs_diff[1:] = np.abs(np.diff(values))
+    abs_csum = np.concatenate(([0.0], np.cumsum(abs_diff)))
+    for i in range(first_idx + 1, n):
+        signal = abs(values[i] - values[i - er_period])
+        noise = abs_csum[i + 1] - abs_csum[i - er_period + 1]
+        er = signal / noise if noise > 0 else 0.0
+        sc = (er * (fast_sc - slow_sc) + slow_sc) ** 2
+        prev = out[i - 1] if not np.isnan(out[i - 1]) else values[i - 1]
+        out[i] = prev + sc * (values[i] - prev)
+
+    return pd.Series(out, index=c.index, dtype=float).ffill()
+
+
+def choppiness_index(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """
+    Choppiness Index (CHOP).
+
+    CHOP 越高表示越震荡，越低表示越趋势化。
+    """
+    if high is None or low is None or close is None:
+        return pd.Series(dtype=float)
+    h = pd.Series(high, copy=False).astype(float)
+    l = pd.Series(low, copy=False).astype(float)
+    c = pd.Series(close, copy=False).astype(float)
+    idx = c.index
+    if len(c) == 0:
+        return pd.Series(dtype=float, index=idx)
+
+    prev_close = c.shift(1)
+    tr = pd.concat([
+        (h - l).abs(),
+        (h - prev_close).abs(),
+        (l - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    tr_sum = tr.rolling(period, min_periods=period).sum()
+    hh = h.rolling(period, min_periods=period).max()
+    ll = l.rolling(period, min_periods=period).min()
+    span = (hh - ll).replace(0, np.nan)
+    base = np.log10(float(period))
+
+    chop = 100.0 * (np.log10(tr_sum / span) / base)
+    return chop.replace([np.inf, -np.inf], np.nan)
+
+
+def efficiency_ratio_indicator(
+    close: pd.Series,
+    period: int = 20,
+) -> pd.Series:
+    """
+    Kaufman Efficiency Ratio (ER).
+
+    ER 越高表示近段价格运动更“直线化”（趋势更清晰），
+    越低表示来回震荡更明显。
+    """
+    if close is None:
+        return pd.Series(dtype=float)
+    c = pd.Series(close, copy=False).astype(float)
+    if len(c) == 0:
+        return pd.Series(dtype=float, index=c.index)
+
+    direction = (c - c.shift(period)).abs()
+    volatility = c.diff().abs().rolling(period, min_periods=period).sum()
+    er = direction / volatility.replace(0, np.nan)
+    return er.replace([np.inf, -np.inf], np.nan)
 
 
 class FactorEngine:

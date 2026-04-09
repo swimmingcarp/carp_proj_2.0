@@ -2,6 +2,10 @@
 
 基于技术指标的股票交易策略分析系统，提供买卖信号提示和策略回测功能。
 
+## AI / Agent Usage
+
+如果使用 Codex 或其他 agent 处理本仓库任务，先读根目录的 `AGENT.md`。
+
 ## 🔔 定时提醒服务（推荐使用）
 
 系统已配置 **systemd 服务**，支持开机自启动和崩溃自动重启：
@@ -309,7 +313,6 @@ stock_trading_advisor/
 ├── config/
 │   ├── config.yaml            # 主配置
 │   ├── scheduler_config.yaml  # 定时任务配置
-│   ├── report_codes_132.txt   # 离线报告默认股票池
 │   ├── watch_list.txt         # 监控股票列表
 │   ├── cn_stock_names.txt     # A股名称映射
 │   └── hk_stock_names.txt     # 港股名称映射
@@ -395,11 +398,11 @@ stock_trading_advisor/
 
 ```yaml
 data_source:
+  adjust: hfq
   provider: akshare
 
 report:
   verbose: false
-  default_stock_codes_file: config/report_codes_132.txt
 
 strategy:
   # 当前主线参数主要定义在 src/new_strategy.py 的默认配置中，

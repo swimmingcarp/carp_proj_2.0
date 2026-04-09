@@ -313,7 +313,8 @@ class TradingScheduler:
                 cache_enabled=False,
                 max_retries=app_config.MAX_RETRIES,
                 retry_delay=app_config.RETRY_DELAY,
-                is_backtest_mode=False  # 实时模式
+                is_backtest_mode=False,  # 实时模式
+                default_adjust=data_config.get('adjust', app_config.DEFAULT_ADJUST),
             )
 
             # 检测市场类型
@@ -633,7 +634,7 @@ class TradingScheduler:
         # 根据市场过滤股票
         if market_filter:
             from src.data_fetcher import DataFetcher
-            fetcher = DataFetcher(source='akshare', cache_enabled=True)
+            fetcher = DataFetcher(source='akshare', cache_enabled=True, default_adjust=app_config.DEFAULT_ADJUST)
 
             filtered_watch_list = []
             for code in watch_list:

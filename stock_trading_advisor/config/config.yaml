@@ -7,6 +7,7 @@ backtest:
   initial_capital: 10000
   start_date: '2020-01-01'
 data_source:
+  adjust: hfq
   cache_enabled: true
   provider: akshare
 logging:
@@ -15,7 +16,6 @@ logging:
   level: INFO
 report:
   blas_threads: 1
-  default_stock_codes_file: config/report_codes_132.txt
   executor: process
   max_workers: null
   verbose: false

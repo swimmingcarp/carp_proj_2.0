@@ -130,30 +130,6 @@ def normalize_stock_code(code: str) -> str:
     return code.upper()
 
 
-def load_stock_codes_file(path_str: Optional[str]) -> List[str]:
-    """从文本文件加载股票代码列表。"""
-    if not path_str:
-        return []
-
-    path = Path(path_str)
-    if not path.is_absolute():
-        path = BASE_DIR / path
-
-    try:
-        lines = path.read_text(encoding='utf-8').splitlines()
-    except OSError as exc:
-        logging.getLogger(__name__).warning(f"读取股票池文件失败 {path}: {exc}")
-        return []
-
-    codes = []
-    for raw in lines:
-        raw = raw.strip()
-        if not raw or raw.startswith('#'):
-            continue
-        codes.append(normalize_stock_code(raw))
-    return codes
-
-
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                   df_override: Optional[pd.DataFrame] = None,
                   quiet: bool = False, chart_generation: bool = False) -> Optional[Dict]:
@@ -188,7 +164,8 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
             cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
             max_retries=app_config.MAX_RETRIES,
             retry_delay=app_config.RETRY_DELAY,
-            is_backtest_mode=show_backtest
+            is_backtest_mode=show_backtest,
+            default_adjust=data_config.get('adjust', app_config.DEFAULT_ADJUST),
         )
 
         echo(f"\n正在获取股票 {stock_code} 的数据...")
@@ -456,7 +433,8 @@ def batch_analyze(stock_codes: list, config: dict):
                 cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
                 max_retries=app_config.MAX_RETRIES,
                 retry_delay=app_config.RETRY_DELAY,
-                is_backtest_mode=False  # 批量分析不做回测，使用实时模式
+                is_backtest_mode=False,  # 批量分析不做回测，使用实时模式
+                default_adjust=data_config.get('adjust', app_config.DEFAULT_ADJUST),
             )
             strategy = RSITrendStrategy(
                 config=strategy_config,
@@ -971,7 +949,7 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
         "代码", "收益%", "最大回撤%", "胜率%", "盈亏比", "交易数", "最终资金"
     )
     summary_header = "{:<8}{:>10}{:>12}{:>10}{:>10}{:>10}{:>8}{:>14}".format(
-        "股票数量", "平均收益%", "平均回撤%", "平均胜率%", "总盈亏比", "平均盈亏比", "交易数", "最终资金"
+        "股票数量", "平均收益%", "平均回撤%", "平均胜率%", "总盈亏比", "股票中位数", "交易数", "最终资金"
     )
     separator_line = "=" * 88
     dash_line = "-" * 88
@@ -1000,25 +978,22 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
     avg_total_return = sum(row['total_return'] for row in summary) / success_count
     avg_max_drawdown = sum(row['max_drawdown'] for row in summary) / success_count
     avg_win_rate = sum(row['win_rate'] for row in summary) / success_count
+    median_total_return = float(pd.Series([row['total_return'] for row in summary], dtype=float).median())
     # 总盈亏比：汇总所有股票的总盈利/总亏损
     all_profit = sum(row['total_profit_pct'] for row in summary)
     all_loss = sum(row['total_loss_pct'] for row in summary)
     total_profit_factor = all_profit / all_loss if all_loss > 0 else 99.0
-    # 平均盈亏比：各股票盈亏比的平均值（排除无亏损的极端值）
-    valid_pfs = [row['profit_factor'] for row in summary if row['profit_factor'] < 100]
-    avg_profit_factor = sum(valid_pfs) / len(valid_pfs) if valid_pfs else 99.0
     avg_trades = sum(row['total_trades'] for row in summary) / success_count
     avg_final_capital = sum(row['final_capital'] for row in summary) / success_count
 
     total_pf_str = f"{total_profit_factor:.2f}" if total_profit_factor < 100 else "99+"
-    avg_pf_str = f"{avg_profit_factor:.2f}" if avg_profit_factor < 100 else "99+"
-    summary_line = "{:<10}{:>14.2f}{:>16.2f}{:>14.2f}{:>14}{:>14}{:>14.2f}{:>17,.2f}".format(
+    summary_line = "{:<10}{:>14.2f}{:>16.2f}{:>14.2f}{:>14}{:>14.2f}{:>14.2f}{:>17,.2f}".format(
         success_count,
         avg_total_return,
         avg_max_drawdown,
         avg_win_rate,
         total_pf_str,
-        avg_pf_str,
+        median_total_return,
         avg_trades,
         avg_final_capital,
     )
@@ -1124,14 +1099,7 @@ def main():
         if report_codes:
             print(f"仅对指定股票生成离线报告: {', '.join(report_codes)}")
         else:
-            default_report_codes = load_stock_codes_file(
-                config.get('report', {}).get('default_stock_codes_file')
-            )
-            if default_report_codes:
-                report_codes = default_report_codes
-                print(f"未指定股票，将对固定股票池 {len(report_codes)} 只股票生成离线报告")
-            else:
-                print("未指定股票，将对缓存中所有股票生成离线报告")
+            print("未指定股票，将对缓存中所有股票生成离线报告")
         generate_cache_backtest_report(
             config,
             stock_codes=report_codes if report_codes else None,

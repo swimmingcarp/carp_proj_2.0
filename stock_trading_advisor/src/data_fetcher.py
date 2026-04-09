@@ -31,7 +31,8 @@ class DataFetcher:
     def __init__(self, source: str = 'akshare', cache_enabled: bool = True,
                  validate_data: bool = True,
                  max_retries: int = 3, retry_delay: float = 2.0,
-                 is_backtest_mode: bool = False):
+                 is_backtest_mode: bool = False,
+                 default_adjust: str = 'hfq'):
         """
         初始化数据获取器
 
@@ -42,10 +43,12 @@ class DataFetcher:
             max_retries: 最大重试次数
             retry_delay: 重试基础延迟（秒），实际延迟会指数增长
             is_backtest_mode: 是否为回测模式
+            default_adjust: 默认复权类型 ('qfq'-前复权, 'hfq'-后复权, ''-不复权)
         """
         self.source = source
         self.cache_enabled = cache_enabled
         self.is_backtest_mode = is_backtest_mode
+        self.default_adjust = default_adjust if default_adjust in ('qfq', 'hfq', '') else 'hfq'
         # 使用绝对路径，确保缓存目录固定
         script_dir = Path(__file__).parent.parent  # src的父目录，即stock_trading_advisor
         self.cache_dir = script_dir / 'data' / 'cache'
@@ -353,7 +356,7 @@ class DataFetcher:
             logger.warning(f"保存缓存失败 {cache_path}: {e}")
 
     def get_k_data(self, code: str, start_date: str = None, end_date: str = None,
-                   adjust: str = 'qfq') -> Optional[Tuple[pd.DataFrame, Dict]]:
+                   adjust: str = None) -> Optional[Tuple[pd.DataFrame, Dict]]:
         """
         获取 K 线数据（带数据验证、智能缓存、重试机制）
 
@@ -363,7 +366,7 @@ class DataFetcher:
                   - 港股: '00700' 或 '00700.HK' (5位数字)
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
-            adjust: 复权类型 ('qfq'-前复权, 'hfq'-后复权, ''-不复权)
+            adjust: 复权类型 ('qfq'-前复权, 'hfq'-后复权, ''-不复权)，默认使用初始化配置
 
         Returns:
             (包含 date, open, close, high, low, volume, code 的 DataFrame, 验证报告)
@@ -375,6 +378,9 @@ class DataFetcher:
         if start_date is None:
             # 默认获取 2 年数据
             start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+
+        if adjust is None:
+            adjust = self.default_adjust
 
         # 检测市场类型
         market = self._detect_market(code)

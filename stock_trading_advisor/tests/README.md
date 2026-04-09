@@ -8,7 +8,7 @@ python -m stock_trading_advisor.tests.test_lookahead_bias_smart
 
 ## 手工验收流程（不使用额外 gate 脚本）
 
-1. 跑 132 全量回测（`--report --new-strategy`）
+1. 跑当前 cache 全量回测（`--report --new-strategy`，以报告中的实际股票数为准；当前示例为 `249-stock`）
 2. 对比上一版 baseline commit 报告：`avg_return / tPF / median / losers`
 3. 跑未来函数检测并确保 `0` 失败
 4. 只有“指标满足保留标准 + 未来函数 0 失败”才创建 commit
@@ -16,9 +16,9 @@ python -m stock_trading_advisor.tests.test_lookahead_bias_smart
 ## 测试说明
 
 - 使用真实数据进行测试
-  - `02367_qfq.csv` - 港股（无震荡入场信号，验证基础策略）
-  - `300750_qfq.csv` - A股（1个震荡入场信号）
-  - `300274_qfq.csv` - A股（2个震荡入场信号）
+  - 当前 `data_source.adjust` 对应口径的 `02367` 缓存文件 - 港股（无震荡入场信号，验证基础策略）
+  - 当前 `data_source.adjust` 对应口径的 `300750` 缓存文件 - A股（1个震荡入场信号）
+  - 当前 `data_source.adjust` 对应口径的 `300274` 缓存文件 - A股（2个震荡入场信号）
 - 采用智能采样：100%覆盖信号点 + 随机采样平静期
 - 检测策略是否使用了未来数据（Look-Ahead Bias）
 

@@ -27,6 +27,7 @@ import os
 import random
 import io
 import contextlib
+import yaml
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Tuple, Optional
 
@@ -39,8 +40,19 @@ from src.personality.pit_stage import (
 from src.personality.segmenter import StockPersonalityEngine
 
 
+def _load_cache_adjust() -> str:
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'config.yaml'))
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            cfg = yaml.safe_load(f) or {}
+    except OSError:
+        return 'hfq'
+    return (cfg.get('data_source', {}) or {}).get('adjust', 'hfq')
+
+
 class TestLookAheadBiasSmart(unittest.TestCase):
     """未来函数检测 - 智能采样版本（使用真实数据）"""
+    CACHE_ADJUST = _load_cache_adjust()
 
     def _extract_signal_points(self, result: pd.DataFrame,
                               signal_cols: List[str]) -> Dict[str, List[int]]:
@@ -143,7 +155,7 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         # 读取真实数据
         data_path = os.path.join(
             os.path.dirname(__file__),
-            f'../data/cache/{stock_code}_qfq.csv'
+            f'../data/cache/{stock_code}_{self.CACHE_ADJUST}.csv'
         )
 
         if not os.path.exists(data_path):
@@ -426,6 +438,7 @@ class TestPitStageLookahead(unittest.TestCase):
     """
 
     CACHE_DIR = os.path.join(os.path.dirname(__file__), '../data/cache')
+    CACHE_ADJUST = _load_cache_adjust()
     # 最少数据量（比 K_DN_TO_CO*2 大即可）
     MIN_BARS = 200
 
@@ -451,7 +464,7 @@ class TestPitStageLookahead(unittest.TestCase):
         print(f"[PitStage 未来函数] {stock_code}")
         print("=" * 80)
 
-        csv_path = os.path.join(self.CACHE_DIR, f'{stock_code}_qfq.csv')
+        csv_path = os.path.join(self.CACHE_DIR, f'{stock_code}_{self.CACHE_ADJUST}.csv')
         if not os.path.exists(csv_path):
             print(f"  ⚠️  未找到数据文件，跳过: {csv_path}")
             return

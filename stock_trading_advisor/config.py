@@ -5,6 +5,7 @@
 
 # 数据源配置
 DATA_SOURCE = 'akshare'  # 可选: 'akshare', 'tushare', 'yfinance'
+DEFAULT_ADJUST = 'hfq'   # 默认使用后复权，避免长历史前复权出现非正价格
 
 # ============ 缓存配置 ============
 CACHE_ENABLED = True        # 是否启用本地缓存

@@ -6,6 +6,13 @@
 python -m stock_trading_advisor.tests.test_lookahead_bias_smart
 ```
 
+## 手工验收流程（不使用额外 gate 脚本）
+
+1. 跑 132 全量回测（`--report --new-strategy`）
+2. 对比上一版 baseline commit 报告：`avg_return / tPF / median / losers`
+3. 跑未来函数检测并确保 `0` 失败
+4. 只有“指标满足保留标准 + 未来函数 0 失败”才创建 commit
+
 ## 测试说明
 
 - 使用真实数据进行测试

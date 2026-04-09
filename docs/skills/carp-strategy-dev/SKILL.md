@@ -125,6 +125,26 @@ description: 当在本项目中进行策略研发、代码修改、因子研究�
 - 所有实验都必须与当前保留基线对比，而不是凭记忆判断。
 - 实验失败必须完整回退。
 - 不允许把失败实验半留在代码里。
+- 禁止把“当前 HEAD 一次回测结果”当成 baseline。
+- baseline 必须以三元组锁定：
+  - `baseline_commit`
+  - `132-stock 正式报告指标`
+  - `未来函数检测 0 失败`
+
+## Baseline 保留流程（手工强约束）
+
+不额外引入 checkpoint / gate 脚本。  
+每次准备保留 commit 前，按下面步骤手工校验：
+
+1. 运行 132 全量正式回测（`--report --new-strategy`）。
+2. 对比“上一版 baseline commit”的正式报告，至少检查：
+   - `avg_return`
+   - `tPF`
+   - `median`
+   - `losers`
+3. 运行未来函数检测，必须 `0` 失败（例如 `5/5` 全通过）。
+4. 只有在“指标满足保留标准 + 未来函数 0 失败”时，才允许创建 commit。
+5. 新 commit 创建后，默认把该 commit 作为下一轮 baseline。
 
 ## 验证纪律
 
@@ -309,9 +329,25 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new
   - 新增买点、卖点或路由分支后，必须把对应信号加入 `stock_trading_advisor/tests/test_lookahead_bias_smart.py` 的 `signal_cols` 与 `comparison_cols`
   - 必须验证测试样本里这些新增信号有真实触发（触发次数 `> 0`）
   - 若新增信号触发次数为 `0`，该轮未来函数检测视为“覆盖无效”，不能作为安全结论
+- 未来函数检测结果零容忍：
+  - 只要存在 `1` 个失败项（包括单个股票、单个信号列、单个采样点差异），该轮即判定“未来函数检测不通过”
+  - 未来函数检测不通过时，禁止保留该轮 checkpoint 或 commit；必须先修复至 `0` 失败再允许提交
+
+## 交易价格口径红线
+
+- 回测中的买卖成交价只能使用收盘价（close）。
+- 允许使用盘中高低价、盘中形态（如插针后收回）作为“参考信号”参与决策。
+- 盘中信息只能影响“是否在收盘执行、是否延迟确认、是否触发保护状态”，不能直接作为成交价或收益计算价。
+- 新增执行分支时，必须显式区分：
+  - `reference`（可用盘中信息）
+  - `execution_price`（固定为 close）
+- 验收时必须检查是否隐式引入了“盘中成交”假设。
 
 ## checkpoint / commit 前的必做校验
 
+- 未来函数检测只在“准备保留版本（checkpoint/commit）”时触发：
+  - 如果本轮回测不达标，且决定直接回退、不保留、不提交，该轮可以不跑未来函数检测。
+  - 如果本轮准备作为候选保留（即将 checkpoint/commit），必须执行未来函数检测。
 - 任何准备生成 checkpoint 或 commit 的策略改动，都必须执行：
 
 ```bash
@@ -322,7 +358,7 @@ source venv/bin/activate && python3 stock_trading_advisor/tests/test_lookahead_b
 - 除了“纳入测试”，还必须确认“被测试样本触发”：
   - 输出新增信号的触发统计（按股票、按信号）
   - 至少保证每个新增关键信号在测试集里有触发；否则补充股票后重跑
-- 如果未来函数检测未通过，不允许把该版本作为 checkpoint 或 commit 保留。
+- 如果未来函数检测未通过（哪怕只有 `1` 项失败），不允许把该版本作为 checkpoint 或 commit 保留。
 
 ## Commit 纪律
 

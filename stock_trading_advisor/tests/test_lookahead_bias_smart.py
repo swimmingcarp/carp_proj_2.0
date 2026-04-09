@@ -167,6 +167,22 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         signal_cols = [
             'entry_signal',
             'exit_signal',
+            'gc_extreme_chase_block',
+            'zigzag_entry',
+            'zigzag_fixed_entry',
+            'zigzag_ddb_entry',
+            'zigzag_dc_entry',
+            'elliott_wave_entry',
+            'zigzag_prob_entry',
+            'wave_entry',
+            'wave_start_signal',
+            'wave_impulse_signal',
+            'wave_retest_signal',
+            'wave_end_signal',
+            'wave_exit_takeover_block',
+            'zigzag_trend_exit_softconfirm_block',
+            'hard_stop_capitulation_softconfirm_block',
+            'hard_stop_mainwave_softconfirm_block',
             'w_bottom_signal',
             'bullish_divergence_signal',
             'sideways_entry',
@@ -187,6 +203,12 @@ class TestLookAheadBiasSmart(unittest.TestCase):
             'aroon_osc',
             'atr_expanding',
             'rsi_momentum',
+            'zigzag_prob_score',
+            'zigzag_vote_count',
+            'wave_active_signal',
+            'wave_active_age',
+            'wave_force_exit_signal',
+            'wave_takeover_existing_position',
             'banklike_slow_switch_mask',
             'golden_cross_slow_switch_mask',
         ]
@@ -372,6 +394,14 @@ class TestLookAheadBiasSmart(unittest.TestCase):
     def test_000001(self):
         """测试A股000001，覆盖 banklike / slow_bull 新分支"""
         self._test_stock('000001', market='CN')
+
+    def test_600775(self):
+        """测试A股600775，覆盖 gc_extreme_chase_block 新分支"""
+        self._test_stock('600775', market='CN')
+
+    def test_00512(self):
+        """测试港股00512，覆盖 zigzag_trend_exit_softconfirm 新分支"""
+        self._test_stock('00512', market='HK')
 
 
 class TestPitStageLookahead(unittest.TestCase):
@@ -603,6 +633,8 @@ STRATEGY_TEST_NAMES = [
     'test_300750',
     'test_300274',
     'test_000001',
+    'test_600775',
+    'test_00512',
 ]
 
 PIT_STAGE_TEST_NAMES = [

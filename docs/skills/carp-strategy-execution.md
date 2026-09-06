@@ -241,15 +241,17 @@ source venv/bin/activate && python3 stock_trading_advisor/tests/test_lookahead_b
 如果当前任务要求 `data/cache` 绝对不能变化，把下面这条当成硬规则：
 
 - 不要走任何 `DataFetcher.get_k_data(...)` 路径
-- 只使用正式缓存报告路径或 `df_override` 的纯缓存分析口径
+- 正式回测只使用 `data/backtest_data` 或 `df_override` 的纯离线分析口径
+- `data/backtest_data` 是离线回测数据目录，正式文件名为 `{股票代码}_hfq.csv`，默认也不能改，除非用户明确要求刷新回测基准数据
+- 普通分析和实际买卖信号默认使用前复权（`qfq`），不要把它和正式回测的后复权（`hfq`）混用
 
 这里强调的是执行纪律。  
 cache 漂移的根因和代码行为说明，交给 `docs/skills/carp-project-description.md`。
 
-一旦发生 cache 漂移：
+一旦发生 cache 或 backtest_data 漂移：
 
 - 立即停止继续实验
-- 先恢复 cache
+- 先恢复对应目录
 - 再重新确认 baseline
 - 不允许直接拿漂移后的结果和旧 baseline 比较
 
@@ -295,12 +297,12 @@ cache 漂移的根因和代码行为说明，交给 `docs/skills/carp-project-de
 - 禁止把“当前 HEAD 一次回测结果”当成 baseline
 - baseline 必须以三元组锁定：
   - `baseline_commit`
-  - `当前 cache 全量` 正式报告指标（以报告中的实际股票数为准；当前示例为 `249-stock`）
+  - `当前 backtest_data 全量` 正式报告指标（以报告中的实际股票数为准；当前基准为 `250-stock`）
   - `未来函数检测 0 失败`
 
 ### 保留 commit 前的必做校验
 
-1. 运行当前 cache 全量正式回测（`--report --new-strategy`）
+1. 运行当前 backtest_data 全量正式回测（`--report --new-strategy`）
 2. 对比上一版 baseline commit 的正式报告，至少检查：
    - `avg_return`
    - `tPF`

@@ -74,6 +74,7 @@ logs/
 *.log
 data/cache/
 *.csv
+!stock_trading_advisor/data/backtest_data/*.csv
 *.xlsx
 .serena/
 stock_trading_advisor/data/strategy_cache.json

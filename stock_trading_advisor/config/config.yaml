@@ -7,7 +7,7 @@ backtest:
   initial_capital: 10000
   start_date: '2020-01-01'
 data_source:
-  adjust: hfq
+  adjust: qfq
   cache_enabled: true
   provider: akshare
 logging:

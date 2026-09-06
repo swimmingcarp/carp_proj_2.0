@@ -14619,15 +14619,32 @@ class RSITrendStrategy(StrategyBase):
         market_regime_ma = int(self.config.get('market_regime_ma_period', 120))
         market_regime_index = str(self.config.get('market_regime_index_code', '000300'))  # 默认沪深300
         market_regime_buffer = float(self.config.get('market_regime_buffer_pct', 0))  # 缓冲区%
+        runtime_config = self.config.get('runtime', {})
+        if not isinstance(runtime_config, dict):
+            runtime_config = {}
+        offline_report_mode = bool(
+            self.config.get('offline_report_mode', False)
+            or runtime_config.get('offline_report_mode', False)
+        )
+        allow_external_data = bool(self.config.get('allow_external_data', True))
+        allow_external_regime_fetch = (
+            bool(self.config.get('allow_external_regime_fetch', allow_external_data))
+            and not offline_report_mode
+        )
         _regime_signal = None
         # 加载regime信号：入场过滤或自适应止损任一启用时都需要
         _need_regime = market_regime_enabled or bool(self.config.get('adaptive_stop_loss_enabled', False))
         if _need_regime and data is not None and 'date' in data.columns:
-            _regime_signal = self._load_index_regime(
-                market_regime_index, market_regime_ma,
-                start_date=str(data['date'].iloc[0])[:10] if len(data) > 0 else '2018-01-01',
-                buffer_pct=market_regime_buffer
-            )
+            if allow_external_regime_fetch:
+                _regime_signal = self._load_index_regime(
+                    market_regime_index, market_regime_ma,
+                    start_date=str(data['date'].iloc[0])[:10] if len(data) > 0 else '2018-01-01',
+                    buffer_pct=market_regime_buffer
+                )
+            else:
+                logger.debug(
+                    "离线报告模式禁用指数regime网络加载，跳过 market_regime/adaptive_stop_loss 指数信号"
+                )
 
         # 市场宽度过滤器
         market_breadth_enabled = bool(self.config.get('market_breadth_enabled', False))

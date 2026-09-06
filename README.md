@@ -40,14 +40,14 @@ cd stock_trading_advisor
 ✨ **核心功能**
 - 📈 **多家族交易策略**：覆盖 `RSI` 趋势跟随、`MA` 回踩、慢牛回踩、`runner breakout`、`trend reclaim` 等不同买点家族
 - 🧠 **自适应策略路由**：基于趋势强度、风险状态、runner 画像，在不同市场结构下切换更合适的入场与持有逻辑
-- 💹 **单股分析 + 全量离线回测**：既支持单只股票分析，也支持对缓存股票池生成完整批量报告
+- 💹 **单股分析 + 全量离线回测**：既支持单只股票分析，也支持对离线回测股票池生成完整批量报告
 - 🧾 **交易级复盘能力**：输出买卖点、交易统计、收益/回撤/胜率等核心指标，方便定位坏簇和修策略
 - 🖼️ **K 线图与买卖点标注**：支持生成带买卖点的图表用于人工复盘
 - 📱 **批量分析与定时提醒**：支持固定时间自动运行，并通过企业微信推送结果
 - ⚙️ **配置驱动**：核心参数均可通过 `config.yaml` 调整，便于研究和迭代
 
 ⚡ **性能优势**
-- 🚀 **本地缓存优先**：批量回测直接复用 `data/cache`，适合高频研究和反复验证
+- 🚀 **离线回测数据优先**：批量回测直接复用 `data/backtest_data`，适合高频研究和反复验证
 - ⚙️ **高并发离线报告**：`--report` 模式默认支持多进程并发，worker 数按“股票数”和“CPU 核心数”自动取较小值
 - 📐 **向量化指标计算**：核心指标计算采用向量化实现，减少逐 bar 回测的额外开销
 - 🔌 **多数据源接入**：支持 `AKShare`、`Tushare`、`yfinance`
@@ -107,17 +107,17 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --ne
 # 使用当前主线策略分析单只股票
 source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293 --new-strategy
 
-# 对缓存中的所有股票进行离线回测并输出报告
+# 对离线回测数据中的所有股票进行回测并输出报告
 # 默认就是高并发静默模式：多进程 + 自动按 min(股票数, CPU核心数) 分配 worker + 不逐只刷屏
 source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy
 
-# 显式指定并发（示例：使用 132 个进程）
-source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=process STOCK_ADVISOR_REPORT_WORKERS=132 python3 stock_trading_advisor/main.py --report --new-strategy
+# 显式指定并发（示例：使用 16 个进程）
+source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=process STOCK_ADVISOR_REPORT_WORKERS=16 python3 stock_trading_advisor/main.py --report --new-strategy
 
 # 如果需要，也可以切到多线程执行器
-source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=thread STOCK_ADVISOR_REPORT_WORKERS=132 python3 stock_trading_advisor/main.py --report --new-strategy
+source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=thread STOCK_ADVISOR_REPORT_WORKERS=16 python3 stock_trading_advisor/main.py --report --new-strategy
 
-# 只对指定股票生成离线报告（需已有缓存）
+# 只对指定股票生成离线报告（需已有离线回测数据）
 source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy -b 300293 300274 300750 605117
 
 # 生成K线图并标注买卖点
@@ -125,7 +125,11 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --ne
 # 图片将保存到 reports/kline_000001.png
 ```
 
-使用 `--report` 时，系统会将完整的批量回测明细保存到 `stock_trading_advisor/reports/cache_backtest_report_YYYYMMDD_HHMMSS.txt`（按时间戳命名），每只股票都会包含最新价格、历史交易对收益表以及交易统计，方便留档和复盘。
+使用 `--report` 时，系统会将完整的批量回测明细保存到 `stock_trading_advisor/reports/offline_backtest_report_YYYYMMDD_HHMMSS.txt`（按时间戳命名），每只股票都会包含最新价格、历史交易对收益表以及交易统计，方便留档和复盘。
+
+`--report` 为纯离线回测口径：个股数据只读取 `stock_trading_advisor/data/backtest_data/*_hfq.csv`，并会禁用策略内部指数 regime 的网络加载，避免正式报告结果被实时外部数据影响。普通单股分析和实际买卖信号默认使用前复权（`qfq`），正式离线回测基准使用后复权（`hfq`）。`stock_trading_advisor/data/cache/` 只作为普通下载缓存使用，避免最新下载数据混入正式回测数据。
+
+当前 250 只离线回测基准股票池、质量审计和基准报告指标见 `stock_trading_advisor/backtest_benchmark/`。
 
 `--report` 现在默认使用高并发静默模式：默认执行器为多进程，默认 worker 数为 `min(目标股票数量, CPU 核心数)`。系统会将 `OMP/OPENBLAS/MKL/NUMEXPR` 线程压到 `1`，避免每个子进程再额外开线程导致过度并行。可通过环境变量 `STOCK_ADVISOR_REPORT_EXECUTOR`（`process`/`thread`）和 `STOCK_ADVISOR_REPORT_WORKERS` 覆写执行器与并发数；如需恢复逐只刷屏，可把 `report.verbose` 改回 `true`。
 
@@ -317,9 +321,11 @@ stock_trading_advisor/
 │   ├── cn_stock_names.txt     # A股名称映射
 │   └── hk_stock_names.txt     # 港股名称映射
 ├── data/
-│   ├── cache/                 # 本地行情缓存
+│   ├── cache/                 # 普通本地行情缓存，可被取数路径刷新
+│   ├── backtest_data/         # 正式离线回测数据（*_hfq.csv）
 │   ├── market_breadth.csv     # 市场宽度数据
 │   ├── realtime_positions.json
+├── backtest_benchmark/        # 离线回测基准股票池与说明
 ├── reports/                   # 回测报告、研究输出、图表
 ├── logs/                      # 运行日志
 ├── tests/
@@ -398,16 +404,16 @@ stock_trading_advisor/
 
 ```yaml
 data_source:
-  adjust: hfq
+  adjust: qfq
   provider: akshare
+  cache_enabled: true
 
 report:
   verbose: false
 
-strategy:
-  # 当前主线参数主要定义在 src/new_strategy.py 的默认配置中，
-  # config.yaml 更适合做数据源、报告模式、调度等外层配置。
-  use_cache: true
+# 当前主线参数主要定义在 src/new_strategy.py 的默认配置中；
+# config.yaml 更适合做数据源、报告模式、调度等外层配置。
+strategy: {}
 ```
 
 ## 注意事项

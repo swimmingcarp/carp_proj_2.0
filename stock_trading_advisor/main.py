@@ -6,6 +6,7 @@ Stock Trading Advisor - 主程序
 """
 
 import argparse
+from copy import deepcopy
 import os
 import sys
 import yaml
@@ -25,6 +26,8 @@ warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 BASE_DIR = Path(__file__).resolve().parent
 SRC_DIR = BASE_DIR / 'src'
 PROJECT_ROOT = BASE_DIR.parent
+BACKTEST_DATA_DIR = BASE_DIR / 'data' / 'backtest_data'
+BACKTEST_DATA_ADJUST = 'hfq'
 
 # 确保 src 和项目根目录均在 sys.path 中
 if str(SRC_DIR) not in sys.path:
@@ -119,7 +122,7 @@ def detect_market_from_code(stock_code: str) -> str:
 
 
 def normalize_stock_code(code: str) -> str:
-    """标准化股票代码以匹配缓存文件"""
+    """标准化股票代码以匹配本地数据文件"""
     if not code:
         return code
     code = code.strip()
@@ -746,16 +749,16 @@ def format_trend_timeline(df_raw: pd.DataFrame, stock_code: str) -> str:
     return "\n".join(lines)
 
 
-def _run_cache_backtest_task(stock_code: str, cache_file_str: str, config: dict, initial_capital: float) -> Dict:
-    """Top-level worker for parallel cache backtests."""
-    cache_file = Path(cache_file_str)
+def _run_offline_backtest_task(stock_code: str, data_file_str: str, config: dict, initial_capital: float) -> Dict:
+    """Top-level worker for parallel offline backtests."""
+    data_file = Path(data_file_str)
     try:
-        df_raw = pd.read_csv(cache_file)
+        df_raw = pd.read_csv(data_file)
     except Exception as exc:
-        return {'success': False, 'code': stock_code, 'error': f"读取缓存失败: {exc}"}
+        return {'success': False, 'code': stock_code, 'error': f"读取离线回测数据失败: {exc}"}
 
     if df_raw.empty:
-        return {'success': False, 'code': stock_code, 'error': "缓存数据为空，跳过"}
+        return {'success': False, 'code': stock_code, 'error': "离线回测数据为空，跳过"}
 
     analysis = analyze_stock(
         stock_code,
@@ -813,44 +816,70 @@ def _run_cache_backtest_task(stock_code: str, cache_file_str: str, config: dict,
     }
 
 
-def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]] = None):
+def _make_offline_report_config(config: dict) -> dict:
+    """Return a report runtime config that cannot trigger strategy network fetches."""
+    offline_config = deepcopy(config) if config else {}
+    strategy_config = offline_config.get('strategy')
+    if not isinstance(strategy_config, dict):
+        strategy_config = {}
+        offline_config['strategy'] = strategy_config
+    strategy_config['offline_report_mode'] = True
+    strategy_config['allow_external_data'] = False
+    strategy_config['allow_external_regime_fetch'] = False
+    return offline_config
+
+
+def generate_offline_backtest_report(config: dict, stock_codes: Optional[List[str]] = None):
     """
-    对缓存中的所有股票执行回测并生成汇总报告
+    对离线回测数据目录中的所有股票执行回测并生成汇总报告
     """
     logger = logging.getLogger(__name__)
-    cache_dir = Path(__file__).parent / 'data' / 'cache'
+    data_dir = BACKTEST_DATA_DIR
 
-    if not cache_dir.exists():
-        print(f"✗ 未找到缓存目录: {cache_dir}")
+    if not data_dir.exists():
+        print(f"✗ 未找到离线回测数据目录: {data_dir}")
         return
 
-    cache_files = sorted(cache_dir.glob('*.csv'))
-    if not cache_files:
-        print(f"✗ 缓存目录 {cache_dir} 为空，无法生成回测报告")
+    data_files = sorted(data_dir.glob(f'*_{BACKTEST_DATA_ADJUST}.csv'))
+    if not data_files:
+        print(f"✗ 离线回测数据目录 {data_dir} 中未找到 *_{BACKTEST_DATA_ADJUST}.csv，无法生成回测报告")
         return
 
-    cache_map = {}
-    for file in cache_files:
-        code = file.stem.split('_')[0]
-        cache_map[code] = file
+    data_map = {}
+    for file in data_files:
+        code = file.stem.removesuffix(f'_{BACKTEST_DATA_ADJUST}')
+        data_map[code] = file
 
     if stock_codes:
         normalized_codes = [normalize_stock_code(code) for code in stock_codes]
         target_files = []
         for raw, norm in zip(stock_codes, normalized_codes):
-            target = cache_map.get(norm)
+            target = data_map.get(norm)
             if not target:
-                print(f"✗ 未找到股票 {raw} 的缓存文件，已跳过")
+                print(f"✗ 未找到股票 {raw} 的离线回测数据文件，已跳过")
                 continue
             target_files.append((norm, target))
         if not target_files:
-            print("✗ 未找到任何匹配的缓存文件，无法生成报告")
+            print("✗ 未找到任何匹配的离线回测数据文件，无法生成报告")
             return
     else:
-        target_files = [(file.stem.split('_')[0], file) for file in cache_files]
+        target_files = [
+            (file.stem.removesuffix(f'_{BACKTEST_DATA_ADJUST}'), file)
+            for file in data_files
+        ]
 
     backtest_config = config.get('backtest', {})
     initial_capital = backtest_config.get('initial_capital', 10000)
+
+    offline_config = _make_offline_report_config(config)
+    original_strategy_config = config.get('strategy', {}) if config else {}
+    if not isinstance(original_strategy_config, dict):
+        original_strategy_config = {}
+    if (
+        original_strategy_config.get('market_regime_enabled')
+        or original_strategy_config.get('adaptive_stop_loss_enabled')
+    ):
+        print("离线报告模式：已禁用策略内部指数regime网络加载，相关指数过滤/自适应止损将跳过。")
 
     report_config = config.get('report', {})
     report_verbose = bool(report_config.get('verbose', False))
@@ -889,16 +918,16 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
             logging.getLogger().setLevel(logging.WARNING)
 
     if stock_codes:
-        print(f"对指定的 {total} 只股票生成回测报告（需存在缓存）...")
+        print(f"对指定的 {total} 只股票生成回测报告（需存在离线回测数据）...")
     else:
         if max_workers <= 1:
             mode_label = "单线程"
         else:
             mode_label = "多进程" if executor_cls is ProcessPoolExecutor else "多线程"
-        print(f"在缓存目录中找到 {total} 只股票，开始{mode_label}离线回测...")
+        print(f"在离线回测数据目录中找到 {total} 只股票，开始{mode_label}离线回测...")
     if max_workers > 1:
         worker_label = "进程" if executor_cls is ProcessPoolExecutor else "线程"
-        print(f"本次将使用 {max_workers} 个{worker_label}并行处理缓存文件")
+        print(f"本次将使用 {max_workers} 个{worker_label}并行处理离线回测数据文件")
 
     summary = []
     failures = []
@@ -906,14 +935,14 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
 
     futures_map = {}
     with executor_cls(max_workers=max_workers) as executor:
-        for idx, (stock_code, cache_file) in enumerate(target_files, 1):
+        for idx, (stock_code, data_file) in enumerate(target_files, 1):
             if report_verbose:
                 print(f"\n[{idx}/{total}] 回测 {stock_code} ...")
             future = executor.submit(
-                _run_cache_backtest_task,
+                _run_offline_backtest_task,
                 stock_code,
-                str(cache_file),
-                config,
+                str(data_file),
+                offline_config,
                 initial_capital,
             )
             futures_map[future] = stock_code
@@ -955,7 +984,7 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
     dash_line = "-" * 88
 
     print("\n" + separator_line)
-    print("📊 缓存回测报告（按收益率排序）")
+    print("📊 离线回测报告（按收益率排序）")
     print(separator_line)
     table_lines = [header, dash_line]
 
@@ -1019,7 +1048,7 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
     timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
     timestamp_slug = now.strftime('%Y%m%d_%H%M%S')
     report_lines = [
-        f"缓存回测报告 - 生成时间: {timestamp}",
+        f"离线回测报告 - 生成时间: {timestamp}",
         separator_line,
         "按收益率排序："
     ]
@@ -1041,7 +1070,7 @@ def generate_cache_backtest_report(config: dict, stock_codes: Optional[List[str]
 
     report_dir = Path(__file__).parent / 'reports'
     report_dir.mkdir(parents=True, exist_ok=True)
-    report_file = report_dir / f'cache_backtest_report_{timestamp_slug}.txt'
+    report_file = report_dir / f'offline_backtest_report_{timestamp_slug}.txt'
     with open(report_file, 'w', encoding='utf-8') as f:
         f.write("\n".join(report_lines).strip() + "\n")
 
@@ -1077,7 +1106,7 @@ def main():
     parser.add_argument('--new-strategy', action='store_true',
                         help=argparse.SUPPRESS)
     parser.add_argument('--report', action='store_true',
-                        help='离线模式：对缓存中所有或指定股票（-s/-b）进行回测并输出报告')
+                        help='离线模式：对 data/backtest_data 中所有或指定股票（-s/-b）进行回测并输出报告')
     parser.add_argument('--chart-generation', action='store_true',
                         help='回测后自动生成K线图并标注买卖点，图片保存到reports/')
 
@@ -1099,8 +1128,8 @@ def main():
         if report_codes:
             print(f"仅对指定股票生成离线报告: {', '.join(report_codes)}")
         else:
-            print("未指定股票，将对缓存中所有股票生成离线报告")
-        generate_cache_backtest_report(
+            print("未指定股票，将对离线回测数据目录中所有股票生成离线报告")
+        generate_offline_backtest_report(
             config,
             stock_codes=report_codes if report_codes else None,
         )

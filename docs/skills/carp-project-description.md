@@ -9,7 +9,7 @@
 - 主要文件分别做什么
 - 普通单股分析和正式离线报告分别走哪条调用链
 - 正式结果看哪里
-- cache / realtime 状态文件分别是什么
+- cache / backtest_data / realtime 状态文件分别是什么
 
 执行流程、验证纪律、commit 规范，交给 `docs/skills/carp-strategy-execution.md`。
 
@@ -28,7 +28,7 @@
 后续 session 默认应假设：
 
 - 主线策略都在 `stock_trading_advisor/src/new_strategy.py`
-- 真正的保留基线以正式 `cache_backtest_report_*.txt` 为准
+- 真正的保留基线以正式 `offline_backtest_report_*.txt` 为准
 - 许多旧文档、旧术语、旧 README 片段可能落后于当前实现
 - 策略不是靠一两个指标决定，而是靠“家族 + 分支 + 退出簇”共同作用
 
@@ -66,7 +66,7 @@
   - 微信通知
 - `stock_trading_advisor/scheduler.py`
   - 定时调度逻辑
-- `stock_trading_advisor/reports/cache_backtest_report_*.txt`
+- `stock_trading_advisor/reports/offline_backtest_report_*.txt`
   - 正式离线回测报告
   - 这是讨论正式结果的统一来源
 
@@ -87,12 +87,15 @@
 ### 2. 正式离线报告路径
 
 1. `stock_trading_advisor/main.py --report`
-2. `generate_cache_backtest_report(...)`
-3. `_run_cache_backtest_task(...)`
-4. 直接读取 `data/cache/*.csv`
-5. `RSITrendStrategy.analyze(df)`
-6. `RSITrendStrategy.backtest(df)`
-7. 汇总并写入 `reports/cache_backtest_report_*.txt`
+2. `generate_offline_backtest_report(...)`
+3. `_run_offline_backtest_task(...)`
+4. 直接读取 `data/backtest_data/*_hfq.csv`
+5. 给策略注入 `offline_report_mode=True` / `allow_external_data=False`
+6. `RSITrendStrategy.analyze(df)`
+   - 策略内指数 regime / adaptive stop 所需的外部指数网络加载会被禁用
+   - 若这类功能依赖外部指数数据，本次离线报告会跳过该指数信号
+7. `RSITrendStrategy.backtest(df)`
+8. 汇总并写入 `reports/offline_backtest_report_*.txt`
 
 ## CLI 现实口径
 
@@ -189,33 +192,49 @@
 ## 状态文件与正式资产
 
 - `stock_trading_advisor/data/cache/`
-  - 本地行情缓存
+  - 普通本地行情缓存
+  - 可能被取数路径刷新
+  - 不作为正式离线回测数据源
+- `stock_trading_advisor/data/backtest_data/`
+  - 离线回测数据
+  - 文件名固定为 `{股票代码}_hfq.csv`
   - 很关键
-  - 默认不要动
+  - 正式报告只读这里
+  - 默认不要动，除非用户明确要求刷新回测基准数据
+- `stock_trading_advisor/backtest_benchmark/`
+  - 离线回测基准股票池、构建说明和 manifest
+  - 用来说明当前 `backtest_data` 的股票范围、复权口径和数据日期
 - `stock_trading_advisor/data/realtime_positions.json`
   - 调度器的实盘持仓追踪状态
   - 只影响 scheduler 提醒逻辑
   - 不应和离线正式回测混为一谈
-- `stock_trading_advisor/reports/cache_backtest_report_*.txt`
+- `stock_trading_advisor/reports/offline_backtest_report_*.txt`
   - 正式报告归档
   - 是讨论正式结果和保留基线的统一来源
 
 ## Cache 漂移的项目事实
 
-这个项目里，`data/cache` 被意外改写，最常见的原因不是手工编辑 csv，而是误走了会自动刷新的取数路径。
+这个项目里，`data/cache` 被意外改写，最常见的原因不是手工编辑 csv，而是误走了会自动刷新的取数路径。正式离线回测应使用独立的 `data/backtest_data`，避免下载缓存的新数据混入基准数据。
 
 根因在代码行为本身：
 
 - `DataFetcher.get_k_data(...)` 在非纯回测路径下，会检查 cache 新鲜度
 - 如果判定缓存不是最近交易日，就会抓网络数据
 - 然后调用 `_save_to_cache(...)` 写回原缓存文件
-- `--report` 这条正式报告路径会直接读取 `data/cache/*.csv`，不会经过 `DataFetcher.get_k_data(...)`
+- `--report` 这条正式报告路径会直接读取 `data/backtest_data/*_hfq.csv`，不会经过 `DataFetcher.get_k_data(...)`
+- `--report` 会强制禁用策略内部外部指数下载，避免 market regime / adaptive stop 在离线报告里偷偷触发网络请求
 
-因此如果任务要求 cache 不可变：
+复权口径必须区分清楚：
+
+- 普通分析、调度器和实际买卖信号默认使用前复权（`qfq`）
+- 正式离线回测基准数据使用后复权（`hfq`），降低长历史前复权价格失真对收益验证的影响
+- 不要用普通 `data/cache` 中的 `qfq` 文件替代 `backtest_data` 的 `hfq` 基准文件
+
+因此如果任务要求 cache / 回测数据不可变：
 
 - 不要走任何 `DataFetcher.get_k_data(...)` 路径
 - 不要默认相信普通单股 / 批量分析命令是只读的
-- 要显式走 `--report` 或 `df_override` 的纯缓存分析口径
+- 要显式走 `--report` 或 `df_override` 的纯离线分析口径
 
 具体执行纪律，交给 `docs/skills/carp-strategy-execution.md`。
 

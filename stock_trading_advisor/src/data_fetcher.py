@@ -32,7 +32,7 @@ class DataFetcher:
                  validate_data: bool = True,
                  max_retries: int = 3, retry_delay: float = 2.0,
                  is_backtest_mode: bool = False,
-                 default_adjust: str = 'hfq'):
+                 default_adjust: str = 'qfq'):
         """
         初始化数据获取器
 
@@ -48,7 +48,7 @@ class DataFetcher:
         self.source = source
         self.cache_enabled = cache_enabled
         self.is_backtest_mode = is_backtest_mode
-        self.default_adjust = default_adjust if default_adjust in ('qfq', 'hfq', '') else 'hfq'
+        self.default_adjust = default_adjust if default_adjust in ('qfq', 'hfq', '') else 'qfq'
         # 使用绝对路径，确保缓存目录固定
         script_dir = Path(__file__).parent.parent  # src的父目录，即stock_trading_advisor
         self.cache_dir = script_dir / 'data' / 'cache'

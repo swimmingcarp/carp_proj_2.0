@@ -1,3 +1,0 @@
-# 关闭RSI趋势策略的多时间框架(MTF)过滤：更容易触发买点，但信号噪声与回撤风险会更高
-strategy:
-  trend_mtf_enabled: false

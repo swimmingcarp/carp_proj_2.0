@@ -3,7 +3,7 @@ Strategy utilities shared by RSITrendStrategy.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -14,38 +14,18 @@ logger = logging.getLogger(__name__)
 class StrategyBase:
     """RSITrendStrategy 复用的基础配置与通用回测基座。"""
 
-    def __init__(self, config: Optional[Dict] = None, validate_indicators: bool = True,
-                 sell_strategy: str = 'auto', order: str = 'auto',
-                 market: str = 'CN-A', use_simple_divergence: bool = False,
-                 adaptive_oscillation: bool = False, stock_code: str = '',
-                 precomputed_indicators: bool = False,
-                 oscillation_driven: bool = False):
+    def __init__(
+        self,
+        config: Optional[Dict] = None,
+        market: str = 'CN-A',
+        stock_code: str = '',
+    ):
         self.config = self._default_config()
         if config:
             self.config.update(config)
 
-        self.validate_indicators = validate_indicators
-        self.sell_strategy = sell_strategy
-        self.order_mode = order
-        self.optimal_strategy = None
-        self.optimal_order = 'high_frequency'
-        self.adaptive_oscillation = adaptive_oscillation
         self.stock_code = stock_code
-        self.selected_oscillation_version = None
         self.market = market
-        self.use_simple_divergence = use_simple_divergence
-        self.precomputed_indicators = precomputed_indicators
-        self.oscillation_driven = oscillation_driven
-        self._oscillation_confirmed_periods: List[Tuple] = []
-
-        if self.validate_indicators:
-            try:
-                from .indicator_validator import IndicatorValidator
-            except ImportError:
-                from indicator_validator import IndicatorValidator
-            self.indicator_validator = IndicatorValidator()
-        else:
-            self.indicator_validator = None
 
     def _default_config(self) -> Dict:
         """保留通用回测/手续费默认配置。"""
@@ -80,10 +60,6 @@ class StrategyBase:
             stamp_duty_rate = self.config.get('stamp_duty_cn', 0.001)
             commission += transaction_amount * stamp_duty_rate
         return commission
-
-    def get_oscillation_confirmed_periods(self) -> List[Tuple]:
-        """返回可视化层使用的震荡确认区间缓存。"""
-        return self._oscillation_confirmed_periods
 
     def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Optional[Dict]:
         """通用回测实现，按收盘买卖并计入双边手续费。"""

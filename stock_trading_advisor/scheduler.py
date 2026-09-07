@@ -304,8 +304,6 @@ class TradingScheduler:
         try:
             # 初始化组件
             data_config = self.config.get('data_source', {})
-            strategy_config = self.config.get('strategy', {})
-
             fetcher = DataFetcher(
                 source=data_config.get('provider', app_config.DATA_SOURCE),
                 # 微信推送场景：为了确保信号完全基于最新网络数据，这里强制关闭缓存
@@ -319,7 +317,7 @@ class TradingScheduler:
 
             # 检测市场类型
             market = fetcher._detect_market(stock_code)
-            strategy = RSITrendStrategy(config=strategy_config, market=market)
+            strategy = RSITrendStrategy(market=market, stock_code=stock_code)
 
             # 获取数据（最近1年）
             result = fetcher.get_k_data(
@@ -355,14 +353,7 @@ class TradingScheduler:
                 return None
 
             # 执行策略分析
-            result = strategy.analyze(df)
-
-            # 解包结果
-            if isinstance(result, tuple):
-                df_analyzed, indicator_report = result
-            else:
-                df_analyzed = result
-                indicator_report = None
+            df_analyzed, _ = strategy.analyze(df)
 
             if df_analyzed is None:
                 return None

@@ -17,7 +17,6 @@ _cn_font_prop = None
 _selected_cn_font = None
 _selected_cn_font_path = None
 _LABEL_FONT_SIZE = 4.5
-_OSC_LABEL_FONT_SIZE = 4.0
 _LABEL_BOX_PAD = 0.04
 _MIN_LABEL_WIDTH = 16.0
 _MIN_LABEL_HEIGHT = 7.0
@@ -115,7 +114,7 @@ else:
 plt.rcParams['axes.unicode_minus'] = False
 
 
-def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='reports', oscillation_periods=None):
+def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='reports'):
     import pandas as pd
     import numpy as np
     if not os.path.exists(out_dir):
@@ -135,93 +134,7 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
     if date_series is not None:
         date_map = {str(pd.to_datetime(d).date()).strip(): idx for idx, d in enumerate(date_series)}
 
-    def resolve_position(ts, fallback_idx):
-        """将时间戳或索引转换为 df_plot 的位置索引"""
-        import numpy as np
-
-        def _locate(value):
-            try:
-                loc = df_plot.index.get_loc(value)
-                if isinstance(loc, slice):
-                    return loc.start
-                if isinstance(loc, (list, np.ndarray)):
-                    return int(loc[0]) if len(loc) > 0 else None
-                if isinstance(loc, (int, np.integer)):
-                    return int(loc)
-            except Exception:
-                return None
-            return None
-
-        if fallback_idx is not None:
-            pos = _locate(fallback_idx)
-            if pos is not None:
-                return pos
-            if isinstance(fallback_idx, (int, np.integer)) and 0 <= fallback_idx < len(df_plot):
-                return int(fallback_idx)
-
-        if ts is not None:
-            pos = _locate(ts)
-            if pos is not None:
-                return pos
-            if date_map is not None:
-                try:
-                    dt_key = str(pd.to_datetime(ts).date()).strip()
-                    mapped = date_map.get(dt_key)
-                    if mapped is not None:
-                        return int(mapped)
-                except Exception:
-                    return None
-        return None
-
     apds = []
-    parsed_oscillation_periods = []
-    if oscillation_periods:
-        for period in oscillation_periods:
-            start = end = score = None
-            raw_start_idx = raw_end_idx = None
-            if isinstance(period, dict):
-                start = period.get('start')
-                end = period.get('end')
-                score = period.get('score')
-                raw_start_idx = period.get('start_idx')
-                raw_end_idx = period.get('end_idx')
-            elif isinstance(period, (list, tuple)):
-                if len(period) >= 5:
-                    raw_start_idx, raw_end_idx, start, end = period[:4]
-                    score = period[4]
-                elif len(period) >= 2:
-                    start = period[0]
-                    end = period[1]
-                    score = period[2] if len(period) > 2 else None
-            if start is None or end is None:
-                continue
-            try:
-                start_ts = pd.to_datetime(start)
-                end_ts = pd.to_datetime(end)
-            except Exception:
-                continue
-            if pd.isna(start_ts) or pd.isna(end_ts):
-                continue
-            if end_ts <= start_ts:
-                continue
-            start_pos = resolve_position(start_ts, raw_start_idx)
-            end_pos = resolve_position(end_ts, raw_end_idx)
-            # 保留原始period中的trend信息
-            parsed_period = {
-                'start_ts': start_ts,
-                'end_ts': end_ts,
-                'score': score,
-                'start_pos': start_pos,
-                'end_pos': end_pos
-            }
-            # 复制trend/category字段（如果存在）
-            if isinstance(period, dict):
-                if 'trend' in period:
-                    parsed_period['trend'] = period['trend']
-                if 'category' in period:
-                    parsed_period['category'] = period['category']
-            parsed_oscillation_periods.append(parsed_period)
-
     def resolve_indices(indices, df_index):
         import pandas as pd
         if isinstance(indices, dict):
@@ -324,37 +237,6 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
         active_boxes.append(fallback)
         return 0.0, base_offset
 
-    def _assign_interval_levels(periods):
-        """根据区间长度与重叠情况分配垂直层级，避免互相遮挡。"""
-        sorted_periods = sorted(
-            [p for p in periods if p.get('_plot_start') is not None and p.get('_plot_end') is not None],
-            key=lambda item: item.get('_duration', 0),
-            reverse=True
-        )
-        level_slots = []
-        for period in sorted_periods:
-            start_pos = period.get('_plot_start')
-            end_pos = period.get('_plot_end')
-            if start_pos is None or end_pos is None:
-                continue
-            level_idx = 0
-            while True:
-                if level_idx >= len(level_slots):
-                    level_slots.append([])
-                conflict = False
-                for other in level_slots[level_idx]:
-                    if not (end_pos < other['_plot_start'] or start_pos > other['_plot_end']):
-                        conflict = True
-                        break
-                if conflict:
-                    level_idx += 1
-                    continue
-                level_slots[level_idx].append(period)
-                period['_level_idx'] = level_idx
-                break
-        return len(level_slots)
-
-
     buy_idx = sorted(
         buy_idx,
         key=lambda val: (_to_plot_x(val) if _to_plot_x(val) is not None else float('inf'))
@@ -363,25 +245,6 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
         sell_idx,
         key=lambda val: (_to_plot_x(val) if _to_plot_x(val) is not None else float('inf'))
     )
-    def _to_plot_x(value):
-        """将索引或时间戳转换为绘图坐标（mplfinance 使用的整数序号）"""
-        import numpy as np
-        if value is None:
-            return None
-        try:
-            loc = df_plot.index.get_loc(value)
-            if isinstance(loc, slice):
-                loc = loc.start
-            elif isinstance(loc, (list, np.ndarray)):
-                loc = loc[0] if len(loc) > 0 else None
-            if isinstance(loc, (int, np.integer)):
-                return float(loc)
-        except Exception:
-            pass
-        try:
-            return float(value)
-        except Exception:
-            return None
 
     buy_entries = []
     for dt in buy_idx:
@@ -416,110 +279,6 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
             'text': f'{date_str}\n{price:.2f}'
         })
 
-    osc_annotations = []
-    osc_text_offset = None
-    if parsed_oscillation_periods:
-        low_vals = df_plot['low'].to_numpy()
-        high_vals = df_plot['high'].to_numpy()
-        y_min = np.nanmin(low_vals) if len(low_vals) else 0.0
-        y_max = np.nanmax(high_vals) if len(high_vals) else 1.0
-        if not np.isfinite(y_min):
-            y_min = 0.0
-        if not np.isfinite(y_max):
-            y_max = max(1.0, y_min + 1.0)
-        price_span = max(y_max - y_min, 1e-3)
-        base_level = y_min + price_span * 0.02
-        default_line_step = price_span * 0.015
-        line_step = default_line_step
-        osc_text_offset = price_span * 0.01
-
-        valid_periods = []
-        total_points = len(df_plot)
-        close_values = None
-        if 'close' in df_plot.columns:
-            try:
-                close_values = df_plot['close'].to_numpy()
-            except Exception:
-                close_values = None
-        for period in parsed_oscillation_periods:
-            start_pos = period.get('start_pos')
-            end_pos = period.get('end_pos')
-            if start_pos is None or end_pos is None:
-                continue
-            start_pos = max(0, min(total_points - 1, int(start_pos)))
-            end_pos = max(0, min(total_points - 1, int(end_pos)))
-            if end_pos <= start_pos:
-                continue
-            period['_plot_start'] = start_pos
-            period['_plot_end'] = end_pos
-            period['_duration'] = end_pos - start_pos
-            trend = period.get('trend') or period.get('category')
-            if trend not in ('decline', 'range', 'down', 'neutral'):
-                trend = None
-            if trend is None and close_values is not None:
-                try:
-                    start_close = float(close_values[start_pos])
-                    end_close = float(close_values[end_pos])
-                except Exception:
-                    start_close = end_close = None
-                if start_close is not None and end_close is not None and np.isfinite(start_close) and abs(start_close) > 1e-6:
-                    pct_change = (end_close - start_close) / start_close
-                    if pct_change <= -0.02:
-                        trend = 'decline'
-                    else:
-                        trend = 'range'
-            if trend in ('down',):
-                trend = 'decline'
-            elif trend == 'neutral':
-                trend = 'range'
-            period['_trend'] = trend if trend else 'range'
-            valid_periods.append(period)
-
-        if valid_periods:
-            _assign_interval_levels(valid_periods)
-            max_level_idx = max((p.get('_level_idx', 0) for p in valid_periods), default=0)
-            if max_level_idx > 0:
-                available_span = price_span * 0.25
-                line_step = min(default_line_step, available_span / (max_level_idx + 1))
-            if line_step > 0:
-                osc_text_offset = min(osc_text_offset, line_step * 0.45)
-        range_colors = ['#ff9800', '#ff7043', '#ffb300', '#ff5722', '#ffa726']
-        decline_colors = ['#80d8ff', '#4fc3f7', '#29b6f6']
-        range_color_idx = 0
-        decline_color_idx = 0
-        for idx, period in enumerate(valid_periods):
-            start_pos = period.get('_plot_start')
-            end_pos = period.get('_plot_end')
-            level_idx = period.get('_level_idx', 0)
-            level = base_level + level_idx * line_step
-            if period.get('_trend') == 'decline':
-                color = decline_colors[decline_color_idx % len(decline_colors)]
-                decline_color_idx += 1
-            else:
-                color = range_colors[range_color_idx % len(range_colors)]
-                range_color_idx += 1
-            segment = np.full(len(df_plot), np.nan)
-            segment[start_pos:end_pos + 1] = level
-            apds.append(
-                mpf.make_addplot(
-                    segment,
-                    color=color,
-                    panel=0,
-                    width=4,
-                    secondary_y=False,
-                    alpha=0.85
-                )
-            )
-            osc_annotations.append((
-                start_pos,
-                end_pos,
-                level,
-                period.get('score'),
-                period.get('start_ts'),
-                period.get('end_ts'),
-                color,
-                period.get('_trend', 'range')
-            ))
     # 绘图
     # 自定义style，细化上下影线（wick），通过 rc dict 设置宽度，兼容 mplfinance 0.12.10b0
     # 使用更细的上下影线和蜡烛线宽度，SVG放大依然清晰
@@ -659,68 +418,6 @@ def plot_kline_with_signals(df, buy_signals, sell_signals, code, out_dir='report
                     zorder=20,
                     annotation_clip=False,
                     clip_on=False)
-
-    if osc_annotations and osc_text_offset is not None:
-        def _format_ts(ts):
-            try:
-                return pd.to_datetime(ts).strftime('%Y-%m-%d')
-            except Exception:
-                return str(ts) if ts is not None else ''
-
-        for start_pos, end_pos, level, score, start_ts, end_ts, color, trend in osc_annotations:
-            midpoint_pos = start_pos + (end_pos - start_pos) // 2
-            midpoint_pos = max(0, min(len(df_plot) - 1, midpoint_pos))
-            midpoint_x = float(midpoint_pos)
-            label = "震荡下跌" if trend == 'decline' else "震荡区间"
-            if score is not None:
-                try:
-                    label = f"{label}({float(score):.1f})"
-                except Exception:
-                    pass
-            ax.text(
-                midpoint_x,
-                level + osc_text_offset,
-                label,
-                color=color,
-                ha='center',
-                va='bottom',
-                fontsize=_OSC_LABEL_FONT_SIZE,
-                bbox=dict(boxstyle='round,pad={}'.format(_LABEL_BOX_PAD), fc='white', ec=color, alpha=0.75),
-                fontproperties=_cn_font_prop
-            )
-            start_label = _format_ts(start_ts)
-            end_label = _format_ts(end_ts)
-            y_text = level + osc_text_offset * 0.4
-            # 同时展示"确认时间/终止时间"文字和具体日期
-            # 注意：这里的start_ts是震荡确认时间（逐日判断确认的时间点），不是回溯的起始时间
-            if start_label:
-                start_x = float(start_pos)
-                start_text = f"震荡确认\n{start_label}"
-                ax.text(
-                    start_x,
-                    y_text,
-                    start_text,
-                    color=color,
-                    ha='center',
-                    va='bottom',
-                    fontsize=_OSC_LABEL_FONT_SIZE,
-                    bbox=dict(boxstyle='round,pad={}'.format(_LABEL_BOX_PAD), fc='white', ec=color, alpha=0.65),
-                    fontproperties=_cn_font_prop
-                )
-            if end_label:
-                end_x = float(end_pos)
-                end_text = f"震荡结束\n{end_label}"
-                ax.text(
-                    end_x,
-                    y_text,
-                    end_text,
-                    color=color,
-                    ha='center',
-                    va='bottom',
-                    fontsize=_OSC_LABEL_FONT_SIZE,
-                    bbox=dict(boxstyle='round,pad={}'.format(_LABEL_BOX_PAD), fc='white', ec=color, alpha=0.65),
-                    fontproperties=_cn_font_prop
-                )
 
     svg_path = os.path.join(out_dir, f'kline_{code}.svg')
     fig.savefig(svg_path, format='svg')

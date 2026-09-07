@@ -59,13 +59,24 @@ class TestLookAheadBiasSmart(unittest.TestCase):
             {signal_name: [索引列表]}
         """
         signal_points = {}
+        transition_cols = {
+            'rsi_momentum_entry',
+            'discount_zone_entry',
+            'impulse_trend',
+            'exit_ma_filter_break',
+        }
 
         for col in signal_cols:
             if col not in result.columns:
                 continue
 
-            # 找出该列中所有信号点（值为True或1的位置）
-            indices = result[result[col] == 1].index.tolist()
+            if col in transition_cols:
+                values = result[col].fillna(False).astype(bool)
+                changed = values.ne(values.shift(1, fill_value=False))
+                indices = result.index[changed].tolist()
+            else:
+                # 成交信号逐点全覆盖；连续状态只需覆盖状态边界。
+                indices = result[result[col] == 1].index.tolist()
 
             # 过滤掉前180天（策略需要的最少数据）
             indices = [i for i in indices if i >= 180]
@@ -76,7 +87,8 @@ class TestLookAheadBiasSmart(unittest.TestCase):
 
     def _get_quiet_periods(self, signal_points: Dict[str, List[int]],
                           total_length: int,
-                          sample_count: int = None) -> List[int]:
+                          sample_count: int = None,
+                          random_seed: str = '') -> List[int]:
         """
         获取平静期（无信号期间）的随机采样点
 
@@ -125,10 +137,10 @@ class TestLookAheadBiasSmart(unittest.TestCase):
 
         # 随机采样：采样数量等于信号点数量，但不超过平静期总数
         sample_size = min(sample_count, len(quiet_periods))
-        sample_size = max(5, sample_size)  # 至少采样5个点
+        sample_size = min(max(5, sample_size), len(quiet_periods))
 
         if sample_size > 0:
-            return random.sample(quiet_periods, sample_size)
+            return random.Random(random_seed).sample(quiet_periods, sample_size)
         else:
             return []
 
@@ -171,63 +183,34 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         signal_cols = [
             'entry_signal',
             'exit_signal',
-            'gc_extreme_chase_block',
-            'zigzag_entry',
-            'zigzag_fixed_entry',
-            'zigzag_ddb_entry',
-            'zigzag_dc_entry',
-            'elliott_wave_entry',
-            'zigzag_prob_entry',
-            'wave_entry',
-            'wave_start_signal',
-            'wave_impulse_signal',
-            'wave_retest_signal',
-            'wave_end_signal',
-            'wave_exit_takeover_block',
-            'zigzag_trend_exit_softconfirm_block',
-            'hard_stop_capitulation_softconfirm_block',
-            'hard_stop_mainwave_softconfirm_block',
-            'w_bottom_signal',
-            'bullish_divergence_signal',
-            'sideways_entry',
+            'stop_loss_exit',
+            'profit_target_exit',
             'rsi_momentum_entry',
-            'slow_bull_rotation_entry',
-            'slow_bull_mtop_reclaim_entry',
-            'slow_bull_mtop_reclaim_extended_entry',
-            'slow_bull_ma_retest_entry',
-            'banklike_ma_pullback_entry',
-            'slow_bull_rotation_exit_signal',
+            'discount_zone_entry',
+            'impulse_trend',
+            'exit_ma_filter_break',
         ]
 
         # 用于比较的列（包括中间状态，用于检测未来函数）
         comparison_cols = signal_cols + [
-            'mtf_bias',
-            'direction',
-            'is_sideways',
-            'aroon_osc',
+            'buy_signal',
+            'entry_reason',
+            'exit_reason',
+            'standard_entry_raw',
+            'trend_direction',
+            'golden_cross',
+            'rsi_relaxed_condition',
             'atr_expanding',
             'rsi_momentum',
-            'zigzag_prob_score',
-            'zigzag_vote_count',
-            'wave_active_signal',
-            'wave_active_age',
-            'wave_force_exit_signal',
-            'wave_takeover_existing_position',
-            'banklike_slow_switch_mask',
-            'golden_cross_slow_switch_mask',
+            'hurst_exponent',
+            'ultra_long_slope',
+            'ultra_long_channel_pearson',
+            'exit_strong_ma_trend',
+            'exit_ma_confirm_below_streak',
         ]
 
         # 提取信号点
         signal_points = self._extract_signal_points(result_full, signal_cols)
-
-        # 提取震荡区间边界点（is_sideways 从 False→True 和 True→False 的转换点）
-        if 'is_sideways' in result_full.columns:
-            sideways_vals = result_full['is_sideways'].astype(int).values
-            boundary_indices = []
-            for i in range(181, len(sideways_vals)):
-                if sideways_vals[i] != sideways_vals[i - 1]:
-                    boundary_indices.append(i)
-            signal_points['sideways_boundary'] = boundary_indices
 
         total_signal_points = sum(len(indices) for indices in signal_points.values())
 
@@ -245,7 +228,8 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         # 平静期采样（数量等于信号点数）
         quiet_samples = self._get_quiet_periods(
             signal_points=signal_points,
-            total_length=len(real_data)
+            total_length=len(real_data),
+            random_seed=f'{stock_code}:{len(real_data)}',
             # 默认采样数量 = 信号点总数
         )
 
@@ -300,11 +284,46 @@ class TestLookAheadBiasSmart(unittest.TestCase):
                 partial_signal = result_partial[col].iloc[-1]
                 full_signal = full_signals[col][test_idx]
 
-                if partial_signal != full_signal:
+                both_missing = pd.isna(partial_signal) and pd.isna(full_signal)
+                if both_missing:
+                    continue
+                if isinstance(partial_signal, (float, np.floating)) and isinstance(
+                    full_signal, (float, np.floating)
+                ):
+                    equal = np.isclose(partial_signal, full_signal, equal_nan=True)
+                else:
+                    equal = partial_signal == full_signal
+
+                if not equal:
                     differences[col] = {
                         'partial': partial_signal,
                         'full': full_signal
                     }
+
+            partial_backtest = strategy.backtest(result_partial.copy())
+            full_prefix_backtest = strategy_full.backtest(
+                result_full.iloc[:test_idx + 1].copy()
+            )
+
+            def trade_fingerprint(backtest_result):
+                return [
+                    (
+                        str(trade['buy_date']),
+                        round(float(trade['buy_price']), 10),
+                        str(trade['sell_date']),
+                        round(float(trade['sell_price']), 10),
+                        round(float(trade['profit_rate']), 12),
+                    )
+                    for trade in backtest_result.get('trades', [])
+                ]
+
+            partial_trades = trade_fingerprint(partial_backtest)
+            full_prefix_trades = trade_fingerprint(full_prefix_backtest)
+            if partial_trades != full_prefix_trades:
+                differences['trade_ledger'] = {
+                    'partial': partial_trades,
+                    'full': full_prefix_trades,
+                }
 
             if differences:
                 result = {
@@ -396,15 +415,15 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         self._test_stock('300274', market='CN')
 
     def test_000001(self):
-        """测试A股000001，覆盖 banklike / slow_bull 新分支"""
+        """测试A股000001，覆盖低波动与金融风格样本。"""
         self._test_stock('000001', market='CN')
 
     def test_600775(self):
-        """测试A股600775，覆盖 gc_extreme_chase_block 新分支"""
+        """测试A股600775，覆盖高波动成长样本。"""
         self._test_stock('600775', market='CN')
 
     def test_00512(self):
-        """测试港股00512，覆盖 zigzag_trend_exit_softconfirm 新分支"""
+        """测试港股00512，覆盖港股趋势退出路径。"""
         self._test_stock('00512', market='HK')
 
 
@@ -634,10 +653,6 @@ class TestPitStageLookahead(unittest.TestCase):
 
 
 STRATEGY_TEST_NAMES = [
-    'test_02367',
-    'test_300750',
-    'test_300274',
-    'test_000001',
     'test_600775',
     'test_00512',
 ]

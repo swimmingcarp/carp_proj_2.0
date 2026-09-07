@@ -1,38 +1,35 @@
-# 未来函数检测测试
+# 回测时点与未来函数测试
 
-## 运行测试
+## 运行
 
 ```bash
-python -m stock_trading_advisor.tests.test_lookahead_bias_smart
+python3 stock_trading_advisor/tests/test_lookahead_bias_smart.py
 ```
 
-## 手工验收流程（不使用额外 gate 脚本）
+## 覆盖范围
 
-1. 跑当前 backtest_data 全量回测（`--report --new-strategy`，以报告中的实际股票数为准；当前基准为 `250-stock`）
-2. 对比上一版 baseline commit 报告：`avg_return / tPF / median / losers`
-3. 跑未来函数检测并确保 `0` 失败
-4. 只有“指标满足保留标准 + 未来函数 0 失败”才创建 commit
+`test_lookahead_bias_smart.py` 使用 `data/backtest_data/*_hfq.csv` 中的代表性 A/H 股：
 
-## 测试说明
+- 先用完整历史计算参照结果。
+- 完整覆盖历史中的买卖成交点；连续中间状态覆盖每个状态切换边界，并抽取等量、可重复的静默期样本。
+- 每个测试点只向策略提供截至当日的前缀数据，并比较买点、卖点、持仓、原因、关键中间状态和截至该日的完整交易账本。
+- 任意差异都视为可能使用未来数据，要求 0 差异。
+- 展示用 `personality/pit_stage.py` 流水线单独测试，不与交易策略混为一体。
 
-- 使用真实离线回测数据进行测试
-  - 当前 `data_source.adjust` 对应口径的 `02367` 回测数据文件 - 港股（无震荡入场信号，验证基础策略）
-  - 当前 `data_source.adjust` 对应口径的 `300750` 回测数据文件 - A股（1个震荡入场信号）
-  - 当前 `data_source.adjust` 对应口径的 `300274` 回测数据文件 - A股（2个震荡入场信号）
-- 采用智能采样：100%覆盖信号点 + 随机采样平静期
-- 检测策略是否使用了未来数据（Look-Ahead Bias）
+策略改动时先找出实际受影响股票，再选择能覆盖本次每条入场、退出和状态转换路径的最小 A/H 股集合。现有固定用例只能在确实受影响且覆盖路径时复用；新增路径必须先扩展 `signal_cols`、`comparison_cols` 和真实触发股票，不能直接沿用旧结果验收。
 
-## 检测覆盖范围
+当前单一策略候选默认使用 `600775` 与 `00512`：二者都受完整策略替换影响，合并后实际触发 RSI cross、trend continuation、controlled discount、momentum recovery 四条入场路径，以及 hard stop、confirmed trailing、MA trend、impulse protection、MA13 distribution、delayed trend 六条退出路径。这个最小集合只对当前路径集合成立。
 
-### 买卖信号点
-- `entry_signal` - 标准入场信号
-- `exit_signal` - 标准退出信号
-- `w_bottom_signal` - W底形态信号
-- `bullish_divergence_signal` - 底背离信号
-- `sideways_entry` - 震荡市场入场信号（Aroon策略）
+## 手工验收
 
-### 中间状态
-- `mtf_bias` - 多时间框架偏差
-- `direction` - 趋势方向
-- `is_sideways` - 震荡市场识别（Aroon Oscillator）
-- `aroon_osc` - Aroon震荡指标值
+1. 运行少量 A/H 股离线报告 smoke test。
+2. 运行逐日前缀测试并确保 0 失败。
+3. 运行全部 `backtest_data` 正式报告。
+4. 对比 `median / trimmed mean / P25/P75 / 盈利股票占比 / 同公式tPF / 金额PF / equal-weight CAGR/DD/Sharpe / trades`，并分别检查 OLD128、NEW122 和验证集；算术均值只作右尾辅助观察。
+5. 只有绩效满足保留标准且未来函数 0 失败，才允许建立新 baseline。
+
+正式回测命令：
+
+```bash
+python3 stock_trading_advisor/main.py --report
+```

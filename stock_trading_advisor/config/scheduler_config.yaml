@@ -73,31 +73,6 @@ data_source:
   provider: akshare                # 数据提供商
   cache_enabled: true              # 是否启用缓存
 
-# 策略配置（与主程序共享）
-strategy:
-  # RSI策略参数
-  rsi:
-    enabled: true
-    period: 6
-    oversold: 20
-    overbought: 80
-
-  # MACD策略参数
-  macd:
-    enabled: true
-    fast_period: 12
-    slow_period: 26
-    signal_period: 9
-
-  # 背离检测参数
-  divergence:
-    enabled: true
-    lookback_period: 20
-
-  # 其他参数
-  stop_loss_pct: 0.08             # 止损百分比
-  take_profit_pct: 0.15           # 止盈百分比
-
 # 日志配置
 logging:
   level: INFO                      # 日志级别：DEBUG, INFO, WARNING, ERROR

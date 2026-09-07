@@ -38,13 +38,13 @@ cd stock_trading_advisor
 ## 功能特性
 
 ✨ **核心功能**
-- 📈 **多家族交易策略**：覆盖 `RSI` 趋势跟随、`MA` 回踩、慢牛回踩、`runner breakout`、`trend reclaim` 等不同买点家族
-- 🧠 **自适应策略路由**：基于趋势强度、风险状态、runner 画像，在不同市场结构下切换更合适的入场与持有逻辑
+- 📈 **固定策略对照**：commit `a8dd63a` 及指定报告永久保留为原始 baseline
+- 🔍 **候选隔离验证**：策略替换先在独立环境验证，未通过时不得覆盖正式运行路径
 - 💹 **单股分析 + 全量离线回测**：既支持单只股票分析，也支持对离线回测股票池生成完整批量报告
-- 🧾 **交易级复盘能力**：输出买卖点、交易统计、收益/回撤/胜率等核心指标，方便定位坏簇和修策略
+- 🧾 **固定离线基准**：以 `codes_250.txt`、后复权数据和指定基线报告做同口径比较
 - 🖼️ **K 线图与买卖点标注**：支持生成带买卖点的图表用于人工复盘
 - 📱 **批量分析与定时提醒**：支持固定时间自动运行，并通过企业微信推送结果
-- ⚙️ **配置驱动**：核心参数均可通过 `config.yaml` 调整，便于研究和迭代
+- ⚙️ **稳定运行配置**：`config.yaml` 管理数据源、回测、报告和运行方式；策略不再暴露扫参开关
 
 ⚡ **性能优势**
 - 🚀 **离线回测数据优先**：批量回测直接复用 `data/backtest_data`，适合高频研究和反复验证
@@ -77,18 +77,16 @@ pip install -r stock_trading_advisor/requirements.txt -i https://pypi.tuna.tsing
 ```
 
 ### 4. 配置参数（可选）
-编辑 `stock_trading_advisor/config/config.yaml` 修改策略参数
+编辑 `stock_trading_advisor/config/config.yaml` 修改数据源、回测资金和报告运行参数
 
 ### 5. 运行程序
 ```bash
 # 分析单只股票
-python3 stock_trading_advisor/main.py -s 000001 --new-strategy
+python3 stock_trading_advisor/main.py -s 000001
 
 # 或者使用完整命令
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279 --new-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279
 ```
-
-**备注：** `--new-strategy` 目前是兼容保留参数，当前主线命令即使不显式传入，也会走我们现在使用的这套策略。文档里保留它，是为了和历史命令、回测记录保持一致。
 
 ## 使用方法
 
@@ -96,40 +94,40 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 001279 --ne
 
 ```bash
 # 激活虚拟环境并分析平安银行（000001）
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --new-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001
 
 # 分析贵州茅台（600519）
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 600519 --new-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 600519
 
 # 不显示回测结果
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --new-strategy --no-backtest
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --no-backtest
 
 # 使用当前主线策略分析单只股票
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293 --new-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 300293
 
 # 对离线回测数据中的所有股票进行回测并输出报告
 # 默认就是高并发静默模式：多进程 + 自动按 min(股票数, CPU核心数) 分配 worker + 不逐只刷屏
-source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report
 
 # 显式指定并发（示例：使用 16 个进程）
-source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=process STOCK_ADVISOR_REPORT_WORKERS=16 python3 stock_trading_advisor/main.py --report --new-strategy
+source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=process STOCK_ADVISOR_REPORT_WORKERS=16 python3 stock_trading_advisor/main.py --report
 
 # 如果需要，也可以切到多线程执行器
-source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=thread STOCK_ADVISOR_REPORT_WORKERS=16 python3 stock_trading_advisor/main.py --report --new-strategy
+source venv/bin/activate && STOCK_ADVISOR_REPORT_EXECUTOR=thread STOCK_ADVISOR_REPORT_WORKERS=16 python3 stock_trading_advisor/main.py --report
 
 # 只对指定股票生成离线报告（需已有离线回测数据）
-source venv/bin/activate && python3 stock_trading_advisor/main.py --report --new-strategy -b 300293 300274 300750 605117
+source venv/bin/activate && python3 stock_trading_advisor/main.py --report -b 300293 300274 300750 605117
 
 # 生成K线图并标注买卖点
-source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --new-strategy --chart-generation
+source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --chart-generation
 # 图片将保存到 reports/kline_000001.png
 ```
 
 使用 `--report` 时，系统会将完整的批量回测明细保存到 `stock_trading_advisor/reports/offline_backtest_report_YYYYMMDD_HHMMSS.txt`（按时间戳命名），每只股票都会包含最新价格、历史交易对收益表以及交易统计，方便留档和复盘。
 
-`--report` 为纯离线回测口径：个股数据只读取 `stock_trading_advisor/data/backtest_data/*_hfq.csv`，并会禁用策略内部指数 regime 的网络加载，避免正式报告结果被实时外部数据影响。普通单股分析和实际买卖信号默认使用前复权（`qfq`），正式离线回测基准使用后复权（`hfq`）。`stock_trading_advisor/data/cache/` 只作为普通下载缓存使用，避免最新下载数据混入正式回测数据。
+`--report` 为纯离线回测口径：个股数据只读取 `stock_trading_advisor/data/backtest_data/*_hfq.csv`。当前策略只使用传入的个股日线，不存在指数或其他外部行情加载路径。普通单股分析和实际买卖信号默认使用前复权（`qfq`），正式离线回测基准使用后复权（`hfq`）。`stock_trading_advisor/data/cache/` 只作为普通下载缓存使用，避免最新下载数据混入正式回测数据。
 
-当前 250 只离线回测基准股票池、质量审计和基准报告指标见 `stock_trading_advisor/backtest_benchmark/`。
+当前固定基线是 `codes_250.txt`；额外 55 只港股仅作为候选验证集，`codes_305.txt` 是完整审计集合。股票池划分、质量审计和基准报告指标见 `stock_trading_advisor/backtest_benchmark/`。
 
 `--report` 现在默认使用高并发静默模式：默认执行器为多进程，默认 worker 数为 `min(目标股票数量, CPU 核心数)`。系统会将 `OMP/OPENBLAS/MKL/NUMEXPR` 线程压到 `1`，避免每个子进程再额外开线程导致过度并行。可通过环境变量 `STOCK_ADVISOR_REPORT_EXECUTOR`（`process`/`thread`）和 `STOCK_ADVISOR_REPORT_WORKERS` 覆写执行器与并发数；如需恢复逐只刷屏，可把 `report.verbose` 改回 `true`。
 
@@ -141,22 +139,21 @@ source venv/bin/activate && python3 stock_trading_advisor/main.py -s 000001 --ne
 当前价格: 12.35
 ============================================================
 
-📈 【买入信号】 [███░░]
-信号强度: 3/5
+📈 【买入信号】 [████░]
+信号强度: 4/5
 
-理由: K值处于超卖区域(38.5), 中期趋势向上
+理由: RSI与ATR多头共振
 
 --- 技术指标 ---
-KDJ - K: 38.50, D: 42.30
-MACD: 0.0234, DIFF: 0.1567
-MA16: 12.10
-MA45: 11.95
+RSI快线: 48.50, RSI慢线: 42.30, 差值: 6.20
+ATR趋势: 多头
+退出参考价: 由当前策略状态计算
 ============================================================
 
 📊 回测结果
 ============================================================
 初始资金: ¥10,000.00
-最终资金: ¥12,456.78
+最终权益: ¥12,456.78
 总收益率: 24.57%
 最大回撤: -8.23%
 夏普比率: 1.45
@@ -187,10 +184,10 @@ MA45: 11.95
 
 ```bash
 # 分析多只股票
-source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 600519 601318 --new-strategy
+source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 600519 601318
 
 # 使用自定义配置
-source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 --new-strategy -c stock_trading_advisor/config/your_config.yaml
+source venv/bin/activate && python3 stock_trading_advisor/main.py -b 000001 000002 -c stock_trading_advisor/config/your_config.yaml
 ```
 
 
@@ -298,19 +295,16 @@ python3 scheduler.py --run-now
 ```bash
 stock_trading_advisor/
 ├── src/
-│   ├── new_strategy.py        # 当前主线策略（多家族 + adaptive runner/reclaim routing）
-│   ├── strategy.py            # 旧版策略实现
-│   ├── factor_library.py      # 因子库（研究/筛选/策略辅助）
+│   ├── new_strategy.py        # 唯一的 RSI/ATR 趋势策略
+│   ├── strategy.py            # 基础策略与回测接口
 │   ├── indicators.py          # 指标计算
-│   ├── divergence.py          # 顶底背离检测
 │   ├── analyzer.py            # 单股分析与结果整合
 │   ├── plotter.py             # K线图与买卖点标注
 │   ├── data_fetcher.py        # 数据获取
 │   ├── data_validator.py      # 数据校验
-│   ├── indicator_validator.py # 指标/未来函数校验辅助
 │   ├── market_hours.py        # 交易时间检测
 │   ├── wechat_notifier.py     # 微信通知
-│   └── personality/           # 走势画像 / 路由辅助模块
+│   └── personality/           # 报告中的趋势时间线分析模块
 │       ├── classifier.py
 │       ├── segmenter.py
 │       └── pit_stage.py
@@ -330,7 +324,7 @@ stock_trading_advisor/
 ├── logs/                      # 运行日志
 ├── tests/
 │   ├── README.md
-│   └── test_lookahead_bias_smart.py  # 未来函数/截断一致性检测
+│   └── test_lookahead_bias_smart.py  # 逐日前缀未来函数检测
 ├── main.py                    # CLI 入口
 ├── scheduler.py               # 定时调度器
 ├── manage_scheduler.sh        # systemd 管理脚本
@@ -344,61 +338,40 @@ stock_trading_advisor/
 
 ### Current Main Strategy（当前主线策略）
 
-当前主线不是单一的 `KDJ + 均线` 规则，而是一个**多家族入场 + 动态路由 + 家族化退出**的组合系统。
+commit `a8dd63a` 和 `offline_backtest_report_20260906_232005.txt` 永久保留为原始对照；Git tag `strategy-benchmark-20260907-stage1` 保留第一阶段手术结果。当前主线是在二者之上完成的单策略重构，不能用它覆盖原始 baseline 的身份。
 
-#### 主要入场家族
+#### 当前状态
 
-1. **趋势跟随家族**
-   - `RSI金叉`
-   - `RSI多头延续`
-   - `RSI趋势买入`
-   - `RSI动量加速`
-
-2. **趋势回踩 / 慢趋势家族**
-   - `MA回踩因子`
-   - `慢牛回踩因子`
-   - `趋势再突破`
-   - `趋势跑者突破`
-
-3. **反转 / 低吸家族**
-   - `底背离信号`
-   - `W底形态`
-   - `折价区补仓`
-   - `跳空回补`
-   - `Aroon震荡入场`
-   - `双通道信号`
+- 只保留一个 RSI/ATR 趋势策略，不再并联 divergence、W 底、双通道、慢牛、MA60/banklike、ZigZag/wave、extended hold 或再入场家族。
+- 买点由 RSI `30/65` 趋势、ATR 方向、Heikin-Ashi、成交量和追高约束共同形成；折价买点在高持续性趋势中被阻止。
+- 卖点只保留统一持仓状态机中的硬止损、确认式 trailing、趋势转空、趋势保护和一个放量偏离退出。
+- 历史策略开关、家族专用配置、在线 regime/adaptive stop 和旧 CLI 兼容入口均已删除。
+- 当前单策略 baseline tag 为 `strategy-benchmark-20260907-single-strategy`；正式报告为 `offline_backtest_report_20260907_214359.txt`（DEV250）和 `offline_backtest_report_20260907_214817.txt`（ALL305）。
+- ALL305 五项主指标为平均回撤 `-40.89%`、盈利股票占比 `71.48%`、收益中位数 `38.04%`、平均胜率 `36.40%`、同公式盈亏比 `1.87`；平均收益 `130.79%` 只作右尾辅助指标。
+- 该 baseline 除平均胜率外弱于受保护 DEV250 原始基线，建立理由是源码由 `20,322` 行降至 `740` 行，以及 OLD128/NEW122 的等权组合 CAGR 差距由 `9.03` 收窄至 `3.20` 个百分点；这不是“历史收益全面提升”。
 
 #### 核心思想
 
-- **按市场结构选交易家族**：不是所有股票、所有阶段都用同一种买点。
-- **按走势画像做动态放行**：系统会结合趋势强度、风险分数、runner 画像来决定哪些信号更值得放行。
-- **买卖尽量同家族接管**：例如慢牛回踩单、runner/reclaim 单，会尽量走自己的持有与退出逻辑，减少被旧退出链误伤。
-- **保留窄修复机制**：对真实坏簇做局部修正，比如 `continuation_weak`、`golden_cross_weak`、`extended_hold` 的定点修复。
+- 正式结果先与固定基线同口径比较，再检查 OLD128、NEW122、A/H 股和新增 55 股集合。
+- 实验候选不得直接覆盖正式策略；失败候选必须完整撤回。
+- 假设尾盘最后一分钟形成信号并成交，日线回测统一用当日收盘价近似该时点价格。
+- 该口径不表示可以在收盘后使用已知完整日线结果回到收盘价成交；分钟内误差需要分钟数据另行验证。
 
 #### 退出与风控
 
-系统不是单一止损线，而是多层退出叠加：
-
-- 硬止损 / 动态止损
-- trailing stop / gain protection
-- `extended_hold`
-- `runner_hold_guard`
-- `structural_trend_hold`
-- 慢牛单专属退出链
-- 交易后冷却与家族一致性保护
-
-也就是说，强趋势单会尽量少被过早洗掉，弱势单则会更快止损或退出。
+- 风控参数保留三类入场风险档位；统一风控和粗两级风控在最终组合的 DEV250、ALL305 与新增 55 股集合均出现一致退步，因此本轮没有为了少几个参数强行替换。
+- 这些档位是待持续验证的有限复杂度，不是已证明的最优参数；新研究不得继续增加家族、路由、修复或强制再入场补丁。
 
 ## 配置参数
 
 主配置在 [stock_trading_advisor/config/config.yaml](stock_trading_advisor/config/config.yaml)。
 
-当前参数规模已经比较大，实际调整时建议优先看：
-
-- `strategy`：主策略开关与风控参数
 - `report`：离线批量回测配置
-- `scheduler`：定时任务和提醒配置
+- `backtest`：初始资金和展示性日期配置
 - `data_source`：数据源配置
+- `analysis`：图表和回测展示配置
+
+策略阈值固定在源码中，配置文件不提供策略开关或参数扫描入口。
 
 一个更贴近当前使用方式的示例：
 
@@ -410,10 +383,6 @@ data_source:
 
 report:
   verbose: false
-
-# 当前主线参数主要定义在 src/new_strategy.py 的默认配置中；
-# config.yaml 更适合做数据源、报告模式、调度等外层配置。
-strategy: {}
 ```
 
 ## 注意事项

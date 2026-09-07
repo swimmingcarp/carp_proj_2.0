@@ -21,6 +21,3 @@ schedule>=1.2.0
 # 可选：可视化
 matplotlib
 mplfinance
-
-# 时间序列分析
-statsmodels>=0.14.0

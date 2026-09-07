@@ -15,13 +15,6 @@ from .indicators import (
     calculate_all_indicators
 )
 
-from .divergence import (
-    get_bottom_divergence_index,
-    get_peak_divergence_index,
-    get_peak_divergence_index_kdj,
-    get_peak_divergence_index_kd_variant
-)
-
 from .data_fetcher import DataFetcher
 from .new_strategy import RSITrendStrategy
 from .analyzer import SignalAnalyzer
@@ -31,6 +24,4 @@ __all__ = [
     'RSITrendStrategy',
     'SignalAnalyzer',
     'calculate_all_indicators',
-    'get_bottom_divergence_index',
-    'get_peak_divergence_index',
 ]

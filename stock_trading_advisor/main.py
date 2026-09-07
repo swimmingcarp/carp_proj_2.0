@@ -6,7 +6,6 @@ Stock Trading Advisor - 主程序
 """
 
 import argparse
-from copy import deepcopy
 import os
 import sys
 import yaml
@@ -133,6 +132,47 @@ def normalize_stock_code(code: str) -> str:
     return code.upper()
 
 
+def calculate_mark_to_market_curve(
+    df: pd.DataFrame,
+    strategy: RSITrendStrategy,
+    initial_capital: float,
+) -> Dict[str, List]:
+    """Build a close-to-close equity curve while preserving legacy trade accounting."""
+    capital = float(initial_capital)
+    shares = 0.0
+    buy_commission = 0.0
+    holding = False
+    equity = []
+    prices = df['close'].to_numpy(dtype=float)
+    signals = df['buy_signal'].to_numpy()
+
+    for signal, price in zip(signals, prices):
+        if signal == 1 and not holding:
+            shares = capital / price
+            buy_commission = strategy._calculate_commission(capital, is_buy=True)
+            holding = True
+        elif signal == 0 and holding:
+            transaction_amount = shares * price
+            sell_commission = strategy._calculate_commission(transaction_amount, is_buy=False)
+            capital = transaction_amount - buy_commission - sell_commission
+            shares = 0.0
+            buy_commission = 0.0
+            holding = False
+
+        current_equity = shares * price - buy_commission if holding else capital
+        equity.append(float(current_equity / initial_capital))
+
+    if holding and equity:
+        transaction_amount = shares * prices[-1]
+        sell_commission = strategy._calculate_commission(transaction_amount, is_buy=False)
+        equity[-1] = float(
+            (transaction_amount - buy_commission - sell_commission) / initial_capital
+        )
+
+    dates = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').tolist()
+    return {'dates': dates, 'equity': equity}
+
+
 def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                   df_override: Optional[pd.DataFrame] = None,
                   quiet: bool = False, chart_generation: bool = False) -> Optional[Dict]:
@@ -155,7 +195,6 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
 
     # 1. 初始化组件
     data_config = config.get('data_source', {})
-    strategy_config = config.get('strategy', {})
     backtest_config = config.get('backtest', {})
 
     fetcher = None
@@ -195,7 +234,6 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
 
     echo("使用RSI趋势策略 (RSITrendStrategy)")
     strategy = RSITrendStrategy(
-        config=strategy_config,
         market=market,
         stock_code=stock_code
     )
@@ -222,26 +260,11 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
 
     echo("正在分析...")
     try:
-        result = strategy.analyze(df)
-        if isinstance(result, tuple):
-            df_analyzed, indicator_report = result
-        else:
-            df_analyzed = result
-            indicator_report = None
+        df_analyzed, _ = strategy.analyze(df)
     except Exception as e:
         logger.error(f"策略分析失败: {e}", exc_info=True)
         echo(f"❌ 分析失败: {e}")
         return None
-
-    if indicator_report:
-        if indicator_report.get('status') == 'FAILED':
-            echo(strategy.indicator_validator.format_report(indicator_report))
-            echo("⚠️  技术指标存在异常，建议谨慎使用分析结果")
-        elif indicator_report.get('status') == 'WARNING':
-            echo(strategy.indicator_validator.format_report(indicator_report))
-        else:
-            indicators_str = ', '.join(indicator_report.get('indicators_checked', []))
-            echo(f"✓ 技术指标验证通过 ({indicators_str})")
 
     if df_analyzed is None:
         echo("❌ 分析失败（可能触发跌停保护）")
@@ -263,6 +286,7 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
 
     backtest_result = None
     trading_signals = None
+    mark_to_market_curve = None
     if show_backtest:
         echo("正在回测...")
         initial_capital = backtest_config.get('initial_capital', 10000)
@@ -276,6 +300,12 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
                 df_analyzed,
                 initial_capital=initial_capital
             )
+            if df_override is not None:
+                mark_to_market_curve = calculate_mark_to_market_curve(
+                    df_analyzed,
+                    strategy,
+                    initial_capital,
+                )
 
             if not quiet:
                 echo(analyzer.format_backtest_result(backtest_result))
@@ -314,88 +344,12 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
             ]
             sell_idx = extract_dates(sell_points_for_plot)
 
-        oscillation_periods_for_plot = []
-        # 使用震荡确认时间（逐日判断的结果，无前瞻性偏差）
-        raw_periods = strategy.get_oscillation_confirmed_periods()
-
-        if raw_periods:
-            def _ensure_timestamp(value):
-                if value is None:
-                    return None
-                try:
-                    return pd.to_datetime(value)
-                except Exception:
-                    return None
-
-            total_len = len(df_analyzed)
-            has_date_col = 'date' in df_analyzed.columns
-
-            for period in raw_periods:
-                # 震荡确认时间格式: (confirmed_idx, end_idx, confirmed_date, end_date)
-                if not isinstance(period, (list, tuple)) or len(period) < 4:
-                    continue
-
-                confirmed_idx, end_idx, confirmed_date, end_date = period[:4]
-                # 使用确认时间作为起始点（而不是回溯的起始时间）
-                start_ts = _ensure_timestamp(confirmed_date)
-                end_ts = _ensure_timestamp(end_date)
-
-                if has_date_col:
-                    if start_ts is None and isinstance(confirmed_idx, Integral):
-                        safe_start = max(0, min(total_len - 1, confirmed_idx))
-                        start_ts = _ensure_timestamp(df_analyzed.iloc[safe_start]['date'])
-                    if end_ts is None and isinstance(end_idx, Integral):
-                        safe_end = max(0, min(total_len - 1, end_idx))
-                        end_ts = _ensure_timestamp(df_analyzed.iloc[safe_end]['date'])
-                else:
-                    if start_ts is None and isinstance(confirmed_idx, Integral):
-                        safe_start = max(0, min(total_len - 1, confirmed_idx))
-                        start_ts = _ensure_timestamp(df_analyzed.index[safe_start])
-                    if end_ts is None and isinstance(end_idx, Integral):
-                        safe_end = max(0, min(total_len - 1, end_idx))
-                        end_ts = _ensure_timestamp(df_analyzed.index[safe_end])
-
-                if start_ts is None or end_ts is None:
-                    continue
-
-                # 计算趋势方向：确认点到结束点的价格变化
-                trend = 'range'
-                start_idx_for_trend = confirmed_idx if isinstance(confirmed_idx, Integral) else None
-                end_idx_for_trend = end_idx if isinstance(end_idx, Integral) else None
-                if (
-                    'close' in df_analyzed.columns
-                    and start_idx_for_trend is not None
-                    and end_idx_for_trend is not None
-                ):
-                    try:
-                        safe_start = max(0, min(total_len - 1, start_idx_for_trend))
-                        safe_end = max(0, min(total_len - 1, end_idx_for_trend))
-                        start_price = df_analyzed.iloc[safe_start]['close']
-                        end_price = df_analyzed.iloc[safe_end]['close']
-                        if start_price:
-                            pct_change = (end_price - start_price) / start_price
-                            if pct_change <= -0.02:
-                                trend = 'decline'
-                    except Exception:
-                        pass
-
-                oscillation_periods_for_plot.append({
-                    'start': start_ts,  # 震荡确认时间
-                    'end': end_ts,      # 震荡结束时间
-                    'score': None,
-                    'start_idx': confirmed_idx,
-                    'end_idx': end_idx,
-                    'trend': trend,
-                    'type': 'confirmed'  # 标记为确认时间
-                })
-
         try:
             out_path = plot_kline_with_signals(
                 df_analyzed,
                 buy_idx,
                 sell_idx,
                 stock_code,
-                oscillation_periods=oscillation_periods_for_plot
             )
             echo(f"K线图已保存到: {out_path}")
         except Exception as e:
@@ -406,6 +360,7 @@ def analyze_stock(stock_code: str, config: dict, show_backtest: bool = True,
         'signal': signal_data,
         'backtest': backtest_result,
         'trading_signals': trading_signals,
+        'mark_to_market_curve': mark_to_market_curve,
     }
 
 
@@ -429,8 +384,6 @@ def batch_analyze(stock_codes: list, config: dict):
         try:
             # 初始化组件
             data_config = config.get('data_source', {})
-            strategy_config = config.get('strategy', {})
-
             fetcher = DataFetcher(
                 source=data_config.get('provider', app_config.DATA_SOURCE),
                 cache_enabled=data_config.get('cache_enabled', app_config.CACHE_ENABLED),
@@ -440,7 +393,6 @@ def batch_analyze(stock_codes: list, config: dict):
                 default_adjust=data_config.get('adjust', app_config.DEFAULT_ADJUST),
             )
             strategy = RSITrendStrategy(
-                config=strategy_config,
                 market=detect_market_from_code(code),
                 stock_code=code
             )
@@ -788,6 +740,32 @@ def _run_offline_backtest_task(stock_code: str, data_file_str: str, config: dict
     if timeline:
         stock_report = stock_report + "\n\n" + timeline
 
+    curve = analysis.get('mark_to_market_curve') or {'dates': [], 'equity': []}
+    if len(curve['dates']) >= 2:
+        elapsed_years = max(
+            (pd.Timestamp(curve['dates'][-1]) - pd.Timestamp(curve['dates'][0])).days / 365.25,
+            1.0 / 365.25,
+        )
+        final_multiple = max(
+            float(backtest_result.get('final_capital', initial_capital)) / initial_capital,
+            1e-12,
+        )
+        stock_cagr = (final_multiple ** (1.0 / elapsed_years) - 1.0) * 100.0
+    else:
+        stock_cagr = 0.0
+
+    prior_capital = float(initial_capital)
+    amount_profit = 0.0
+    amount_loss = 0.0
+    for trade in backtest_result.get('trades', []):
+        current_capital = float(trade.get('capital', prior_capital))
+        change = current_capital - prior_capital
+        if change > 0:
+            amount_profit += change
+        elif change < 0:
+            amount_loss += abs(change)
+        prior_capital = current_capital
+
     summary_entry = {
         'code': stock_code,
         'total_return': backtest_result.get('total_return', 0.0),
@@ -798,6 +776,13 @@ def _run_offline_backtest_task(stock_code: str, data_file_str: str, config: dict
         'final_capital': backtest_result.get('final_capital', initial_capital),
         'total_profit_pct': backtest_result.get('total_profit_pct', 0.0),
         'total_loss_pct': backtest_result.get('total_loss_pct', 0.0),
+        'win_count': backtest_result.get('win_count', 0),
+        'lose_count': backtest_result.get('lose_count', 0),
+        'stock_cagr': stock_cagr,
+        'equity_dates': curve['dates'],
+        'equity_curve': curve['equity'],
+        'amount_profit': amount_profit,
+        'amount_loss': amount_loss,
     }
 
     log_message = (
@@ -814,19 +799,6 @@ def _run_offline_backtest_task(stock_code: str, data_file_str: str, config: dict
         'summary': summary_entry,
         'log': log_message,
     }
-
-
-def _make_offline_report_config(config: dict) -> dict:
-    """Return a report runtime config that cannot trigger strategy network fetches."""
-    offline_config = deepcopy(config) if config else {}
-    strategy_config = offline_config.get('strategy')
-    if not isinstance(strategy_config, dict):
-        strategy_config = {}
-        offline_config['strategy'] = strategy_config
-    strategy_config['offline_report_mode'] = True
-    strategy_config['allow_external_data'] = False
-    strategy_config['allow_external_regime_fetch'] = False
-    return offline_config
 
 
 def generate_offline_backtest_report(config: dict, stock_codes: Optional[List[str]] = None):
@@ -870,16 +842,6 @@ def generate_offline_backtest_report(config: dict, stock_codes: Optional[List[st
 
     backtest_config = config.get('backtest', {})
     initial_capital = backtest_config.get('initial_capital', 10000)
-
-    offline_config = _make_offline_report_config(config)
-    original_strategy_config = config.get('strategy', {}) if config else {}
-    if not isinstance(original_strategy_config, dict):
-        original_strategy_config = {}
-    if (
-        original_strategy_config.get('market_regime_enabled')
-        or original_strategy_config.get('adaptive_stop_loss_enabled')
-    ):
-        print("离线报告模式：已禁用策略内部指数regime网络加载，相关指数过滤/自适应止损将跳过。")
 
     report_config = config.get('report', {})
     report_verbose = bool(report_config.get('verbose', False))
@@ -942,7 +904,7 @@ def generate_offline_backtest_report(config: dict, stock_codes: Optional[List[st
                 _run_offline_backtest_task,
                 stock_code,
                 str(data_file),
-                offline_config,
+                config,
                 initial_capital,
             )
             futures_map[future] = stock_code
@@ -977,8 +939,8 @@ def generate_offline_backtest_report(config: dict, stock_codes: Optional[List[st
     header = "{:<8}{:>10}{:>12}{:>10}{:>10}{:>8}{:>14}".format(
         "代码", "收益%", "最大回撤%", "胜率%", "盈亏比", "交易数", "最终资金"
     )
-    summary_header = "{:<8}{:>10}{:>12}{:>10}{:>10}{:>10}{:>8}{:>14}".format(
-        "股票数量", "平均收益%", "平均回撤%", "平均胜率%", "总盈亏比", "股票中位数", "交易数", "最终资金"
+    summary_header = "{:<10}{:>14}{:>14}{:>14}{:>14}{:>14}".format(
+        "股票数量", "平均回撤%", "盈利股票%", "收益中位数%", "平均胜率%", "同公式盈亏比"
     )
     separator_line = "=" * 88
     dash_line = "-" * 88
@@ -1004,33 +966,105 @@ def generate_offline_backtest_report(config: dict, stock_codes: Optional[List[st
         )
         table_lines.append(line)
 
-    avg_total_return = sum(row['total_return'] for row in summary) / success_count
+    return_series = pd.Series([row['total_return'] for row in summary], dtype=float)
+    drawdown_series = pd.Series([row['max_drawdown'] for row in summary], dtype=float)
+    avg_total_return = float(return_series.mean())
     avg_max_drawdown = sum(row['max_drawdown'] for row in summary) / success_count
     avg_win_rate = sum(row['win_rate'] for row in summary) / success_count
-    median_total_return = float(pd.Series([row['total_return'] for row in summary], dtype=float).median())
+    profitable_stock_rate = float((return_series > 0).mean() * 100)
+    median_total_return = float(return_series.median())
+    median_drawdown = float(drawdown_series.median())
+    ordered_returns = return_series.sort_values().reset_index(drop=True)
+    trim_count = int(success_count * 0.1)
+    trimmed_returns = ordered_returns.iloc[trim_count:-trim_count] if trim_count else ordered_returns
+    trimmed_mean_return = float(trimmed_returns.mean())
+    p25_return = float(return_series.quantile(0.25))
+    p75_return = float(return_series.quantile(0.75))
+    positive_returns = return_series[return_series > 0].sort_values()
+    top5_share = (
+        float(positive_returns.iloc[-5:].sum() / positive_returns.sum() * 100)
+        if not positive_returns.empty and positive_returns.sum() > 0
+        else 0.0
+    )
     # 总盈亏比：汇总所有股票的总盈利/总亏损
     all_profit = sum(row['total_profit_pct'] for row in summary)
     all_loss = sum(row['total_loss_pct'] for row in summary)
     total_profit_factor = all_profit / all_loss if all_loss > 0 else 99.0
+    all_amount_profit = sum(row['amount_profit'] for row in summary)
+    all_amount_loss = sum(row['amount_loss'] for row in summary)
+    amount_profit_factor = all_amount_profit / all_amount_loss if all_amount_loss > 0 else 99.0
     avg_trades = sum(row['total_trades'] for row in summary) / success_count
     avg_final_capital = sum(row['final_capital'] for row in summary) / success_count
+    total_wins = sum(row['win_count'] for row in summary)
+    total_closed_trades = total_wins + sum(row['lose_count'] for row in summary)
+    total_trade_win_rate = total_wins / total_closed_trades * 100 if total_closed_trades else 0.0
+
+    equity_series = []
+    for row in summary:
+        if row['equity_dates'] and row['equity_curve']:
+            equity_series.append(
+                pd.Series(
+                    row['equity_curve'],
+                    index=pd.to_datetime(row['equity_dates']),
+                    name=row['code'],
+                    dtype=float,
+                )
+            )
+    equity_frame = pd.concat(equity_series, axis=1).sort_index().ffill().fillna(1.0)
+    portfolio_equity = equity_frame.mean(axis=1)
+    portfolio_daily_returns = portfolio_equity.pct_change().dropna()
+    portfolio_drawdown = float(
+        (portfolio_equity / portfolio_equity.cummax() - 1.0).min() * 100.0
+    )
+    portfolio_years = max(
+        (portfolio_equity.index[-1] - portfolio_equity.index[0]).days / 365.25,
+        1.0 / 365.25,
+    )
+    portfolio_cagr = float(
+        (portfolio_equity.iloc[-1] / portfolio_equity.iloc[0]) ** (1.0 / portfolio_years)
+        - 1.0
+    ) * 100.0
+    portfolio_daily_std = float(portfolio_daily_returns.std())
+    portfolio_sharpe = (
+        float(portfolio_daily_returns.mean()) / portfolio_daily_std * (252.0 ** 0.5)
+        if portfolio_daily_std > 0
+        else 0.0
+    )
+    median_stock_cagr = float(
+        pd.Series([row['stock_cagr'] for row in summary], dtype=float).median()
+    )
 
     total_pf_str = f"{total_profit_factor:.2f}" if total_profit_factor < 100 else "99+"
-    summary_line = "{:<10}{:>14.2f}{:>16.2f}{:>14.2f}{:>14}{:>14.2f}{:>14.2f}{:>17,.2f}".format(
+    summary_line = "{:<10}{:>14.2f}{:>14.2f}{:>14.2f}{:>14.2f}{:>14}".format(
         success_count,
-        avg_total_return,
         avg_max_drawdown,
+        profitable_stock_rate,
+        median_total_return,
         avg_win_rate,
         total_pf_str,
-        median_total_return,
-        avg_trades,
-        avg_final_capital,
+    )
+    distribution_line = (
+        f"分布辅助: 10%截尾均值 {trimmed_mean_return:.2f}% | "
+        f"P25/P75 {p25_return:.2f}%/{p75_return:.2f}% | "
+        f"平均收益 {avg_total_return:.2f}% | 前5赢家占正收益 {top5_share:.2f}%"
+    )
+    risk_line = (
+        f"风险/交易辅助: 回撤中位数 {median_drawdown:.2f}% | "
+        f"总交易胜率 {total_trade_win_rate:.2f}% | 平均交易数 {avg_trades:.2f} | "
+        f"金额口径盈亏比 {amount_profit_factor:.2f} | 平均最终资金 {avg_final_capital:,.2f}"
+    )
+    portfolio_line = (
+        f"每日盯市等权组合: CAGR {portfolio_cagr:.2f}% | 最大回撤 {portfolio_drawdown:.2f}% | "
+        f"Sharpe {portfolio_sharpe:.2f} | 个股CAGR中位数 {median_stock_cagr:.2f}%"
     )
 
     table_lines.append("")
     table_lines.append(summary_header)
     table_lines.append(dash_line)
     table_lines.append(summary_line)
+    table_lines.append(distribution_line)
+    table_lines.append(risk_line)
+    table_lines.append(portfolio_line)
 
     for line in table_lines:
         print(line)
@@ -1102,9 +1136,6 @@ def main():
     parser.add_argument('-b', '--batch', nargs='+', help='批量股票代码列表')
     parser.add_argument('-c', '--config', type=str, default='config/config.yaml', help='配置文件路径')
     parser.add_argument('--no-backtest', action='store_true', help='不显示回测结果')
-    # 兼容保留旧命令行参数；当前 CLI 始终使用 RSITrendStrategy。
-    parser.add_argument('--new-strategy', action='store_true',
-                        help=argparse.SUPPRESS)
     parser.add_argument('--report', action='store_true',
                         help='离线模式：对 data/backtest_data 中所有或指定股票（-s/-b）进行回测并输出报告')
     parser.add_argument('--chart-generation', action='store_true',

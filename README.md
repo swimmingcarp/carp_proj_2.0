@@ -324,6 +324,7 @@ stock_trading_advisor/
 ├── logs/                      # 运行日志
 ├── tests/
 │   ├── README.md
+│   ├── test_strategy_backtest.py      # 回测资金曲线与交易核算回归测试
 │   └── test_lookahead_bias_smart.py  # 逐日前缀未来函数检测
 ├── main.py                    # CLI 入口
 ├── scheduler.py               # 定时调度器
@@ -346,8 +347,8 @@ commit `a8dd63a` 和 `offline_backtest_report_20260906_232005.txt` 永久保留�
 - 买点由 RSI `30/65` 趋势、ATR 方向、Heikin-Ashi、成交量和追高约束共同形成；折价买点在高持续性趋势中被阻止。
 - 卖点只保留统一持仓状态机中的硬止损、确认式 trailing、趋势转空、趋势保护和一个放量偏离退出。
 - 历史策略开关、家族专用配置、在线 regime/adaptive stop 和旧 CLI 兼容入口均已删除。
-- 当前单策略 baseline tag 为 `strategy-benchmark-20260907-single-strategy`；正式报告为 `offline_backtest_report_20260907_214359.txt`（DEV250）和 `offline_backtest_report_20260907_214817.txt`（ALL305）。
-- ALL305 五项主指标为平均回撤 `-40.89%`、盈利股票占比 `71.48%`、收益中位数 `38.04%`、平均胜率 `36.40%`、同公式盈亏比 `1.87`；平均收益 `130.79%` 只作右尾辅助指标。
+- 当前单策略 baseline tag 为 `strategy-benchmark-20260907-single-strategy`；策略冻结报告为 `offline_backtest_report_20260907_214359.txt`（DEV250）和 `offline_backtest_report_20260907_214817.txt`（ALL305），当前逐日盯市引擎的 ALL305 校正报告为 `offline_backtest_report_20260907_232138.txt`。
+- 当前 ALL305 五项主指标为平均逐日盯市回撤 `-50.04%`、盈利股票占比 `71.48%`、收益中位数 `38.04%`、平均胜率 `36.40%`、同公式盈亏比 `1.87`；平均收益 `130.79%` 只作右尾辅助指标。旧报告中的 `-40.89%` 是持仓期未逐日盯市的低估值。
 - 该 baseline 除平均胜率外弱于受保护 DEV250 原始基线，建立理由是源码由 `20,322` 行降至 `740` 行，以及 OLD128/NEW122 的等权组合 CAGR 差距由 `9.03` 收窄至 `3.20` 个百分点；这不是“历史收益全面提升”。
 
 #### 核心思想

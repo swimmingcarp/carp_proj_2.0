@@ -80,10 +80,11 @@ The retained entry model has four auditable routes: RSI cross, trend continuatio
 
 Formal reports:
 
-- DEV250: `stock_trading_advisor/reports/offline_backtest_report_20260907_214359.txt` (`250 / 0`).
-- ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260907_214817.txt` (`305 / 0`).
+- Strategy-freeze DEV250: `stock_trading_advisor/reports/offline_backtest_report_20260907_214359.txt` (`250 / 0`).
+- Strategy-freeze ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260907_214817.txt` (`305 / 0`).
+- Corrected daily mark-to-market ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260907_232138.txt` (`305 / 0`).
 
-| Cohort | Avg return | Avg drawdown | Profitable | Median return | Avg win rate | Return PF | Amount PF |
+| Cohort | Avg return | Legacy avg drawdown | Profitable | Median return | Avg win rate | Return PF | Amount PF |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | DEV250 | 145.28% | -41.18% | 72.80% | 44.67% | 36.84% | 1.9060 | 1.8317 |
 | ALL305 | 130.79% | -40.89% | 71.48% | 38.04% | 36.40% | 1.8698 | 1.7848 |
@@ -91,6 +92,8 @@ Formal reports:
 | NEW122 | 121.90% | -44.17% | 70.49% | 44.30% | 36.46% | 1.7529 | 1.7243 |
 | HK99 | 65.04% | -43.39% | 57.58% | 6.01% | 33.66% | 1.5862 | 1.4750 |
 | Previously held-out 55 | 64.89% | -39.55% | 65.45% | 10.30% | 34.42% | 1.6736 | 1.4987 |
+
+The strategy-freeze table preserves the historical non-mark-to-market drawdown for exact commit comparison. With the corrected engine, ALL305 average per-stock daily mark-to-market drawdown is `-50.04%` and median drawdown is `-49.18%`; return, profitable-stock share, median return, average win rate, both profit factors, trade counts, and final capital are unchanged across all 305 stocks.
 
 Daily marked-to-market equal-weight portfolio results:
 

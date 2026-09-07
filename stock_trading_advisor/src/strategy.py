@@ -62,7 +62,7 @@ class StrategyBase:
         return commission
 
     def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Optional[Dict]:
-        """通用回测实现，按收盘买卖并计入双边手续费。"""
+        """通用回测实现，按收盘买卖、计入双边手续费并逐日盯市。"""
         if df is None or 'buy_signal' not in df.columns:
             return None
 
@@ -146,7 +146,7 @@ class StrategyBase:
                 gross_holding = False
                 gross_shares = 0.0
 
-            capital_list[i] = capital
+            capital_list[i] = shares * curr_price - buy_commission if holding else capital
 
         if holding:
             sell_price = close_arr[-1]
@@ -185,7 +185,7 @@ class StrategyBase:
         gross_return = (gross_capital - initial_capital) / initial_capital * 100
 
         capital_series = pd.Series(capital_list)
-        running_max = capital_series.expanding().max()
+        running_max = capital_series.cummax().clip(lower=initial_capital)
         drawdown = (capital_series - running_max) / running_max
         max_drawdown = drawdown.min() * 100 if len(drawdown) > 0 else 0.0
 

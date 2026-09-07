@@ -46,6 +46,31 @@
 - 验证时要对比改动前后的离线报告核心指标和个股交易结果。
 - 若非策略改动导致收益、交易次数、买卖点、回撤等回测结果变化，必须解释原因；无法解释时应视为异常。
 
+### Benchmark 提交格式
+
+- 建立或更新 benchmark，以及修正回测指标口径时，commit message 必须使用统一结构：标题、改动摘要、`Performance (<股票池>)`、`Validation`。
+- `Performance` 固定按 `Return / Median / tPF / Win rate / Max drawdown` 的顺序书写，股票池必须写入括号，例如 `Performance (ALL305)`；数值直接取自本轮正式离线报告，保留两位小数，不得凭记忆填写。
+- `Max drawdown` 默认指逐日收盘盯市后的平均个股最大回撤；引用未逐日盯市的历史结果时，必须显式标为 `legacy non-MTM`，不能与当前口径直接比较。
+- `Validation` 至少记录离线报告成功/失败数量、报告路径，以及未来函数测试或非策略改动的逐股一致性检查。非策略指标修正必须明确哪些字段发生预期变化、哪些交易和收益字段保持不变。
+- 统一模板如下，不能把其他公式的同名指标混入：
+
+```text
+<commit title>
+
+- <change summary>
+
+Performance (ALL305):
+- Return: 130.79
+- Median: 38.04
+- tPF: 1.87
+- Win rate: 36.40
+- Max drawdown: -50.04
+
+Validation:
+- Offline report: 305/0 success (<report path>)
+- <lookahead or before/after consistency result>
+```
+
 ### 策略改动
 
 - 原始策略对照永久锁定在 commit `a8dd63a`，不得用后来的候选覆盖其身份。候选必须先在独立 worktree、临时进程或其他不覆盖正式源码的隔离环境中完成验证；未通过前不得把候选留在正式运行路径。

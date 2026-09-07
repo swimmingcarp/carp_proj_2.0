@@ -6567,6 +6567,132 @@
       "candidate_median_return_pct": 6.247166,
       "context": "mean, trimmed mean, profitable share, drawdown, win rate, and both profit factors improved"
     },
+    "fee_model_20260908": {
+      "status": "non-strategy fee-basis correction",
+      "date": "2026-09-08",
+      "fee_model": {
+        "cn_a_commission": 0.00015,
+        "cn_a_commission_min": 0.0,
+        "cn_a_stamp_duty_sell": 0.0005,
+        "hk_commission_plus_fees": 0.00045,
+        "hk_stamp_duty": 0.001,
+        "previous": {
+          "cn_a_commission_min": 5.0,
+          "hk_commission": 0.0025,
+          "hk_stamp_duty": 0.0013
+        },
+        "note": "pure proportional, scale-invariant; HK 0.045% = broker 0.03% + SFC 0.0027% + HKEX 0.00565% + AFRC 0.00015% + HKSCC 0.0042%"
+      },
+      "consistency_vs_20260907_235557": {
+        "trade_dates_and_prices_identical": 305,
+        "stocks_with_fee_dependent_field_changes": 305,
+        "cn_a_changed": 206,
+        "hk_changed": 99
+      },
+      "reports": {
+        "all305": "stock_trading_advisor/reports/offline_backtest_report_20260908_012933.txt",
+        "dev250": "stock_trading_advisor/reports/offline_backtest_report_20260908_013035.txt",
+        "old128": "stock_trading_advisor/reports/offline_backtest_report_20260908_013111.txt",
+        "new122": "stock_trading_advisor/reports/offline_backtest_report_20260908_013153.txt",
+        "hk99": "stock_trading_advisor/reports/offline_backtest_report_20260908_013225.txt",
+        "previously_held_out_55": "stock_trading_advisor/reports/offline_backtest_report_20260908_013244.txt"
+      },
+      "all305": {
+        "avg_return_pct": 138.76,
+        "trimmed_mean_10pct_return_pct": 73.37,
+        "median_return_pct": 43.77,
+        "profitable_stock_rate_pct": 73.77,
+        "avg_mtm_drawdown_pct": -48.89,
+        "median_mtm_drawdown_pct": -48.08,
+        "avg_win_rate_pct": 37.67,
+        "return_pct_profit_factor": 1.94,
+        "amount_profit_factor": 1.83,
+        "avg_trades": 26.14,
+        "top5_positive_return_share_pct": 26.91,
+        "avg_final_capital": 23875.86,
+        "portfolio_cagr_pct": 13.93,
+        "portfolio_max_drawdown_pct": -13.0,
+        "portfolio_sharpe": 1.09,
+        "median_stock_cagr_pct": 6.18
+      },
+      "dev250": {
+        "avg_return_pct": 150.79,
+        "trimmed_mean_10pct_return_pct": 78.26,
+        "median_return_pct": 47.72,
+        "profitable_stock_rate_pct": 74.4,
+        "avg_mtm_drawdown_pct": -49.92,
+        "median_mtm_drawdown_pct": -49.33,
+        "avg_win_rate_pct": 37.6,
+        "return_pct_profit_factor": 1.96,
+        "amount_profit_factor": 1.86,
+        "avg_trades": 26.63,
+        "top5_positive_return_share_pct": 30.38,
+        "portfolio_cagr_pct": 14.78,
+        "portfolio_max_drawdown_pct": -13.88,
+        "portfolio_sharpe": 1.07,
+        "median_stock_cagr_pct": 6.63
+      },
+      "cohorts": {
+        "old128": {
+          "avg_return_pct": 172.69,
+          "trimmed_mean_10pct_return_pct": 92.06,
+          "median_return_pct": 47.57,
+          "profitable_stock_rate_pct": 77.34,
+          "avg_mtm_drawdown_pct": -46.96,
+          "avg_win_rate_pct": 37.78,
+          "return_pct_profit_factor": 2.12,
+          "amount_profit_factor": 1.95,
+          "portfolio_cagr_pct": 16.22,
+          "portfolio_max_drawdown_pct": -12.75,
+          "portfolio_sharpe": 1.16,
+          "median_stock_cagr_pct": 6.34
+        },
+        "new122": {
+          "avg_return_pct": 127.82,
+          "trimmed_mean_10pct_return_pct": 68.53,
+          "median_return_pct": 52.03,
+          "profitable_stock_rate_pct": 71.31,
+          "avg_mtm_drawdown_pct": -53.02,
+          "avg_win_rate_pct": 37.42,
+          "return_pct_profit_factor": 1.8,
+          "amount_profit_factor": 1.76,
+          "portfolio_cagr_pct": 13.13,
+          "portfolio_max_drawdown_pct": -20.3,
+          "portfolio_sharpe": 0.89,
+          "median_stock_cagr_pct": 6.95
+        },
+        "hk99": {
+          "avg_return_pct": 83.93,
+          "trimmed_mean_10pct_return_pct": 44.96,
+          "median_return_pct": 20.37,
+          "profitable_stock_rate_pct": 63.64,
+          "avg_mtm_drawdown_pct": -48.73,
+          "avg_win_rate_pct": 36.88,
+          "return_pct_profit_factor": 1.75,
+          "amount_profit_factor": 1.62,
+          "portfolio_cagr_pct": 9.56,
+          "portfolio_max_drawdown_pct": -23.56,
+          "portfolio_sharpe": 0.78,
+          "median_stock_cagr_pct": 2.82
+        },
+        "previously_held_out_55": {
+          "avg_return_pct": 84.06,
+          "trimmed_mean_10pct_return_pct": 51.47,
+          "median_return_pct": 22.31,
+          "profitable_stock_rate_pct": 70.91,
+          "avg_mtm_drawdown_pct": -44.21,
+          "avg_win_rate_pct": 37.97,
+          "return_pct_profit_factor": 1.86,
+          "amount_profit_factor": 1.66,
+          "portfolio_cagr_pct": 9.57,
+          "portfolio_max_drawdown_pct": -18.16,
+          "portfolio_sharpe": 0.76,
+          "median_stock_cagr_pct": 3.06
+        }
+      },
+      "old_new_portfolio_cagr_gap_points": 3.09,
+      "interpretation": "fee-basis correction only; signals unchanged; not comparable with legacy-fee tag numbers"
+    },
     "single_strategy_surgery": {
       "status": "accepted simplification baseline",
       "protected_comparator": "a8dd63a",

@@ -60,11 +60,11 @@
 - <change summary>
 
 Performance (ALL305):
-- Return: 130.79
-- Median: 38.04
-- tPF: 1.87
-- Win rate: 36.40
-- Max drawdown: -50.04
+- Return: 138.76
+- Median: 43.77
+- tPF: 1.94
+- Win rate: 37.67
+- Max drawdown: -48.89
 
 Validation:
 - Offline report: 305/0 success (<report path>)

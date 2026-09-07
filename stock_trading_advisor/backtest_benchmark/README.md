@@ -84,6 +84,8 @@ Formal reports:
 - Strategy-freeze ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260907_214817.txt` (`305 / 0`).
 - Corrected daily mark-to-market ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260907_232138.txt` (`305 / 0`).
 
+The two tables below are the tag record and were produced under the legacy fee model (HK `0.25%` commission + `0.13%` stamp duty per side; CN-A `0.015%` commission with a `¥5` minimum, `0.05%` sell-side stamp duty). They are not same-basis with the fee-model update below.
+
 | Cohort | Avg return | Legacy avg drawdown | Profitable | Median return | Avg win rate | Return PF | Amount PF |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | DEV250 | 145.28% | -41.18% | 72.80% | 44.67% | 36.84% | 1.9060 | 1.8317 |
@@ -109,6 +111,43 @@ Daily marked-to-market equal-weight portfolio results:
 This baseline is not a performance win over the protected DEV250 original baseline: average return, drawdown, profitable-stock share, median return, and return profit factor regress; only average win rate improves. It also trails stage 1 on most ALL305 metrics. It is established as the active simplification baseline for structural and cross-cohort reasons: OLD128 portfolio CAGR falls from stage 1's `19.82%` to `15.89%`, while NEW122 rises from `10.79%` to `12.69%` and the previously held-out 55 rise from `3.49%` to `7.78%`. The old/new CAGR gap therefore narrows from `9.03` to `3.20` points. That is evidence of reduced development-set dependence, but not independent proof of future performance.
 
 Parameter-neighborhood checks did not select isolated peaks: long-slope thresholds `-0.002/-0.003/-0.004`, Hurst thresholds `0.60/0.65/0.70`, and RSI pairs `25/60`, `30/65`, `35/70` produced smooth risk/return trade-offs. The middle settings were retained without claiming they are globally optimal. A custom volume-quality score, a 250-day path filter, and simpler one/two-tier exits were rejected and removed after broad-cohort degradation.
+
+## Fee Model Update (2026-09-08)
+
+The backtest fee model was changed to pure proportional, scale-invariant current rates so that the `10,000` nominal capital no longer inflates fixed minimum fees:
+
+- CN-A: commission `0.015%` per side with no minimum (previously `¥5` minimum, which bound at this capital size); sell-side stamp duty `0.05%` unchanged.
+- HK: stamp duty `0.1%` per side (statutory since 2023-11-17; previously modelled as `0.13%`); commission plus pass-through fees `0.045%` per side = broker commission `0.03%` + SFC levy `0.0027%` + HKEX trading fee `0.00565%` + AFRC levy `0.00015%` + HKSCC settlement `0.0042%` (previously `0.25%` commission). Round trip `0.29%` versus `0.76%` before.
+- Signals are fee-independent: buy/sell dates, prices and trade counts match the previous report `305/305`; all 206 CN-A and 99 HK stocks change only in fee-dependent fields.
+
+Formal reports (current engine, current fee model):
+
+- ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260908_012933.txt` (`305 / 0`).
+- DEV250: `stock_trading_advisor/reports/offline_backtest_report_20260908_013035.txt` (`250 / 0`).
+- OLD128: `stock_trading_advisor/reports/offline_backtest_report_20260908_013111.txt` (`128 / 0`).
+- NEW122: `stock_trading_advisor/reports/offline_backtest_report_20260908_013153.txt` (`122 / 0`).
+- HK99: `stock_trading_advisor/reports/offline_backtest_report_20260908_013225.txt` (`99 / 0`).
+- Previously held-out 55: `stock_trading_advisor/reports/offline_backtest_report_20260908_013244.txt` (`55 / 0`).
+
+| Cohort | Avg return | Avg MTM drawdown | Profitable | Median return | Avg win rate | Return PF | Amount PF |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ALL305 | 138.76% | -48.89% | 73.77% | 43.77% | 37.67% | 1.94 | 1.83 |
+| DEV250 | 150.79% | -49.92% | 74.40% | 47.72% | 37.60% | 1.96 | 1.86 |
+| OLD128 | 172.69% | -46.96% | 77.34% | 47.57% | 37.78% | 2.12 | 1.95 |
+| NEW122 | 127.82% | -53.02% | 71.31% | 52.03% | 37.42% | 1.80 | 1.76 |
+| HK99 | 83.93% | -48.73% | 63.64% | 20.37% | 36.88% | 1.75 | 1.62 |
+| Previously held-out 55 | 84.06% | -44.21% | 70.91% | 22.31% | 37.97% | 1.86 | 1.66 |
+
+| Cohort | CAGR | Max drawdown | Sharpe | Median stock CAGR |
+|---|---:|---:|---:|---:|
+| ALL305 | 13.93% | -13.00% | 1.09 | 6.18% |
+| DEV250 | 14.78% | -13.88% | 1.07 | 6.63% |
+| OLD128 | 16.22% | -12.75% | 1.16 | 6.34% |
+| NEW122 | 13.13% | -20.30% | 0.89 | 6.95% |
+| HK99 | 9.56% | -23.56% | 0.78 | 2.82% |
+| Previously held-out 55 | 9.57% | -18.16% | 0.76 | 3.06% |
+
+Under the same signals, ALL305 moves from `130.79% / 38.04% / 71.48% / 36.40% / 1.87 / -50.04%` (avg return / median / profitable / avg win rate / return PF / avg MTM drawdown) to `138.76% / 43.77% / 73.77% / 37.67% / 1.94 / -48.89%`; the HK99 median moves from `6.01%` to `20.37%` and CN-A median from `59.48%` to `60.98%`. The OLD128/NEW122 portfolio CAGR gap is `3.09` points under this fee model. Every difference is a fee-basis correction, not a strategy improvement, and numbers across the two fee models must not be compared directly.
 
 ## Lookahead Test
 

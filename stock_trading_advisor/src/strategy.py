@@ -32,11 +32,15 @@ class StrategyBase:
         return {
             'commission_enabled': True,
             'commission_cn_a': 0.00015,
-            'commission_hk': 0.0025,
+            # HK: broker commission 0.03% + SFC levy 0.0027% + HKEX trading fee
+            # 0.00565% + AFRC levy 0.00015% + HKSCC settlement 0.0042% ≈ 0.045%
+            'commission_hk': 0.00045,
             'commission_us': 0.0002,
-            'commission_min_cn': 5.0,
+            # 纯比例计费：不设最低费用，避免小额名义本金放大固定费用
+            'commission_min_cn': 0.0,
             'stamp_duty_cn': 0.0005,
-            'stamp_duty_hk': 0.0013,
+            # HK stamp duty 0.1% per side since 2023-11-17
+            'stamp_duty_hk': 0.001,
         }
 
     def _calculate_commission(self, transaction_amount: float, is_buy: bool = True) -> float:
@@ -45,8 +49,8 @@ class StrategyBase:
             return 0.0
 
         if self.market == 'HK':
-            commission_rate = self.config.get('commission_hk', 0.0025)
-            stamp_duty_rate = self.config.get('stamp_duty_hk', 0.0013)
+            commission_rate = self.config.get('commission_hk', 0.00045)
+            stamp_duty_rate = self.config.get('stamp_duty_hk', 0.001)
             return transaction_amount * (commission_rate + stamp_duty_rate)
 
         if self.market == 'US':
@@ -54,7 +58,7 @@ class StrategyBase:
             return transaction_amount * commission_rate
 
         commission_rate = self.config.get('commission_cn_a', 0.0003)
-        commission_min = self.config.get('commission_min_cn', 5.0)
+        commission_min = self.config.get('commission_min_cn', 0.0)
         commission = max(transaction_amount * commission_rate, commission_min)
         if not is_buy:
             stamp_duty_rate = self.config.get('stamp_duty_cn', 0.001)

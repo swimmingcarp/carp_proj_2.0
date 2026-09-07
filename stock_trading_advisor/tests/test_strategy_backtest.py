@@ -20,7 +20,10 @@ class TestStrategyBacktest(unittest.TestCase):
             }
         )
 
-        result = StrategyBase(market='CN-A').backtest(df, initial_capital=10000.0)
+        result = StrategyBase(
+            config={'commission_min_cn': 5.0},
+            market='CN-A',
+        ).backtest(df, initial_capital=10000.0)
 
         self.assertIsNotNone(result)
         self.assertEqual(result['total_trades'], 1)

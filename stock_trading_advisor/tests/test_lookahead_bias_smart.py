@@ -32,11 +32,6 @@ from typing import Dict, List, Tuple, Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.new_strategy import RSITrendStrategy
-from src.personality.pit_stage import (
-    compute_pit_states, compute_downtrend_phase, smooth_macro_phase,
-    make_personality_config, compute_stock_dna,
-)
-from src.personality.segmenter import StockPersonalityEngine
 
 
 BACKTEST_DATA_ADJUST = 'hfq'
@@ -427,250 +422,10 @@ class TestLookAheadBiasSmart(unittest.TestCase):
         self._test_stock('00512', market='HK')
 
 
-class TestPitStageLookahead(unittest.TestCase):
-    """
-    直接测试 smooth_macro_phase / pit_stage 流水线的未来函数检测。
-
-    现有 TestLookAheadBiasSmart 通过 RSITrendStrategy 检测策略层面的 pit_state，
-    但 smooth_macro_phase 本身只在 main.py 展示函数中被调用，不在策略链里，
-    因此需要单独检测。
-
-    重点覆盖本次修改新增的 ULTRA2（DIP≤5%）和 SURGE（gfl≥27%）触发股票：
-        SURGE 触发：603444（2020-02春节）、002362 / 600775（2024-02春节）、
-                     002467、605117（2021劳动节）
-        ULTRA2 触发：002920 / 300279（2024-09/02）、300769、002167
-
-    核心逻辑：
-        1. 用全量数据跑 pit_stage 流水线，得到 confirmed_full[0..n-1]
-        2. 找所有状态转换点（confirmed_full[t] != confirmed_full[t-1]）
-        3. 对每个转换点 t：截取 data[:t+1]，用相同 cfg 重跑流水线，比较最后一个值
-        4. confirmed_partial[-1] != confirmed_full[t] → 存在未来函数
-        5. 额外随机采样平静期（应该不出现差异）
-    """
-
-    CACHE_DIR = os.path.join(os.path.dirname(__file__), '../data/backtest_data')
-    CACHE_ADJUST = BACKTEST_DATA_ADJUST
-    # 最少数据量（比 K_DN_TO_CO*2 大即可）
-    MIN_BARS = 200
-
-    def _run_pipeline(self, close, high, low, vol, cfg, dna):
-        """用固定 cfg/dna 跑完整 pit_stage 流水线，返回 confirmed 列表。"""
-        states = compute_pit_states(close, high, low, cfg=cfg)
-        phases, _ = compute_downtrend_phase(
-            close, high, low, states, cfg=cfg, dna=dna, return_data=True
-        )
-        confirmed = smooth_macro_phase(
-            phases, close, high, low, vol, confirmed_only=True
-        )
-        return confirmed
-
-    def _test_pit_stage_stock(self, stock_code: str):
-        """
-        针对单支股票，直接测试 smooth_macro_phase 的未来函数。
-
-        使用全量数据推导出的 cfg/dna 固定用于所有截断测试，
-        将配置差异排除在外，只检测流水线本身是否使用了未来数据。
-        """
-        print("\n" + "=" * 80)
-        print(f"[PitStage 未来函数] {stock_code}")
-        print("=" * 80)
-
-        csv_path = os.path.join(self.CACHE_DIR, f'{stock_code}_{self.CACHE_ADJUST}.csv')
-        if not os.path.exists(csv_path):
-            print(f"  ⚠️  未找到数据文件，跳过: {csv_path}")
-            return
-
-        df = pd.read_csv(csv_path)
-        df['date'] = pd.to_datetime(df['date'])
-        close = df['close'].values.astype(float)
-        high  = df['high'].values.astype(float)
-        low   = df['low'].values.astype(float)
-        vol   = df['volume'].values.astype(float)
-        dates = df['date'].dt.strftime('%Y-%m-%d').tolist()
-        n = len(close)
-
-        if n < self.MIN_BARS:
-            print(f"  ⚠️  数据量不足 ({n} < {self.MIN_BARS})，跳过")
-            return
-
-        print(f"  数据量: {n} 天")
-
-        # ── 步骤1：全量数据跑 pit_stage，得到基准分类 ─────────────────
-        print("\n步骤1: 全量数据推导 cfg/dna 并运行流水线...")
-        dna_full = compute_stock_dna(close, high, low)
-        pe_full  = StockPersonalityEngine(close, dates)
-        pers_full = pe_full.get_personality_at_bar(n - 1)
-        cfg_full  = make_personality_config(pers_full, dna=dna_full)
-
-        confirmed_full = self._run_pipeline(close, high, low, vol, cfg_full, dna_full)
-
-        # ── 步骤2：找所有状态转换点（100% 覆盖关键点）─────────────────
-        transition_indices = []
-        for i in range(self.MIN_BARS, n):
-            if confirmed_full[i] != confirmed_full[i - 1]:
-                transition_indices.append(i)
-
-        print(f"  状态转换点: {len(transition_indices)} 个")
-
-        # 按状态类型统计
-        state_counts: Dict[str, int] = {}
-        for i in transition_indices:
-            s = confirmed_full[i]
-            state_counts[s] = state_counts.get(s, 0) + 1
-        for s, cnt in sorted(state_counts.items()):
-            print(f"    → {s}: {cnt} 次")
-
-        # ── 步骤3：随机采样平静期 ──────────────────────────────────────
-        all_trans_set = set(transition_indices)
-        quiet_pool = [i for i in range(self.MIN_BARS, n) if i not in all_trans_set]
-        sample_size = min(len(transition_indices), len(quiet_pool))
-        sample_size = max(5, sample_size)
-        quiet_samples = random.sample(quiet_pool, min(sample_size, len(quiet_pool)))
-
-        # ── 步骤4：构建测试集 ──────────────────────────────────────────
-        test_indices = sorted(set(transition_indices) | set(quiet_samples))
-        total = len(test_indices)
-        print(f"\n步骤2: 开始测试 {total} 个点（转换点 {len(transition_indices)} + 平静期 {len(quiet_samples)}）...")
-
-        # ── 步骤5：逐点截断测试 ────────────────────────────────────────
-        discrepancies_trans = []
-        discrepancies_quiet = []
-
-        for idx, t in enumerate(test_indices):
-            if idx % 20 == 0:
-                print(f"\r  进度: {idx}/{total}", end='', flush=True)
-
-            c_p = close[:t + 1]
-            h_p = high[:t + 1]
-            l_p = low[:t + 1]
-            v_p = vol[:t + 1]
-
-            try:
-                confirmed_p = self._run_pipeline(c_p, h_p, l_p, v_p, cfg_full, dna_full)
-            except Exception as e:
-                print(f"\n  ⚠️  截断测试 t={t} 异常: {e}")
-                continue
-
-            partial_val = confirmed_p[-1]
-            full_val    = confirmed_full[t]
-
-            if partial_val != full_val:
-                rec = {
-                    'index': t,
-                    'date':  dates[t],
-                    'partial': partial_val,
-                    'full':    full_val,
-                    'is_transition': t in all_trans_set,
-                }
-                if t in all_trans_set:
-                    discrepancies_trans.append(rec)
-                else:
-                    discrepancies_quiet.append(rec)
-
-        print(f"\r  完成: {total}/{total}          ")
-
-        # ── 步骤6：输出结果 ────────────────────────────────────────────
-        print("\n" + "=" * 80)
-        print("测试结果")
-        print("=" * 80)
-
-        all_disc = discrepancies_trans + discrepancies_quiet
-        if not all_disc:
-            print(f"✅ {stock_code} 未检测到未来函数")
-            print(f"   - 状态转换点: {len(transition_indices)} 个 ✅")
-            print(f"   - 平静期采样: {len(quiet_samples)} 个 ✅")
-        else:
-            if discrepancies_trans:
-                print(f"❌ 状态转换点差异: {len(discrepancies_trans)} 个（严重）")
-                print("   这些状态切换时的分类在截断数据下不一致 → 存在未来函数！\n")
-                for r in discrepancies_trans[:10]:
-                    print(f"   [{r['date']} / idx={r['index']}]"
-                          f"  截断={r['partial']}  全量={r['full']}")
-                if len(discrepancies_trans) > 10:
-                    print(f"   ... 还有 {len(discrepancies_trans) - 10} 条")
-
-            if discrepancies_quiet:
-                print(f"⚠️  平静期差异: {len(discrepancies_quiet)} 个")
-                for r in discrepancies_quiet[:5]:
-                    print(f"   [{r['date']} / idx={r['index']}]"
-                          f"  截断={r['partial']}  全量={r['full']}")
-
-            details = []
-            if discrepancies_trans:
-                details.append(f"转换点差异 {len(discrepancies_trans)} 个")
-            if discrepancies_quiet:
-                details.append(f"平静期差异 {len(discrepancies_quiet)} 个")
-            self.fail(f"{stock_code} 检测到未来函数！{' | '.join(details)}")
-
-    # ── 具体股票测试方法 ──────────────────────────────────────────────
-
-    # SURGE 触发股票（新增 SURGE 层，DIP 不限，gfl≥27%，BARS≥4）
-    def test_surge_603444(self):
-        """SURGE 触发：603444（2020-02 春节后大涨，bar4 gfl=27%）"""
-        self._test_pit_stage_stock('603444')
-
-    def test_surge_002362(self):
-        """SURGE 触发：002362（2024-02 春节，bar5 gfl=43%）"""
-        self._test_pit_stage_stock('002362')
-
-    def test_surge_600775(self):
-        """SURGE 触发：600775（2024-02 春节，bar5 gfl=43%）"""
-        self._test_pit_stage_stock('600775')
-
-    def test_surge_002467(self):
-        """SURGE 触发：002467（2024-02 春节，bar4 gfl=35%）"""
-        self._test_pit_stage_stock('002467')
-
-    def test_surge_605117(self):
-        """SURGE 触发：605117（2021-05 劳动节，bar4 gfl=34%）"""
-        self._test_pit_stage_stock('605117')
-
-    # ULTRA2 触发股票（新增 ULTRA2 层，DIP≤5%，gfl≥21%）
-    def test_ultra2_002920(self):
-        """ULTRA2 触发：002920（2024-09 924行情，dip=4.3%）"""
-        self._test_pit_stage_stock('002920')
-
-    def test_ultra2_300279(self):
-        """ULTRA2 触发：300279（2024-02 春节后，dip=4.7%）"""
-        self._test_pit_stage_stock('300279')
-
-    def test_ultra2_002167(self):
-        """ULTRA2 触发：002167（2024-02 春节，dip=3.5%）"""
-        self._test_pit_stage_stock('002167')
-
-    def test_ultra2_300769(self):
-        """ULTRA2 触发：300769（2021-10 强势涨，dip=4.2%）"""
-        self._test_pit_stage_stock('300769')
-
-    # 已有基准股票（原 ULTRA 层，DIP≤2%）
-    def test_baseline_02367(self):
-        """基准：港股 02367（原 ULTRA 触发，DIP≤2%）"""
-        self._test_pit_stage_stock('02367')
-
-    def test_baseline_300750(self):
-        """基准：A股 300750"""
-        self._test_pit_stage_stock('300750')
-
-
 STRATEGY_TEST_NAMES = [
     'test_600775',
     'test_00512',
 ]
-
-PIT_STAGE_TEST_NAMES = [
-    'test_surge_603444',
-    'test_surge_002362',
-    'test_surge_600775',
-    'test_surge_002467',
-    'test_surge_605117',
-    'test_ultra2_002920',
-    'test_ultra2_300279',
-    'test_ultra2_002167',
-    'test_ultra2_300769',
-    'test_baseline_02367',
-    'test_baseline_300750',
-]
-
 
 def _default_worker_count(total_cases: int, requested: Optional[int] = None) -> int:
     if isinstance(requested, int) and requested > 0:
@@ -758,35 +513,12 @@ def run_tests(max_workers: Optional[int] = None):
     )
 
 
-def run_pit_stage_tests(max_workers: Optional[int] = None):
-    """运行 PitStage 未来函数检测。"""
-    return _run_case_group_parallel(
-        title="PitStage 未来函数检测（smooth_macro_phase / ULTRA2 / SURGE）",
-        case_class_name='TestPitStageLookahead',
-        test_names=PIT_STAGE_TEST_NAMES,
-        max_workers=max_workers,
-    )
-
-
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='未来函数检测')
-    parser.add_argument('--pit', action='store_true', help='只跑 PitStage 检测')
-    parser.add_argument('--all', action='store_true', help='同时跑策略检测 + PitStage 检测')
     parser.add_argument('--workers', type=int, default=0,
                         help='并行 worker 数量（默认=min(测试数量, CPU核心数)）')
     args = parser.parse_args()
 
     worker_count = args.workers if args.workers > 0 else None
-
-    if args.pit or args.all:
-        ok_pit = run_pit_stage_tests(max_workers=worker_count)
-    else:
-        ok_pit = True
-
-    if not args.pit:
-        ok_strategy = run_tests(max_workers=worker_count)
-    else:
-        ok_strategy = True
-
-    sys.exit(0 if (ok_pit and ok_strategy) else 1)
+    sys.exit(0 if run_tests(max_workers=worker_count) else 1)

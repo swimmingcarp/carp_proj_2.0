@@ -19,8 +19,7 @@ Carp 是面向 A 股和港股的日线信号与离线回测项目。commit `a8dd
 - `stock_trading_advisor/src/indicators.py`：通用技术指标实现。
 - `stock_trading_advisor/src/analyzer.py`：信号、回测和交易明细文本输出。
 - `stock_trading_advisor/src/data_fetcher.py`：普通分析的在线取数与普通缓存。
-- `stock_trading_advisor/src/personality/`：报告中的趋势时间线分析；不参与策略买卖决策。
-- `stock_trading_advisor/tests/test_lookahead_bias_smart.py`：信号点与抽样静默期的前缀未来函数测试，以及展示用 PIT 流水线测试。
+- `stock_trading_advisor/tests/test_lookahead_bias_smart.py`：信号点与抽样静默期的前缀未来函数测试。
 - `docs/strategy-blacklist.md`：禁止重新引入的策略和优化方式。
 
 ## 主调用链

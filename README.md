@@ -304,10 +304,6 @@ stock_trading_advisor/
 │   ├── data_validator.py      # 数据校验
 │   ├── market_hours.py        # 交易时间检测
 │   ├── wechat_notifier.py     # 微信通知
-│   └── personality/           # 报告中的趋势时间线分析模块
-│       ├── classifier.py
-│       ├── segmenter.py
-│       └── pit_stage.py
 ├── config/
 │   ├── config.yaml            # 主配置
 │   ├── scheduler_config.yaml  # 定时任务配置

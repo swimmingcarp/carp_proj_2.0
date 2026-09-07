@@ -66,7 +66,7 @@ Formal benchmark reports:
 - DEV250: `stock_trading_advisor/reports/offline_backtest_report_20260907_053200.txt` (`250 / 0`).
 - ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260907_053534.txt` (`305 / 0`).
 
-On DEV250, the exact audit changes are: average return `167.673618% -> 167.771937%`, average drawdown `-37.134048% -> -37.131628%`, profitable stocks `78.0% -> 78.0%`, median return `59.201610% -> 59.201610%`, average per-stock win rate `35.985389% -> 36.002302%`, and same-formula profit factor `2.071365 -> 2.072099`. The improvement is small, not a regime-changing gain.
+On DEV250, the exact audit changes are: average return `167.673618% -> 167.771937%`, legacy non-mark-to-market average drawdown `-37.134048% -> -37.131628%`, profitable stocks `78.0% -> 78.0%`, median return `59.201610% -> 59.201610%`, average per-stock win rate `35.985389% -> 36.002302%`, and same-formula profit factor `2.071365 -> 2.072099`. The improvement is small, not a regime-changing gain.
 
 Across ALL305, average return improves by `0.119024` points, 10% trimmed mean by `0.158720`, profitable-stock share by `0.327869` points, average drawdown by `0.013032` points, average win rate by `0.049058` points, same-formula profit factor by `0.001069`, and amount profit factor by `0.000907`; the median is unchanged. OLD128 and NEW122 move in the same non-negative direction. The 55-stock sealed HK set also improves on all of those measures, including median `-0.568751% -> -0.477392%`.
 

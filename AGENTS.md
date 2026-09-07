@@ -48,10 +48,9 @@
 
 ### Benchmark 提交格式
 
-- 建立或更新 benchmark，以及修正回测指标口径时，commit message 必须使用统一结构：标题、改动摘要、`Performance (<股票池>)`、`Validation`。
+- 建立或更新 benchmark，以及修正回测指标口径时，commit message 必须使用统一结构：标题、改动摘要、`Performance (<股票池>)`。
 - `Performance` 固定按 `Return / Median / tPF / Win rate / Max drawdown` 的顺序书写，股票池必须写入括号，例如 `Performance (ALL305)`；数值直接取自本轮正式离线报告，保留两位小数，不得凭记忆填写。
 - `Max drawdown` 默认指逐日收盘盯市后的平均个股最大回撤；引用未逐日盯市的历史结果时，必须显式标为 `legacy non-MTM`，不能与当前口径直接比较。
-- `Validation` 至少记录离线报告成功/失败数量、报告路径，以及未来函数测试或非策略改动的逐股一致性检查。非策略指标修正必须明确哪些字段发生预期变化、哪些交易和收益字段保持不变。
 - 统一模板如下，不能把其他公式的同名指标混入：
 
 ```text
@@ -65,10 +64,6 @@ Performance (ALL305):
 - tPF: 1.94
 - Win rate: 37.67
 - Max drawdown: -48.89
-
-Validation:
-- Offline report: 305/0 success (<report path>)
-- <lookahead or before/after consistency result>
 ```
 
 ### 策略改动
@@ -119,8 +114,7 @@ Validation:
 
 ## 必须阅读
 
-- 处理项目结构、主调用链、缓存规则、文件位置时，读 `docs/skills/carp-project-description.md`。
-- 处理策略研发、回测验证、baseline 或 commit 时，读 `docs/skills/carp-strategy-execution.md`。
+- 处理项目结构、主调用链、缓存规则、文件位置时，读 `docs/project-architecture.md`。
 - 处理任何策略新增、替换或参数优化时，必须先读 `docs/strategy-blacklist.md`。
 
 ## 优先级

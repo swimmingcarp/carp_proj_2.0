@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Tuple
 
+import json
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -31,8 +34,27 @@ except ImportError:  # pragma: no cover - standalone execution
 logger = logging.getLogger(__name__)
 
 
+# 前瞻叠加层所需：冻结的启动探测器（系数与阈值均在 2020-01..2023-10 的开发样本上训练后冻结，
+# 此处只做推断，不再拟合）。特征只读 OHLCV，全部因果。
+_LAUNCH_DIR = os.path.dirname(os.path.abspath(__file__))
+_LAUNCH_MODEL = None
+
+
+def _load_launch_model():
+    global _LAUNCH_MODEL
+    if _LAUNCH_MODEL is None:
+        with open(os.path.join(_LAUNCH_DIR, "launch_model.json"), "r", encoding="utf-8") as fh:
+            _LAUNCH_MODEL = json.load(fh)["full"]
+    return _LAUNCH_MODEL
+
+
 class RSITrendStrategy(StrategyBase):
     """RSI continuation entries with ATR trend and shared risk exits."""
+
+    # 前瞻叠加层：持有根数与腿内硬止损。两者在 pool_c 验收前即已冻结，验收后未改动；
+    # 参数平台覆盖 hold 10/20/30/60 与 stop 8/12/20，故这两个数值并非关键。
+    ANTICIPATION_HOLD = 20
+    ANTICIPATION_STOP = 12.0
 
     def __init__(
         self, config: Optional[Dict] = None, market: str = "CN-A", stock_code: str = ""
@@ -187,6 +209,17 @@ class RSITrendStrategy(StrategyBase):
             exit_reasons,
         ) = self._build_position_series(entry_condition, exit_condition, data)
 
+        (
+            position,
+            entry_flags,
+            exit_flags,
+            stop_flags,
+            entry_reasons,
+            exit_reasons,
+        ) = self._apply_anticipation_overlay(
+            position, entry_flags, exit_flags, stop_flags, entry_reasons, exit_reasons, data
+        )
+
         data["buy_signal"] = position
         data["entry_signal"] = entry_flags
         data["exit_signal"] = exit_flags
@@ -249,6 +282,120 @@ class RSITrendStrategy(StrategyBase):
         result &= ~downtrend
 
         return result
+
+    def _anticipation_signal(self, data: pd.DataFrame) -> np.ndarray:
+        """前瞻叠加层的触发信号：冻结探测器命中 且 该股按自身历史处于超卖。
+
+        全部因果，只读截至当根收盘的自身 OHLCV。系数与阈值在 2020-01..2023-10 的开发样本上训练后
+        冻结，此处只做推断。
+
+        验收记录（AGENTS.md 有完整表格）：pool_c 共 379 只、此前从未读取，A 股 280 只上
+        Return 31.51→72.80、Median −1.79→+26.07、tPF 1.31→1.52、Win 34.49→38.26、
+        平均个股回撤 −53.71→−53.11；配对符号检验 p=9.1e-29；并战胜全部同仓位随机对照，
+        而对照本身劣于基线——即择时本身在起作用，不是多买了仓位。
+
+        已知缺陷：在持续下跌的个股上会连续买入（下跌趋势中超卖条件长期为真，而崩塌股波动率高，
+        使探测器同时持续命中）。三个回测池均不含退市股，真实尾部比测得更重。港股上组合最大回撤
+        由 −15.78 恶化到 −20.49 且验证期不显著，因此仅在 A 股启用。
+        """
+        if self.market in ("HK", "US"):
+            return np.zeros(len(data), dtype=bool)
+        # 先试包内相对导入：否则 sys.path 上若有同名的 research 副本会被优先吃到，
+        # 生产结果就取决于调用方的 sys.path。
+        try:
+            from .launch_features import build_features
+        except ImportError:
+            from launch_features import build_features
+
+        model = _load_launch_model()
+        close = data["close"].astype(float)
+        feats = build_features(data)
+        cols = model["cols"]
+        mu = pd.Series(model["mu"])[cols]
+        sd = pd.Series(model["sd"])[cols]
+        coef = pd.Series(model["coef"])[cols].to_numpy(float)
+        z = ((feats[cols] - mu) / sd).clip(-5, 5)
+        ready = z.notna().all(axis=1).to_numpy()
+        lin = np.full(len(feats), np.nan)
+        lin[ready] = z.loc[ready].to_numpy(float) @ coef + model["intercept"]
+        score = 1.0 / (1.0 + np.exp(-lin))
+        hot = np.nan_to_num(score, nan=-1.0) >= model["q"]["90"]
+
+        atr_abs = feats["atr_pct_price"] * close / 100.0
+        ma120 = close.rolling(120).mean()
+        oversold = (((close - ma120) / atr_abs.replace(0, np.nan)) <= -2.0).fillna(False).to_numpy()
+        return hot & oversold & ready
+
+    def _apply_anticipation_overlay(
+        self,
+        position: np.ndarray,
+        entry_flags: np.ndarray,
+        exit_flags: np.ndarray,
+        stop_flags: np.ndarray,
+        entry_reasons: List[str],
+        exit_reasons: List[str],
+        data: pd.DataFrame,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], List[str]]:
+        """在主仓位序列之上叠加前瞻腿：只在主策略空仓时买入，到期交回主策略。
+
+        主策略的进出场条件与仓位序列已在上游算完，这里一律不改写，只在其空仓的日子补仓，因此
+        叠加层无法影响任何既有信号。持有 ANTICIPATION_HOLD 根后：若主策略此时已在场，仓位直接
+        由主策略接管（不写出场标记，因为并未离场）；否则平仓并写出场标记。腿内设
+        ANTICIPATION_STOP 硬止损。
+        """
+        signal = self._anticipation_signal(data)
+        if not signal.any():
+            return position, entry_flags, exit_flags, stop_flags, entry_reasons, exit_reasons
+
+        close = data["close"].astype(float).to_numpy()
+        position = position.copy()
+        entry_flags = entry_flags.copy()
+        exit_flags = exit_flags.copy()
+        stop_flags = stop_flags.copy()
+        entry_reasons = list(entry_reasons)
+        exit_reasons = list(exit_reasons)
+        holding_overlay = False
+        entry_price = np.nan
+        held = 0
+
+        for i in range(len(position)):
+            if holding_overlay:
+                price = close[i]
+                stopped = (
+                    np.isfinite(entry_price)
+                    and entry_price > 0
+                    and price <= entry_price * (1.0 - self.ANTICIPATION_STOP / 100.0)
+                )
+                if stopped:
+                    holding_overlay = False
+                    if position[i] == 0:
+                        exit_flags[i] = 1
+                        stop_flags[i] = 1
+                        exit_reasons[i] = f"前瞻腿止损({self.ANTICIPATION_STOP:.0f}%)"
+                else:
+                    held += 1
+                    if held >= self.ANTICIPATION_HOLD:
+                        holding_overlay = False
+                        # 主策略此刻在场则由它接管，不算离场；否则这一根就是叠加腿的卖点
+                        if position[i] == 0:
+                            exit_flags[i] = 1
+                            exit_reasons[i] = "前瞻腿到期"
+            elif position[i] == 0 and signal[i]:
+                holding_overlay = True
+                entry_price = close[i]
+                held = 0
+                entry_flags[i] = 1
+                entry_reasons[i] = "前瞻超卖买入"
+            if holding_overlay:
+                position[i] = 1
+                # 主策略在本根写下的离场标记与叠加腿的持仓相矛盾：合并仓位仍为 1，本根并没有真正
+                # 卖出。若保留这些标记，日播建议会在实际仍持仓时喊 SELL（pool_c A 股实测 308 根、
+                # 150/280 只股）。清除标记不改动任何仓位 bar，因此已发布指标不受影响。
+                if exit_flags[i] or stop_flags[i]:
+                    exit_flags[i] = 0
+                    stop_flags[i] = 0
+                    exit_reasons[i] = ""
+        return position, entry_flags, exit_flags, stop_flags, entry_reasons, exit_reasons
 
     def _build_position_series(
         self, entry_condition: pd.Series, exit_condition: pd.Series, data: pd.DataFrame

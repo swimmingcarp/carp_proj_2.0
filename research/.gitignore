@@ -1,0 +1,19 @@
+out/
+__pycache__/
+candidates_local.py
+# 一次性候选草稿与探索脚本不入库：结论都在 AGENTS.md，留着只会诱使重跑已否决的方案。
+# 例外是 candidates_anticipate.py —— 它是已上线规则的研究定义。
+candidates_*.py
+!candidates_anticipate.py
+chop_*.py
+cs_*.py
+regime_*.py
+switch*.py
+refute_*.py
+unsup_states.py
+smart_adaptive_runner.py
+phase_pattern_panel.py
+phase_multi.py
+range_state.py
+vol_family.py
+suitability.py

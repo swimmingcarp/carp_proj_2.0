@@ -6693,6 +6693,69 @@
       "old_new_portfolio_cagr_gap_points": 3.09,
       "interpretation": "fee-basis correction only; signals unchanged; not comparable with legacy-fee tag numbers"
     },
+    "chase_gate_20260908": {
+      "status": "REVERTED 2026-09-08: accepted on a development-pool profit-factor gain that failed in the external regression pool",
+      "date": "2026-09-08",
+      "change": "shared entry-quality chase gate: block entries when close is above MA60 by more than 12% (was 18%); no rule, state, parameter or switch added",
+      "source": "stock_trading_advisor/src/new_strategy.py",
+      "parameter_neighbourhood": {
+        "plateau": "12-15",
+        "all305_tpf_at_12": 2.03,
+        "all305_tpf_at_15": 1.97,
+        "all305_tpf_at_10": 2.04,
+        "note": "10 keeps tPF but breaks the right tail (ALL305 avg return 128.23); 12-15 is the flat region"
+      },
+      "reports": {
+        "all305": "stock_trading_advisor/reports/offline_backtest_report_20260908_205428.txt",
+        "dev250": "stock_trading_advisor/reports/offline_backtest_report_20260908_205312.txt",
+        "old128": "stock_trading_advisor/reports/offline_backtest_report_20260908_205612.txt",
+        "new122": "stock_trading_advisor/reports/offline_backtest_report_20260908_205644.txt",
+        "hk99": "stock_trading_advisor/reports/offline_backtest_report_20260908_205709.txt",
+        "previously_held_out_55": "stock_trading_advisor/reports/offline_backtest_report_20260908_205725.txt"
+      },
+      "baseline_reports": {
+        "all305": "stock_trading_advisor/reports/offline_backtest_report_20260908_012933.txt",
+        "dev250": "stock_trading_advisor/reports/offline_backtest_report_20260908_013035.txt"
+      },
+      "all305": {
+        "avg_return": [138.76, 139.07],
+        "avg_mtm_drawdown": [-48.89, -47.09],
+        "profitable_pct": [73.77, 73.77],
+        "median_return": [43.77, 45.53],
+        "avg_win_rate": [37.67, 38.32],
+        "same_formula_pf": [1.94, 2.03],
+        "avg_trades": [26.14, 24.35],
+        "portfolio_sharpe": [1.09, 1.16],
+        "portfolio_max_drawdown": [-13.0, -12.04],
+        "top5_winner_share": [26.91, 25.43]
+      },
+      "disclosed_regressions": {
+        "new122_median": [52.03, 46.46],
+        "hk99_median": [20.37, 17.16],
+        "old128_profitable_pct": [77.34, 74.22],
+        "sealed_hk55_avg_return": [84.06, 78.61],
+        "sealed_hk55_profitable_pct": [70.91, 69.09],
+        "dev250_median": [47.72, 47.21],
+        "all305_p75": [152.29, 139.04],
+        "all305_median_stock_cagr": [6.18, 5.93]
+      },
+      "lookahead": {
+        "affected_stocks": 242,
+        "universe": 305,
+        "tested_stocks": ["02367", "300750", "600775", "00512", "300757", "300502", "01211", "01797", "300751", "688200"],
+        "selection": "four affected stocks among the six original representatives, plus six selected for the largest signal-count and return changes across both markets",
+        "result": "10 / 10 passed, 0 failures"
+      },
+      "revert_evidence": {
+        "oos_pool": "stock_trading_advisor/data/oos_data (revealed; 230 stocks, zero overlap with the 305)",
+        "tpf_gain_dev_vs_oos": "+4.29% in pool vs +0.11% out of pool",
+        "oos_mean_return_delta": -4.92,
+        "oos_daily_rebalanced_cagr_delta": -0.41,
+        "new122_median": [52.03, 46.46],
+        "all305_daily_rebalanced_cagr_at_18_vs_12": [12.4, 12.24],
+        "note": "OOS230 was revealed by this decision and is retained only as an external regression pool"
+      }
+    },
     "single_strategy_surgery": {
       "status": "accepted simplification baseline",
       "protected_comparator": "a8dd63a",

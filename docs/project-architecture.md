@@ -22,6 +22,7 @@ Carp 是面向 A 股和港股的日线信号与离线回测项目，包含两条
 - `stock_trading_advisor/scheduler.py`：定时分析和模拟持仓调度。
 - `stock_trading_advisor/tests/test_strategy_backtest.py`：回测资金曲线和交易核算回归测试。
 - `stock_trading_advisor/tests/test_lookahead_bias_smart.py`：策略信号的逐日前缀未来数据检测。
+- `research/`：不进入正式运行路径的候选隔离、诊断、完整前缀回放和组合研究工具。
 
 ## 普通分析链路
 
@@ -65,7 +66,9 @@ python3 stock_trading_advisor/main.py --report -b 000001 300750 00700
 ## 数据目录
 
 - `stock_trading_advisor/data/backtest_data/`：固定后复权回测数据，不受普通下载流程刷新。
+- `stock_trading_advisor/data/oos_data/`：已揭示的外部回归数据，只供研究工具使用，不属于正式 benchmark 输入。
 - `stock_trading_advisor/data/cache/`：普通行情缓存，可随在线取数更新。
+- `stock_trading_advisor/oos_benchmark/`：已揭示 OOS230 的固定代码、数据来源、限制和重建工具。
 - `stock_trading_advisor/backtest_benchmark/`：股票池、数据质量、口径和正式 benchmark 记录。
 - `stock_trading_advisor/reports/`：运行产物，不是策略输入。
 - `stock_trading_advisor/data/realtime_positions.json`：调度器使用的模拟持仓状态，不得影响离线回测。

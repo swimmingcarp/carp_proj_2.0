@@ -149,6 +149,50 @@ Formal reports (current engine, current fee model):
 
 Under the same signals, ALL305 moves from `130.79% / 38.04% / 71.48% / 36.40% / 1.87 / -50.04%` (avg return / median / profitable / avg win rate / return PF / avg MTM drawdown) to `138.76% / 43.77% / 73.77% / 37.67% / 1.94 / -48.89%`; the HK99 median moves from `6.01%` to `20.37%` and CN-A median from `59.48%` to `60.98%`. The OLD128/NEW122 portfolio CAGR gap is `3.09` points under this fee model. Every difference is a fee-basis correction, not a strategy improvement, and numbers across the two fee models must not be compared directly.
 
+## Chase-Gate Tightening (2026-09-08) - REVERTED the same day
+
+REVERTED. The acceptance evidence was the development-pool trade profit factor (`1.94 -> 2.03`, `+4.29%`).
+On the now-revealed 230-stock out-of-pool universe that gain is only `+0.11%`, average return falls
+`4.92pp`, and the A-method daily-rebalanced CAGR falls `0.41pp`. NEW122 median return was also worse
+(`52.03% -> 46.46%`). On ALL305 the A-method CAGR was higher at `18%` (`12.40%`) than at `12%`
+(`12.24%`). The threshold is back at `18%`; the reports below are retained as the record of the
+tightened variant. OOS230 was revealed by this decision and is no longer an untouched holdout.
+
+The change was: the shared entry-quality gate that blocks entries when the close sits far above MA60 moves from `18%` to `12%` (`src/new_strategy.py`). No rule, state, parameter or switch is added; the neighbourhood `12%-15%` is a flat plateau and `10%` breaks the right tail.
+
+Formal reports (current engine, current fee model, tightened gate):
+
+- ALL305: `stock_trading_advisor/reports/offline_backtest_report_20260908_205428.txt` (`305 / 0`).
+- DEV250: `stock_trading_advisor/reports/offline_backtest_report_20260908_205312.txt` (`250 / 0`).
+- OLD128: `stock_trading_advisor/reports/offline_backtest_report_20260908_205612.txt` (`128 / 0`).
+- NEW122: `stock_trading_advisor/reports/offline_backtest_report_20260908_205644.txt` (`122 / 0`).
+- HK99: `stock_trading_advisor/reports/offline_backtest_report_20260908_205709.txt` (`99 / 0`).
+- Previously held-out 55: `stock_trading_advisor/reports/offline_backtest_report_20260908_205725.txt` (`55 / 0`).
+
+| Cohort | Avg return | Avg MTM drawdown | Profitable | Median return | Avg win rate | Return PF | Amount PF |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ALL305 | 139.07% | -47.09% | 73.77% | 45.53% | 38.32% | 2.03 | 1.95 |
+| DEV250 | 152.37% | -48.08% | 74.80% | 47.21% | 38.34% | 2.05 | 1.98 |
+| OLD128 | 174.63% | -45.07% | 74.22% | 51.57% | 38.24% | 2.20 | 2.05 |
+| NEW122 | 129.02% | -51.23% | 75.41% | 46.46% | 38.45% | 1.90 | 1.90 |
+| HK99 | 81.00% | -46.97% | 63.64% | 17.16% | 37.25% | 1.80 | 1.69 |
+| Previously held-out 55 | 78.61% | -42.59% | 69.09% | 22.31% | 38.22% | 1.88 | 1.73 |
+
+| Cohort | CAGR | Max drawdown | Sharpe | Median stock CAGR |
+|---|---:|---:|---:|---:|
+| ALL305 | 13.95% | -12.04% | 1.16 | 5.93% |
+| DEV250 | 14.88% | -12.81% | 1.13 | 6.42% |
+| OLD128 | 16.35% | -11.81% | 1.22 | 6.43% |
+| NEW122 | 13.22% | -18.50% | 0.95 | 6.24% |
+| HK99 | 9.30% | -22.25% | 0.82 | 2.40% |
+| Previously held-out 55 | 9.08% | -16.58% | 0.79 | 3.06% |
+
+On ALL305 four of the five main metrics improve and one is flat: avg MTM drawdown `-48.89% -> -47.09%`, profitable stocks `73.77% -> 73.77%`, median return `43.77% -> 45.53%`, avg win rate `37.67% -> 38.32%`, same-formula profit factor `1.94 -> 2.03`. Portfolio Sharpe moves `1.09 -> 1.16`, portfolio max drawdown `-13.00% -> -12.04%`, top-5-winner concentration `26.91% -> 25.43%`, and average trades per stock `26.14 -> 24.35`.
+
+Disclosed regressions, all cohort-level: NEW122 median `52.03% -> 46.46%`, HK99 median `20.37% -> 17.16%`, OLD128 profitable share `77.34% -> 74.22%`, previously held-out 55 avg return `84.06% -> 78.61%` and profitable share `70.91% -> 69.09%`, DEV250 median `47.72% -> 47.21%`, ALL305 P75 `152.29% -> 139.04%` and median stock CAGR `6.18% -> 5.93%`. The gain is risk-adjusted (fewer chase entries), not a return increase: ALL305 average return moves only `138.76% -> 139.07%`.
+
+Lookahead: `242 / 305` stocks change signals. Impact-driven selection covered the four affected stocks among the six original representatives (`02367`, `300750`, `600775`, `00512`) plus six chosen for the largest signal-count and return changes across both markets (`300757`, `300502`, `01211`, `01797`, `300751`, `688200`). All `10 / 10` passed with `0` failures.
+
 ## Lookahead Test
 
 - baseline command: `python3 stock_trading_advisor/tests/test_lookahead_bias_smart.py --workers 6`

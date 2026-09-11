@@ -75,6 +75,9 @@ logs/
 data/cache/
 *.csv
 !stock_trading_advisor/data/backtest_data/*.csv
+!stock_trading_advisor/data/oos_data/*.csv
+!stock_trading_advisor/data/pool_b/*.csv
+!stock_trading_advisor/data/pool_c/*.csv
 *.xlsx
 .serena/
 stock_trading_advisor/data/strategy_cache.json
@@ -84,3 +87,6 @@ reports/
 # Temporary files
 *.tmp
 *.bak
+research/out*/
+research/refute_*/
+research/candidates_local.py

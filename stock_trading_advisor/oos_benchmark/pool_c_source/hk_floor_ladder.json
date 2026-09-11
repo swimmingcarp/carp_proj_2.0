@@ -1,0 +1,87 @@
+{
+ "10000000": {
+  "eligible": 113,
+  "passers": 73,
+  "per_decile_passers": [
+   12,
+   11,
+   9,
+   11,
+   8,
+   3,
+   9,
+   8,
+   2,
+   0
+  ],
+  "achievable_draw_at_12_per_decile": 73
+ },
+ "5000000": {
+  "eligible": 153,
+  "passers": 81,
+  "per_decile_passers": [
+   16,
+   14,
+   14,
+   9,
+   8,
+   12,
+   8,
+   0,
+   0,
+   0
+  ],
+  "achievable_draw_at_12_per_decile": 73
+ },
+ "3000000": {
+  "eligible": 198,
+  "passers": 110,
+  "per_decile_passers": [
+   20,
+   18,
+   15,
+   11,
+   15,
+   13,
+   8,
+   1,
+   8,
+   1
+  ],
+  "achievable_draw_at_12_per_decile": 89
+ },
+ "2000000": {
+  "eligible": 245,
+  "passers": 134,
+  "per_decile_passers": [
+   25,
+   21,
+   14,
+   18,
+   17,
+   11,
+   9,
+   8,
+   11,
+   0
+  ],
+  "achievable_draw_at_12_per_decile": 99
+ },
+ "1000000": {
+  "eligible": 322,
+  "passers": 170,
+  "per_decile_passers": [
+   32,
+   24,
+   22,
+   23,
+   19,
+   16,
+   15,
+   14,
+   5,
+   0
+  ],
+  "achievable_draw_at_12_per_decile": 101
+ }
+}
